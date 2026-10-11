@@ -1,5 +1,4 @@
-use skoci_api::error::{SkociError, SkociResult};
-use skoci_api::models::{ActionPermission, EnvPolicy, SkociPolicy};
+use skoci_api::models::{ActionPermission, EnvPolicy, SkociPolicy, ENV_PREVIEW};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -20,6 +19,13 @@ impl Action {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    NeedsApproval,
+    Deny,
+}
+
 pub struct PolicyEvaluator;
 
 impl PolicyEvaluator {
@@ -28,11 +34,11 @@ impl PolicyEvaluator {
         env: &str,
         action: Action,
         is_human: bool,
-    ) -> SkociResult<()> {
-        let env_policy: &EnvPolicy = match env {
-            "preview" | "staging" | "dev" => &policy.preview,
-            "production" | "prod" => &policy.production,
-            _ => &policy.production, // Default to strict production policy
+    ) -> Decision {
+        let env_policy: &EnvPolicy = if env == ENV_PREVIEW || env == "preview" {
+            &policy.preview
+        } else {
+            &policy.production
         };
 
         let permission = match action {
@@ -42,20 +48,16 @@ impl PolicyEvaluator {
             Action::Delete => env_policy.delete,
         };
 
-        match permission {
-            ActionPermission::Auto => Ok(()),
-            ActionPermission::Approve => {
-                if is_human {
-                    Ok(())
-                } else {
-                    Err(SkociError::approval_required(
-                        "pending",
-                        action.as_str(),
-                    ))
-                }
+        if is_human {
+            match permission {
+                ActionPermission::Deny => Decision::Deny,
+                _ => Decision::Allow,
             }
-            ActionPermission::Deny => {
-                Err(SkociError::policy_violation(action.as_str(), env))
+        } else {
+            match permission {
+                ActionPermission::Auto => Decision::Allow,
+                ActionPermission::Approve => Decision::NeedsApproval,
+                ActionPermission::Deny => Decision::Deny,
             }
         }
     }

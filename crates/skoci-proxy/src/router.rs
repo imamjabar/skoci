@@ -1,19 +1,42 @@
-use crate::health::HealthChecker;
-use crate::pause::PauseController;
-use crate::service::{Service, Target};
-use skoci_api::error::{SkociError, SkociResult};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Route {
+    pub app: String,
+    pub env: String,
+    pub hosts: Vec<String>,
+    pub target: SocketAddr,
+    pub version: String,
+}
+
+impl Route {
+    pub fn key(&self) -> String {
+        format!("{}:{}", self.app, self.env)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    App { key: String, target: SocketAddr },
+    Control(SocketAddr),
+    NotFound,
+}
 
 #[derive(Clone)]
 pub struct ProxyRouter {
-    services: Arc<RwLock<HashMap<String, Service>>>,
-    domain_map: Arc<RwLock<HashMap<String, String>>>, // domain -> service_name
-    pause_controllers: Arc<RwLock<HashMap<String, PauseController>>>,
-    health_checker: Arc<HealthChecker>,
+    inner: Arc<RwLock<RouterInner>>,
+    gen_tx: watch::Sender<u64>,
+}
+
+struct RouterInner {
+    routes: HashMap<String, Route>,
+    host_map: HashMap<String, String>,
+    default_app: Option<String>,
+    control_host: Option<String>,
+    control_addr: Option<SocketAddr>,
 }
 
 impl Default for ProxyRouter {
@@ -22,138 +45,173 @@ impl Default for ProxyRouter {
     }
 }
 
+pub fn clean_hostname(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.starts_with('[') {
+        if let Some(idx) = trimmed.find(']') {
+            return trimmed[..=idx].to_ascii_lowercase();
+        }
+    }
+    trimmed.split(':').next().unwrap_or("").to_ascii_lowercase()
+}
+
+pub fn is_ip_literal_or_empty(host: &str) -> bool {
+    let clean = clean_hostname(host);
+    if clean.is_empty() {
+        return true;
+    }
+    if clean.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    if clean.starts_with('[') && clean.ends_with(']') && clean.len() >= 2
+        && clean[1..clean.len() - 1].parse::<IpAddr>().is_ok() {
+            return true;
+        }
+    false
+}
+
+pub fn is_dns_name(host: &str) -> bool {
+    let clean = clean_hostname(host);
+    if clean.is_empty() || clean == "localhost" {
+        return false;
+    }
+    !is_ip_literal_or_empty(&clean)
+}
+
 impl ProxyRouter {
     pub fn new() -> Self {
+        let (gen_tx, _) = watch::channel(0);
         Self {
-            services: Arc::new(RwLock::new(HashMap::new())),
-            domain_map: Arc::new(RwLock::new(HashMap::new())),
-            pause_controllers: Arc::new(RwLock::new(HashMap::new())),
-            health_checker: Arc::new(HealthChecker::default()),
+            inner: Arc::new(RwLock::new(RouterInner {
+                routes: HashMap::new(),
+                host_map: HashMap::new(),
+                default_app: None,
+                control_host: None,
+                control_addr: None,
+            })),
+            gen_tx,
         }
     }
 
-    pub async fn register_service(&self, service: Service) {
-        let name = service.name.clone();
-        let domains = service.domains.clone();
+    pub async fn upsert_route(&self, route: Route) -> Option<Route> {
+        let key = route.key();
+        let mut inner = self.inner.write().await;
+        let prev = inner.routes.insert(key, route);
 
-        let mut services = self.services.write().await;
-        let mut domain_map = self.domain_map.write().await;
-        let mut pause_controllers = self.pause_controllers.write().await;
+        inner.rebuild_host_map();
+        self.gen_tx.send_modify(|g| *g += 1);
+        prev
+    }
 
-        for domain in domains {
-            domain_map.insert(domain, name.clone());
+    pub async fn remove_route(&self, key: &str) -> Option<Route> {
+        let mut inner = self.inner.write().await;
+        let prev = inner.routes.remove(key);
+        if prev.is_some() {
+            inner.rebuild_host_map();
+            self.gen_tx.send_modify(|g| *g += 1);
         }
-
-        pause_controllers
-            .entry(name.clone())
-            .or_insert_with(PauseController::new);
-        services.insert(name, service);
+        prev
     }
 
-    pub async fn resolve_host(&self, host: &str) -> Option<String> {
-        // Strip optional port from host header (e.g. "example.com:80" -> "example.com")
-        let clean_host = host.split(':').next().unwrap_or(host);
-        let domain_map = self.domain_map.read().await;
-        domain_map.get(clean_host).cloned()
+    pub async fn get_route(&self, key: &str) -> Option<Route> {
+        let inner = self.inner.read().await;
+        inner.routes.get(key).cloned()
     }
 
-    pub async fn get_target_for_request(
-        &self,
-        service_name: &str,
-    ) -> Result<Option<SocketAddr>, SkociError> {
-        // Check pause controller
-        let pause = {
-            let controllers = self.pause_controllers.read().await;
-            controllers.get(service_name).cloned()
-        };
+    pub async fn routes(&self) -> Vec<Route> {
+        let inner = self.inner.read().await;
+        inner.routes.values().cloned().collect()
+    }
 
-        if let Some(pause) = pause {
-            if !pause.wait_if_paused(Duration::from_secs(5)).await {
-                return Err(SkociError::bad_request(
-                    "Timeout menunggu deploy cutover selesai",
-                    "Coba beberapa detik lagi",
-                ));
+    pub async fn set_default_app(&self, app: Option<String>) {
+        let mut inner = self.inner.write().await;
+        inner.default_app = app;
+        self.gen_tx.send_modify(|g| *g += 1);
+    }
+
+    pub async fn set_control(&self, host: Option<String>, addr: SocketAddr) {
+        let mut inner = self.inner.write().await;
+        inner.control_host = host.map(|h| clean_hostname(&h));
+        inner.control_addr = Some(addr);
+        self.gen_tx.send_modify(|g| *g += 1);
+    }
+
+    pub async fn resolve(&self, host: &str) -> Resolution {
+        let clean = clean_hostname(host);
+        let inner = self.inner.read().await;
+
+        if let Some(key) = inner.host_map.get(&clean) {
+            if let Some(route) = inner.routes.get(key) {
+                return Resolution::App {
+                    key: key.clone(),
+                    target: route.target,
+                };
             }
         }
 
-        let services = self.services.read().await;
-        if let Some(service) = services.get(service_name) {
-            let rand_val = (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos() % 100) as u8;
-            Ok(service.select_target(rand_val))
-        } else {
-            Err(SkociError::app_not_found(service_name))
-        }
-    }
-
-    pub async fn cutover(
-        &self,
-        service_name: &str,
-        new_target: Target,
-        health_check: bool,
-    ) -> SkociResult<Option<Target>> {
-        // 1. Optional health check before starting cutover
-        if health_check {
-            let path = {
-                let services = self.services.read().await;
-                services
-                    .get(service_name)
-                    .map(|s| s.health_path.clone())
-                    .unwrap_or_else(|| "/healthz".to_string())
-            };
-            self.health_checker
-                .wait_for_healthy(new_target.addr, &path, 5, Duration::from_millis(500))
-                .await?;
-        }
-
-        // 2. Pause incoming requests briefly
-        let pause = {
-            let mut controllers = self.pause_controllers.write().await;
-            controllers
-                .entry(service_name.to_string())
-                .or_insert_with(PauseController::new)
-                .clone()
-        };
-
-        pause.pause();
-
-        // 3. Swap targets atomically
-        let previous = {
-            let mut services = self.services.write().await;
-            if let Some(service) = services.get_mut(service_name) {
-                service.set_candidate(new_target);
-                service.promote_candidate()
-            } else {
-                pause.resume();
-                return Err(SkociError::app_not_found(service_name));
+        if let (Some(ch), Some(addr)) = (&inner.control_host, inner.control_addr) {
+            if ch == &clean {
+                return Resolution::Control(addr);
             }
-        };
-
-        // 4. Resume incoming requests
-        pause.resume();
-
-        Ok(previous)
-    }
-
-    pub async fn set_maintenance(&self, service_name: &str, enabled: bool) -> SkociResult<()> {
-        let mut services = self.services.write().await;
-        if let Some(service) = services.get_mut(service_name) {
-            service.set_maintenance(enabled);
-            Ok(())
-        } else {
-            Err(SkociError::app_not_found(service_name))
         }
+
+        if is_ip_literal_or_empty(&clean) {
+            if let Some(default_app) = &inner.default_app {
+                let prod_key = format!("{default_app}:production");
+                if let Some(route) = inner.routes.get(&prod_key) {
+                    return Resolution::App {
+                        key: prod_key,
+                        target: route.target,
+                    };
+                }
+                let prev_key = format!("{default_app}:preview");
+                if let Some(route) = inner.routes.get(&prev_key) {
+                    return Resolution::App {
+                        key: prev_key,
+                        target: route.target,
+                    };
+                }
+            }
+        }
+
+        Resolution::NotFound
     }
 
-    pub async fn set_rollout_split(&self, service_name: &str, percentage: u8) -> SkociResult<()> {
-        let mut services = self.services.write().await;
-        if let Some(service) = services.get_mut(service_name) {
-            service.set_rollout_split(percentage);
-            Ok(())
-        } else {
-            Err(SkociError::app_not_found(service_name))
+    pub async fn all_dns_hosts(&self) -> Vec<String> {
+        let inner = self.inner.read().await;
+        let mut set = std::collections::BTreeSet::new();
+        for route in inner.routes.values() {
+            for host in &route.hosts {
+                let clean = clean_hostname(host);
+                if is_dns_name(&clean) {
+                    set.insert(clean);
+                }
+            }
+        }
+        if let Some(ch) = &inner.control_host {
+            let clean = clean_hostname(ch);
+            if is_dns_name(&clean) {
+                set.insert(clean);
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    pub fn subscribe_generation(&self) -> watch::Receiver<u64> {
+        self.gen_tx.subscribe()
+    }
+}
+
+impl RouterInner {
+    fn rebuild_host_map(&mut self) {
+        self.host_map.clear();
+        for (k, r) in &self.routes {
+            for h in &r.hosts {
+                let clean = clean_hostname(h);
+                if !clean.is_empty() {
+                    self.host_map.insert(clean, k.clone());
+                }
+            }
         }
     }
 }

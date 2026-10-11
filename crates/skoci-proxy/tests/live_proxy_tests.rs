@@ -1,122 +1,304 @@
-use http_body_util::Full;
-use hyper::body::{Bytes, Incoming};
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
-use hyper_util::server::conn::auto::Builder;
-use skoci_proxy::router::ProxyRouter;
-use skoci_proxy::server::run_proxy_server;
-use skoci_proxy::service::{Service, Target};
+use skoci_proxy::router::{ProxyRouter, Route};
+use skoci_proxy::server::{start_proxy, ProxyConfig};
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
-// Minimal mock target server
-async fn spawn_mock_target(port: u16, reply: &'static str) -> SocketAddr {
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let listener = TcpListener::bind(addr).await.unwrap();
-    let local_addr = listener.local_addr().unwrap();
+struct UpstreamState {
+    last_headers: HashMap<String, String>,
+    last_body: Vec<u8>,
+}
+
+async fn spawn_raw_upstream() -> (SocketAddr, Arc<Mutex<UpstreamState>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = Arc::new(Mutex::new(UpstreamState {
+        last_headers: HashMap::new(),
+        last_body: Vec::new(),
+    }));
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (mut stream, _) = match listener.accept().await {
                 Ok(conn) => conn,
                 Err(_) => break,
             };
-            let io = TokioIo::new(stream);
+            let state = state_clone.clone();
+
             tokio::spawn(async move {
-                let service = service_fn(move |_: Request<Incoming>| async move {
-                    Ok::<_, hyper::Error>(Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from(reply)))
-                        .unwrap())
-                });
-                let _ = Builder::new(hyper_util::rt::TokioExecutor::new())
-                    .serve_connection(io, service)
-                    .await;
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                let header_end;
+                loop {
+                    let n = stream.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = pos + 4;
+                        break;
+                    }
+                }
+
+                let header_str = String::from_utf8_lossy(&buf[..header_end]);
+                let mut lines = header_str.split("\r\n");
+                let req_line = lines.next().unwrap_or("");
+                let mut req_parts = req_line.split_whitespace();
+                let _method = req_parts.next().unwrap_or("GET");
+                let path = req_parts.next().unwrap_or("/").to_string();
+
+                let mut headers = HashMap::new();
+                let mut content_length = 0usize;
+                for line in lines {
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = line.split_once(':') {
+                        let key = k.trim().to_ascii_lowercase();
+                        let val = v.trim().to_string();
+                        if key == "content-length" {
+                            content_length = val.parse().unwrap_or(0);
+                        }
+                        headers.insert(key, val);
+                    }
+                }
+
+                let mut body = buf[header_end..].to_vec();
+                while body.len() < content_length {
+                    let n = stream.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    body.extend_from_slice(&chunk[..n]);
+                }
+
+                {
+                    let mut st = state.lock().await;
+                    st.last_headers = headers.clone();
+                    st.last_body = body.clone();
+                }
+
+                if path == "/test-headers" {
+                    let resp = "HTTP/1.1 200 OK\r\n\
+                                Content-Type: application/custom-type; charset=utf-8\r\n\
+                                X-Custom-Header: skoci-preserved\r\n\
+                                Content-Length: 14\r\n\
+                                \r\n\
+                                Header Content";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                } else if path == "/test-post" {
+                    let body_len = body.len();
+                    let resp_header = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: application/octet-stream\r\n\
+                         Content-Length: {body_len}\r\n\
+                         \r\n"
+                    );
+                    let _ = stream.write_all(resp_header.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                } else if path == "/test-large-stream" {
+                    let size = 2 * 1024 * 1024; // 2 MB
+                    let resp_header = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: application/octet-stream\r\n\
+                         Content-Length: {size}\r\n\
+                         \r\n"
+                    );
+                    let _ = stream.write_all(resp_header.as_bytes()).await;
+                    let chunk_pattern = [b'X'; 65536];
+                    let mut sent = 0;
+                    while sent < size {
+                        let to_send = (size - sent).min(chunk_pattern.len());
+                        let _ = stream.write_all(&chunk_pattern[..to_send]).await;
+                        sent += to_send;
+                    }
+                } else {
+                    let resp = "HTTP/1.1 200 OK\r\n\
+                                Content-Type: text/plain\r\n\
+                                Content-Length: 2\r\n\
+                                \r\n\
+                                OK";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
             });
         }
     });
 
-    local_addr
+    (addr, state)
 }
 
 #[tokio::test]
-async fn test_end_to_end_proxy_forwarding_and_cutover() {
-    // 1. Spawn backend target v1 and target v2
-    let target1_addr = spawn_mock_target(0, "Hello from v1").await;
-    let target2_addr = spawn_mock_target(0, "Hello from v2").await;
+async fn test_live_proxy_end_to_end() {
+    let (upstream_addr, upstream_state) = spawn_raw_upstream().await;
 
-    // 2. Setup ProxyRouter
     let router = ProxyRouter::new();
-    let service = Service::new("demo-app", vec!["demo.local".to_string()], "/healthz");
-    router.register_service(service).await;
+    router
+        .upsert_route(Route {
+            app: "my-app".to_string(),
+            env: "production".to_string(),
+            hosts: vec!["my-app.local".to_string()],
+            target: upstream_addr,
+            version: "v1".to_string(),
+        })
+        .await;
 
-    // Set initial target v1
-    let t1 = Target {
-        id: "c1".to_string(),
-        addr: target1_addr,
-        version: "v1".to_string(),
-        healthy: true,
-        last_checked: None,
+    let control_addr: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+    router
+        .set_control(Some("control.skoci.local".to_string()), control_addr)
+        .await;
+
+    let cfg = ProxyConfig {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        https_bind: "127.0.0.1:0".parse().unwrap(),
+        acme: None,
     };
-    router.cutover("demo-app", t1, false).await.unwrap();
 
-    // 3. Spawn Proxy Server on random port
-    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy_addr = proxy_listener.local_addr().unwrap();
-    drop(proxy_listener); // release so run_proxy_server can bind
+    let status = start_proxy(cfg, router.clone()).await;
+    assert!(status.http_listening());
+    assert!(!status.tls_enabled());
+    assert!(status.bind_errors().is_empty());
 
-    let r_clone = router.clone();
-    tokio::spawn(async move {
-        let _ = run_proxy_server(proxy_addr, r_clone).await;
-    });
-
-    // Brief yield for server startup
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
+    let proxy_http_addr = status.http_addr().expect("proxy http addr must be bound");
     let client = reqwest::Client::new();
 
-    // 4. Test request with Host: demo.local -> should return "Hello from v1"
-    let resp1 = client
-        .get(format!("http://{proxy_addr}/"))
-        .header("Host", "demo.local")
+    // 1. Response headers like Content-Type are preserved
+    let resp = client
+        .get(format!("http://{proxy_http_addr}/test-headers"))
+        .header("Host", "my-app.local")
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp1.status(), 200);
-    let body1 = resp1.text().await.unwrap();
-    assert_eq!(body1, "Hello from v1");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/custom-type; charset=utf-8"
+    );
+    assert_eq!(
+        resp.headers().get("x-custom-header").unwrap(),
+        "skoci-preserved"
+    );
+    assert!(resp.headers().contains_key("x-request-id"));
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "Header Content");
 
-    // 5. Test unknown domain -> should return 404
+    // 2. X-Forwarded-* headers set on upstream
+    {
+        let st = upstream_state.lock().await;
+        assert_eq!(
+            st.last_headers.get("x-forwarded-host").map(|s| s.as_str()),
+            Some("my-app.local")
+        );
+        assert_eq!(
+            st.last_headers.get("x-forwarded-proto").map(|s| s.as_str()),
+            Some("http")
+        );
+        assert!(st.last_headers.contains_key("x-forwarded-for"));
+        assert!(st.last_headers.contains_key("x-request-id"));
+    }
+
+    // 3. POST body forwarded correctly
+    let post_data = vec![b'A'; 256 * 1024]; // 256 KB
+    let resp_post = client
+        .post(format!("http://{proxy_http_addr}/test-post"))
+        .header("Host", "my-app.local")
+        .body(post_data.clone())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp_post.status(), 200);
+    let echoed_bytes = resp_post.bytes().await.unwrap();
+    assert_eq!(echoed_bytes.len(), post_data.len());
+    assert_eq!(&echoed_bytes[..], &post_data[..]);
+
+    {
+        let st = upstream_state.lock().await;
+        assert_eq!(st.last_body.len(), post_data.len());
+        assert_eq!(&st.last_body[..], &post_data[..]);
+    }
+
+    // 4. Streaming / large body passes
+    let resp_large = client
+        .get(format!("http://{proxy_http_addr}/test-large-stream"))
+        .header("Host", "my-app.local")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp_large.status(), 200);
+    let large_bytes = resp_large.bytes().await.unwrap();
+    assert_eq!(large_bytes.len(), 2 * 1024 * 1024);
+    assert!(large_bytes.iter().all(|&b| b == b'X'));
+
+    // 5. Unknown host -> 404 with Indonesian text and hint
     let resp_404 = client
-        .get(format!("http://{proxy_addr}/"))
-        .header("Host", "unknown.local")
+        .get(format!("http://{proxy_http_addr}/"))
+        .header("Host", "unknown-domain.local")
         .send()
         .await
         .unwrap();
+
     assert_eq!(resp_404.status(), 404);
+    let text_404 = resp_404.text().await.unwrap();
+    assert!(
+        text_404.contains("404 Tidak Ditemukan"),
+        "body was: {text_404}"
+    );
+    assert!(
+        text_404.contains("tambahkan domain ke skoci.yaml lalu skoci deploy"),
+        "body was: {text_404}"
+    );
 
-    // 6. Zero-downtime cutover to target v2
-    let t2 = Target {
-        id: "c2".to_string(),
-        addr: target2_addr,
-        version: "v2".to_string(),
-        healthy: true,
-        last_checked: None,
-    };
-    router.cutover("demo-app", t2, false).await.unwrap();
+    // 6. Upstream down -> 502 with hint skoci logs
+    // Bind a listener then drop it immediately to get a guaranteed down port
+    let dead_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_addr = dead_listener.local_addr().unwrap();
+    drop(dead_listener);
 
-    // 7. Test request with Host: demo.local -> should now return "Hello from v2"
-    let resp2 = client
-        .get(format!("http://{proxy_addr}/"))
-        .header("Host", "demo.local")
+    router
+        .upsert_route(Route {
+            app: "dead-app".to_string(),
+            env: "production".to_string(),
+            hosts: vec!["dead-app.local".to_string()],
+            target: dead_addr,
+            version: "v1".to_string(),
+        })
+        .await;
+
+    let resp_502 = client
+        .get(format!("http://{proxy_http_addr}/"))
+        .header("Host", "dead-app.local")
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp2.status(), 200);
-    let body2 = resp2.text().await.unwrap();
-    assert_eq!(body2, "Hello from v2");
+    assert_eq!(resp_502.status(), 502);
+    let text_502 = resp_502.text().await.unwrap();
+    assert!(
+        text_502.contains("502 Bad Gateway"),
+        "body was: {text_502}"
+    );
+    assert!(text_502.contains("skoci logs"), "body was: {text_502}");
+
+    // 7. Control host over HTTP when TLS is off -> 403 with exact Indonesian message
+    let resp_403 = client
+        .get(format!("http://{proxy_http_addr}/"))
+        .header("Host", "control.skoci.local")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp_403.status(), 403);
+    let text_403 = resp_403.text().await.unwrap();
+    let expected_msg = "Akses API Skoci lewat HTTP publik ditolak. Gunakan HTTPS (--tls acme) atau SSH tunnel: ssh -L 8787:127.0.0.1:8787 user@server";
+    assert!(
+        text_403.contains(expected_msg),
+        "body was: {text_403}, expected to contain: {expected_msg}"
+    );
 }

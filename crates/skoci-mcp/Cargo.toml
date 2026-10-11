@@ -8,9 +8,11 @@ license.workspace = true
 [dependencies]
 skoci-api = { workspace = true }
 skoci-client = { workspace = true }
+skoci-cli = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+futures-util = { workspace = true }

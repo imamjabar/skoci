@@ -1,249 +1,1361 @@
-use crate::args::{Commands, DbCommands, SecretCommands, TokenCommands};
-use crate::output::print_result;
+use futures_util::StreamExt;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::ApiResponse;
-use skoci_api::requests::{ApproveRequest, DbBackupRequest, DbRestoreRequest, DeployRequest, PromoteRequest, RollbackRequest};
-use skoci_api::responses::InitResponse;
+use skoci_api::requests::{
+    ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
+    DeploymentsQuery, LogsQuery, PromoteRequest, RollbackRequest, SecretSetRequest,
+    TokenCreateRequest,
+};
+use skoci_api::responses::{
+    DeployResponse, DeployStage, InitResponse, StageStatus,
+};
 use skoci_client::SkociClient;
 use skoci_core::config::ConfigLoader;
 use skoci_core::detector::ProjectDetector;
+use std::io::IsTerminal;
 use std::path::Path;
+use std::time::Instant;
 
-pub async fn run_command(cmd: Commands, server_url: &str, token: Option<String>, json_mode: bool) {
+use crate::args::{AppCommands, Commands, DbCommands, SecretCommands, TokenCommands};
+use crate::output;
+
+pub fn error_exit_code(err: &SkociError) -> i32 {
+    match err.code.as_str() {
+        "unauthorized" | "scope_violation" | "rate_limited" => 3,
+        "approval_required" => 2,
+        _ => 1,
+    }
+}
+
+pub fn resolve_app_in(path: &Path, provided: Option<&str>) -> SkociResult<String> {
+    if let Some(app) = provided {
+        let trimmed = app.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let config_path = path.join("skoci.yaml");
+    if config_path.exists() {
+        if let Ok(cfg) = ConfigLoader::load_config(&config_path) {
+            let trimmed = cfg.app.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    Err(SkociError::config_invalid(
+        "Nama aplikasi tidak ditemukan",
+        "Tentukan nama aplikasi melalui argumen atau jalankan `skoci init` untuk membuat skoci.yaml",
+    ))
+}
+
+pub fn resolve_app(provided: Option<String>) -> SkociResult<String> {
+    resolve_app_in(Path::new("."), provided.as_deref())
+}
+
+pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> SkociResult<(InitResponse, Vec<String>)> {
+    let path = path.as_ref();
+    if !path.exists() {
+        std::fs::create_dir_all(path).map_err(|e| {
+            SkociError::internal(
+                format!("Gagal membuat direktori {}: {e}", path.display()),
+                "Pastikan direktori dapat dibuat dan izin mencukupi",
+            )
+        })?;
+    }
+
+    let app_name = if let Some(app) = app_override {
+        app.trim().to_string()
+    } else {
+        path.canonicalize()
+            .ok()
+            .and_then(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase().replace(['_', ' '], "-"))
+            })
+            .unwrap_or_else(|| "app".to_string())
+    };
+
+    let detection = ProjectDetector::detect(path);
+    let mut created_files = Vec::new();
+    let mut skipped_files = Vec::new();
+
+    let yaml_file = path.join("skoci.yaml");
+    if !yaml_file.exists() {
+        let content = ProjectDetector::generate_skoci_yaml(&app_name, &detection);
+        std::fs::write(&yaml_file, content).map_err(|e| {
+            SkociError::internal(
+                format!("Gagal menulis skoci.yaml: {e}"),
+                "Periksa izin tulis direktori",
+            )
+        })?;
+        created_files.push("skoci.yaml".to_string());
+    } else {
+        skipped_files.push("skoci.yaml".to_string());
+    }
+
+    if let Some(df_content) = ProjectDetector::dockerfile(&detection) {
+        let df_file = path.join("Dockerfile");
+        if !df_file.exists() {
+            std::fs::write(&df_file, df_content).map_err(|e| {
+                SkociError::internal(
+                    format!("Gagal menulis Dockerfile: {e}"),
+                    "Periksa izin tulis direktori",
+                )
+            })?;
+            created_files.push("Dockerfile".to_string());
+        } else {
+            skipped_files.push("Dockerfile".to_string());
+        }
+    }
+
+    let di_file = path.join(".dockerignore");
+    if !di_file.exists() {
+        let di_content = ProjectDetector::dockerignore();
+        std::fs::write(&di_file, di_content).map_err(|e| {
+            SkociError::internal(
+                format!("Gagal menulis .dockerignore: {e}"),
+                "Periksa izin tulis direktori",
+            )
+        })?;
+        created_files.push(".dockerignore".to_string());
+    } else {
+        skipped_files.push(".dockerignore".to_string());
+    }
+
+    let gitignore_file = path.join(".gitignore");
+    let (needs_env_skoci, add_newline) = if gitignore_file.exists() {
+        let content = std::fs::read_to_string(&gitignore_file).unwrap_or_default();
+        let needs = !content.lines().any(|l| l.trim() == ".env.skoci");
+        let newline = !content.is_empty() && !content.ends_with('\n');
+        (needs, newline)
+    } else {
+        (true, false)
+    };
+
+    if needs_env_skoci {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gitignore_file)
+            .map_err(|e| {
+                SkociError::internal(
+                    format!("Gagal memperbarui .gitignore: {e}"),
+                    "Periksa izin tulis .gitignore",
+                )
+            })?;
+        if add_newline {
+            let _ = writeln!(f);
+        }
+        let _ = writeln!(f, ".env.skoci");
+    }
+
+    Ok((
+        InitResponse {
+            detected_framework: detection.framework.name().to_string(),
+            created_files,
+            app_name,
+            skipped_files,
+        },
+        detection.notes,
+    ))
+}
+
+fn step_number(stage: DeployStage) -> Option<usize> {
+    DeployStage::STEPS.iter().position(|&s| s == stage).map(|idx| idx + 1)
+}
+
+pub async fn stream_events_and_render(
+    client: &SkociClient,
+    deployment_id: &str,
+    _app: &str,
+    _env: &str,
+    version: Option<&str>,
+    is_json: bool,
+) -> i32 {
+    let mut stream = client.follow_events(deployment_id);
+    let is_term = std::io::stderr().is_terminal();
+    let start_time = Instant::now();
+
+    if !is_json && version.is_none() {
+        eprintln!("▸ Memantau deployment: {}", deployment_id);
+    }
+
+    let mut accumulated_logs = Vec::new();
+    let mut log_window: Vec<String> = Vec::new();
+    let mut active_stage: Option<(usize, &'static str)> = None;
+    let mut rendered_lines: usize = 0;
+    let mut final_response: Option<DeployResponse> = None;
+    let mut final_error: Option<SkociError> = None;
+
+    while let Some(res) = stream.next().await {
+        match res {
+            Ok(event) => {
+                if is_json {
+                    if let Some(r) = event.result {
+                        final_response = Some(r);
+                    }
+                    if let Some(e) = event.error {
+                        final_error = Some(e);
+                    }
+                    continue;
+                }
+
+                if event.status == StageStatus::Log {
+                    accumulated_logs.push(event.message.clone());
+                    if accumulated_logs.len() > 100 {
+                        accumulated_logs.remove(0);
+                    }
+                    if let (true, Some((n, label))) = (is_term, active_stage) {
+                        let truncated = if event.message.chars().count() > 100 {
+                            let mut s: String = event.message.chars().take(97).collect();
+                            s.push_str("...");
+                            s
+                        } else {
+                            event.message.clone()
+                        };
+                        log_window.push(truncated);
+                        if log_window.len() > 5 {
+                            log_window.remove(0);
+                        }
+                        use std::io::Write;
+                        let mut out = std::io::stderr().lock();
+                        for _ in 0..rendered_lines {
+                            let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                        }
+                        let _ = writeln!(out, "  \x1b[36m▸ [{}/8] {}\x1b[0m", n, label);
+                        for l in &log_window {
+                            let _ = writeln!(out, "    \x1b[2m│ {}\x1b[0m", l);
+                        }
+                        let _ = out.flush();
+                        rendered_lines = 1 + log_window.len();
+                    }
+                } else if let Some(n) = step_number(event.stage) {
+                    let label = event.stage.label();
+                    match event.status {
+                        StageStatus::Running => {
+                            if is_term {
+                                use std::io::Write;
+                                let mut out = std::io::stderr().lock();
+                                for _ in 0..rendered_lines {
+                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                                }
+                                let _ = writeln!(out, "  \x1b[36m▸ [{}/8] {}\x1b[0m", n, label);
+                                let _ = out.flush();
+                                log_window.clear();
+                                active_stage = Some((n, label));
+                                rendered_lines = 1;
+                            }
+                        }
+                        StageStatus::Ok => {
+                            if is_term {
+                                use std::io::Write;
+                                let mut out = std::io::stderr().lock();
+                                for _ in 0..rendered_lines {
+                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                                }
+                                let _ = writeln!(out, "  \x1b[32m✓ [{}/8] {}\x1b[0m", n, label);
+                                let _ = out.flush();
+                                log_window.clear();
+                                active_stage = None;
+                                rendered_lines = 0;
+                            } else {
+                                eprintln!("  ✓ [{}/8] {}", n, label);
+                            }
+                        }
+                        StageStatus::Skipped => {
+                            if is_term {
+                                use std::io::Write;
+                                let mut out = std::io::stderr().lock();
+                                for _ in 0..rendered_lines {
+                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                                }
+                                let _ = writeln!(out, "  \x1b[33m– [{}/8] {} (dilewati)\x1b[0m", n, label);
+                                let _ = out.flush();
+                                log_window.clear();
+                                active_stage = None;
+                                rendered_lines = 0;
+                            } else {
+                                eprintln!("  – [{}/8] {} (dilewati)", n, label);
+                            }
+                        }
+                        StageStatus::Failed => {
+                            let detail = if event.message.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {}", event.message)
+                            };
+                            if is_term {
+                                use std::io::Write;
+                                let mut out = std::io::stderr().lock();
+                                for _ in 0..rendered_lines {
+                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                                }
+                                let _ = writeln!(out, "  \x1b[31m✗ [{}/8] {}{}\x1b[0m", n, label, detail);
+                                let _ = out.flush();
+                                log_window.clear();
+                                active_stage = None;
+                                rendered_lines = 0;
+                            } else {
+                                eprintln!("  ✗ [{}/8] {}{}", n, label, detail);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if event.stage == DeployStage::Done {
+                    if is_term && rendered_lines > 0 {
+                        use std::io::Write;
+                        let mut out = std::io::stderr().lock();
+                        for _ in 0..rendered_lines {
+                            let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                        }
+                        let _ = out.flush();
+                        rendered_lines = 0;
+                    }
+                    if let Some(deploy_res) = event.result {
+                        final_response = Some(deploy_res);
+                    }
+                    if let Some(err) = event.error {
+                        final_error = Some(err);
+                    }
+                }
+            }
+            Err(err) => {
+                final_error = Some(err);
+                break;
+            }
+        }
+    }
+
+    if is_json {
+        if let Some(resp) = final_response {
+            output::print_json(&ApiResponse::ok(resp, "Deployment berhasil"));
+            return 0;
+        } else if let Some(err) = final_error {
+            output::print_error(&err, true);
+            return error_exit_code(&err);
+        } else {
+            let err = SkociError::internal(
+                "Event stream terputus tanpa data hasil akhir",
+                format!("Gunakan `skoci watch {}` untuk memeriksa status", deployment_id),
+            );
+            output::print_error(&err, true);
+            return error_exit_code(&err);
+        }
+    }
+
+    if let Some(resp) = final_response {
+        let dur = start_time.elapsed().as_secs_f64();
+        for url in &resp.urls {
+            if is_term {
+                println!("\x1b[1;32m✓ Live:\x1b[0m {}", url);
+            } else {
+                println!("✓ Live: {}", url);
+            }
+        }
+        println!("Versi: {}  Durasi: {:.1}s", resp.version, dur);
+        println!("\nPetunjuk:");
+        println!("  skoci logs {}", resp.app);
+        println!("  skoci status {}", resp.app);
+        0
+    } else if let Some(err) = final_error {
+        if !accumulated_logs.is_empty() {
+            eprintln!("\nRingkasan log terakhir:");
+            for line in accumulated_logs.iter().rev().take(30).rev() {
+                eprintln!("  │ {}", line);
+            }
+        }
+        if is_term {
+            eprintln!("\n\x1b[1;31m✗ Deployment gagal:\x1b[0m {}", err.message);
+        } else {
+            eprintln!("\n✗ Deployment gagal: {}", err.message);
+        }
+        eprintln!("Solusi: {}", err.fix);
+        eprintln!("Deployment ID: {}  (skoci watch {})", deployment_id, deployment_id);
+        error_exit_code(&err)
+    } else {
+        eprintln!("\n✗ Stream selesai tanpa status deployment akhir");
+        eprintln!("Solusi: Gunakan `skoci watch {}` untuk menghubungkan kembali", deployment_id);
+        1
+    }
+}
+
+pub async fn run_command(
+    cmd: Commands,
+    server_url: &str,
+    token: Option<String>,
+    json: bool,
+) -> i32 {
     let client = SkociClient::new(server_url, token);
 
     match cmd {
-        Commands::Init { app, path } => {
-            let res = execute_init(app, &path);
-            print_result(json_mode, res);
-        }
-        Commands::Deploy { config, env, force } => {
-            let app_name = resolve_app_name(config.as_deref()).unwrap_or_else(|_| "default-app".to_string());
-            let req = DeployRequest {
-                app: app_name,
-                env,
-                commit: Some("HEAD".to_string()),
-                force,
+        Commands::Connect { server, token: conn_token, insecure } => {
+            let server_lower = server.to_lowercase();
+            if server_lower.starts_with("http://")
+                && !server_lower.contains("localhost")
+                && !server_lower.contains("127.0.0.1")
+                && !insecure
+            {
+                let err = SkociError::bad_request(
+                    format!(
+                        "URL server menggunakan protokol HTTP tanpa enkripsi ('{server}'). Token akan dikirim dalam plaintext."
+                    ),
+                    "Gunakan HTTPS ('https://...'), SSH tunnel (localhost), atau tambahkan flag --insecure jika Anda memahami risikonya.",
+                );
+                output::print_error(&err, json);
+                return 1;
+            }
+
+            let env_content = format!("SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n", server, conn_token);
+            if let Err(e) = std::fs::write(".env.skoci", &env_content) {
+                let err = SkociError::internal(
+                    format!("Gagal menulis .env.skoci: {e}"),
+                    "Periksa izin tulis di direktori saat ini",
+                );
+                output::print_error(&err, json);
+                return 1;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(".env.skoci", std::fs::Permissions::from_mode(0o600));
+            }
+
+            let gitignore_path = Path::new(".gitignore");
+            let (needs_entry, add_newline) = if gitignore_path.exists() {
+                let content = std::fs::read_to_string(gitignore_path).unwrap_or_default();
+                let needs = !content.lines().any(|l| l.trim() == ".env.skoci");
+                let newline = !content.is_empty() && !content.ends_with('\n');
+                (needs, newline)
+            } else {
+                (true, false)
             };
-            let res = client.deploy(req).await;
-            print_result(json_mode, res);
+
+            if needs_entry {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(gitignore_path) {
+                    if add_newline {
+                        let _ = writeln!(f);
+                    }
+                    let _ = writeln!(f, ".env.skoci");
+                }
+            }
+
+            let test_client = SkociClient::new(&server, Some(conn_token));
+            match test_client.doctor().await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else {
+                        println!("✓ Berhasil terhubung dan menyimpan konfigurasi ke .env.skoci (mode 0600)\n");
+                        if let Some(doc) = &resp.data {
+                            output::render_doctor(doc);
+                        }
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
         }
+
+        Commands::Init { app, path } => {
+            match init_project(&path, app.as_deref()) {
+                Ok((res, notes)) => {
+                    if json {
+                        output::print_json(&ApiResponse::ok(res, "Proyek berhasil diinisialisasi"));
+                    } else {
+                        println!("✓ Inisialisasi proyek '{}' berhasil!\n", res.app_name);
+                        println!("Framework terdeteksi : {}", res.detected_framework);
+                        println!("File dibuat          : {}", res.created_files.join(", "));
+                        if !res.skipped_files.is_empty() {
+                            println!("File dilewati (ada)  : {}", res.skipped_files.join(", "));
+                        }
+                        if !notes.is_empty() {
+                            println!("\nCatatan:");
+                            for note in &notes {
+                                println!("  • {}", note);
+                            }
+                        }
+                        println!("  1. Tinjau dan sesuaikan file skoci.yaml jika diperlukan");
+                        println!("  2. Jalankan `skoci connect --server <url> --token <token>` untuk menghubungkan VPS");
+                        println!("  3. Jalankan `skoci deploy` untuk meluncurkan aplikasi");
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
+        }
+
+        Commands::Deploy { env, path, detach, commit } => {
+            let config_path = path.join("skoci.yaml");
+            let cfg = match ConfigLoader::load_config(&config_path) {
+                Ok(c) => c,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+            let app = cfg.app;
+
+            let commit_val = match commit {
+                Some(c) => Some(c),
+                None => {
+                    let out = tokio::process::Command::new("git")
+                        .args(["rev-parse", "--short", "HEAD"])
+                        .current_dir(&path)
+                        .output()
+                        .await;
+                    match &out {
+                        Ok(o) if o.status.success() => {
+                            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        }
+                        _ => Some("none".to_string()),
+                    }
+                }
+            };
+
+            let packed = match skoci_client::pack_context(&path) {
+                Ok(p) => p,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+
+            let req = DeployRequest {
+                app: app.clone(),
+                env: env.clone(),
+                commit: commit_val,
+            };
+
+            let start_upload = Instant::now();
+            if !json {
+                eprintln!("▸ Deploy {} → {}", app, env);
+            }
+
+            let resp = client.deploy_upload(&packed.path, &req, move |_sent, _total| {}).await;
+
+            match resp {
+                Ok(api_resp) => {
+                    if !api_resp.success {
+                        if let Some(err) = &api_resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+
+                    let accepted = match api_resp.data {
+                        Some(d) => d,
+                        None => {
+                            let err = SkociError::internal("Respons kosong dari server", "Coba deploy kembali");
+                            output::print_error(&err, json);
+                            return 1;
+                        }
+                    };
+
+                    if !json {
+                        let elapsed = start_upload.elapsed();
+                        let mb = (packed.bytes as f64) / 1_048_576.0;
+                        eprintln!(
+                            "✓ Upload {:.1} MB ({} file) {:.1}s",
+                            mb,
+                            packed.files,
+                            elapsed.as_secs_f64()
+                        );
+                        eprintln!("  Versi: {}  ID: {}", accepted.version, accepted.deployment_id);
+                    }
+
+                    if detach {
+                        if json {
+                            output::print_json(&ApiResponse::ok(
+                                accepted,
+                                "Deployment diterima di latar belakang",
+                            ));
+                        } else {
+                            println!("\nDeployment berjalan di latar belakang (detached).");
+                            println!("Deployment ID: {}", accepted.deployment_id);
+                            println!("Versi        : {}", accepted.version);
+                            println!("Gunakan `skoci watch {}` untuk memantau status.", accepted.deployment_id);
+                        }
+                        0
+                    } else {
+                        stream_events_and_render(
+                            &client,
+                            &accepted.deployment_id,
+                            &app,
+                            &env,
+                            Some(&accepted.version),
+                            json,
+                        )
+                        .await
+                    }
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
+        }
+
+        Commands::Watch { deployment_id } => {
+            stream_events_and_render(&client, &deployment_id, "app", "env", None, json).await
+        }
+
         Commands::Status { app } => {
-            let app_name = app.or_else(|| resolve_app_name(None).ok()).unwrap_or_else(|| "default-app".to_string());
-            let res = client.status(&app_name).await;
-            print_result(json_mode, res);
-        }
-        Commands::Logs { app, tail } => {
-            let app_name = app.or_else(|| resolve_app_name(None).ok()).unwrap_or_else(|| "default-app".to_string());
-            let res = client.logs(&app_name, tail).await;
-            print_result(json_mode, res);
-        }
-        Commands::Secret { command } => match command {
-            SecretCommands::Set { key, value } => {
-                let app_name = resolve_app_name(None).unwrap_or_else(|_| "default-app".to_string());
-                let res = client.secret_set(&app_name, &key, &value).await;
-                print_result(json_mode, res);
+            let app_name = match resolve_app(app) {
+                Ok(a) => a,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+
+            match client.status(&app_name).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        output::render_status(data);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
             }
-            SecretCommands::List => {
-                let app_name = resolve_app_name(None).unwrap_or_else(|_| "default-app".to_string());
-                let res = client.secret_list(&app_name).await;
-                print_result(json_mode, res);
+        }
+
+        Commands::Deployments { app, limit } => {
+            let app_name = app.or_else(|| resolve_app(None).ok());
+            let query = DeploymentsQuery {
+                app: app_name,
+                limit: Some(limit),
+            };
+
+            match client.deployments(query).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        output::render_deployments(data);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
             }
-        },
-        Commands::Promote { reason, env } => {
-            let app_name = resolve_app_name(None).unwrap_or_else(|_| "default-app".to_string());
+        }
+
+        Commands::Logs { app, env, tail } => {
+            let app_name = match resolve_app(app) {
+                Ok(a) => a,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+            let query = LogsQuery { env, tail };
+
+            match client.logs(&app_name, query).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        output::render_logs(data);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
+        }
+
+        Commands::Secret { action } => {
+            let app_name = match resolve_app(None) {
+                Ok(a) => a,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+
+            match action {
+                SecretCommands::Set { key, value } => {
+                    let req = SecretSetRequest {
+                        app: app_name.clone(),
+                        key: key.clone(),
+                        value,
+                    };
+                    match client.secret_set(req).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else {
+                                println!("✓ Secret '{key}' berhasil disimpan untuk aplikasi '{app_name}'");
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+                SecretCommands::List => {
+                    match client.secret_list(&app_name).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                if data.keys.is_empty() {
+                                    println!("Aplikasi '{app_name}' belum memiliki secret.");
+                                } else {
+                                    println!("Daftar secret untuk aplikasi '{app_name}':");
+                                    for k in &data.keys {
+                                        println!("  • {k}");
+                                    }
+                                }
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Promote { reason, version, detach } => {
+            let app_name = match resolve_app(None) {
+                Ok(a) => a,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
             let req = PromoteRequest {
                 app: app_name,
-                target_env: env,
                 reason,
+                version,
             };
-            let res = client.promote(req).await;
-            print_result(json_mode, res);
+
+            match client.promote(req).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if let Some(data) = &resp.data {
+                        if data.status == "pending_approval" {
+                            let req_id = data.request_id.as_deref().unwrap_or("-");
+                            if json {
+                                output::print_json(&resp);
+                            } else {
+                                println!("▸ Promosi diajukan untuk persetujuan admin (Request ID: {req_id})");
+                            }
+                            2
+                        } else if let Some(dep) = &data.deployment {
+                            if detach {
+                                if json {
+                                    output::print_json(&resp);
+                                } else {
+                                    println!("✓ Promosi berhasil dimulai di latar belakang (detached).");
+                                    println!("Deployment ID: {}", dep.deployment_id);
+                                }
+                                0
+                            } else {
+                                if !json {
+                                    eprintln!("▸ Promosi {} → production", dep.app);
+                                    eprintln!("  Versi: {}  ID: {}", dep.version, dep.deployment_id);
+                                }
+                                stream_events_and_render(
+                                    &client,
+                                    &dep.deployment_id,
+                                    &dep.app,
+                                    "production",
+                                    Some(&dep.version),
+                                    json,
+                                )
+                                .await
+                            }
+                        } else {
+                            if json {
+                                output::print_json(&resp);
+                            } else {
+                                println!("✓ Promosi berhasil diproses.");
+                            }
+                            0
+                        }
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
         }
-        Commands::Approve { request_id } => {
-            let req = ApproveRequest {
-                request_id,
-                note: None,
+
+        Commands::Approvals => {
+            match client.approvals().await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        output::render_approvals(data);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
+        }
+
+        Commands::Approve { request_id, note, detach } => {
+            let req = ApproveRequest { request_id, note };
+            match client.approve(req).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if let Some(data) = &resp.data {
+                        if let Some(dep) = &data.deployment {
+                            if detach {
+                                if json {
+                                    output::print_json(&resp);
+                                } else {
+                                    println!("✓ Permintaan persetujuan disetujui ({}). {}", data.action, data.detail);
+                                    println!("Deployment ID: {}", dep.deployment_id);
+                                }
+                                0
+                            } else {
+                                if !json {
+                                    println!("✓ Permintaan persetujuan disetujui ({}). {}", data.action, data.detail);
+                                    eprintln!("▸ Menjalankan deployment {} → {}", dep.app, dep.env);
+                                    eprintln!("  Versi: {}  ID: {}", dep.version, dep.deployment_id);
+                                }
+                                stream_events_and_render(
+                                    &client,
+                                    &dep.deployment_id,
+                                    &dep.app,
+                                    &dep.env,
+                                    Some(&dep.version),
+                                    json,
+                                )
+                                .await
+                            }
+                        } else {
+                            if json {
+                                output::print_json(&resp);
+                            } else {
+                                println!("✓ Permintaan persetujuan disetujui ({}): {}", data.action, data.detail);
+                            }
+                            0
+                        }
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
+        }
+
+        Commands::Reject { request_id } => {
+            let req = ApproveRequest { request_id, note: None };
+            match client.reject(req).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else {
+                        println!("✓ Permintaan persetujuan berhasil ditolak.");
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
+        }
+
+        Commands::Rollback { env, to, detach } => {
+            let app_name = match resolve_app(None) {
+                Ok(a) => a,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
             };
-            let res = client.approve(req).await;
-            print_result(json_mode, res);
-        }
-        Commands::Rollback { target } => {
-            let app_name = resolve_app_name(None).unwrap_or_else(|_| "default-app".to_string());
             let req = RollbackRequest {
                 app: app_name,
-                target_version: target,
+                env,
+                target_version: to,
             };
-            let res = client.rollback(req).await;
-            print_result(json_mode, res);
+
+            match client.rollback(req).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if let Some(data) = &resp.data {
+                        if detach {
+                            if json {
+                                output::print_json(&resp);
+                            } else {
+                                println!("✓ Rollback diterima di latar belakang (detached).");
+                                println!("Deployment ID: {}", data.deployment_id);
+                            }
+                            0
+                        } else {
+                            if !json {
+                                eprintln!("▸ Rollback {} → {}", data.app, data.env);
+                                eprintln!("  Versi: {}  ID: {}", data.version, data.deployment_id);
+                            }
+                            stream_events_and_render(
+                                &client,
+                                &data.deployment_id,
+                                &data.app,
+                                &data.env,
+                                Some(&data.version),
+                                json,
+                            )
+                            .await
+                        }
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
         }
+
         Commands::Doctor => {
-            let res = client.doctor().await;
-            print_result(json_mode, res);
+            match client.doctor().await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        output::render_doctor(data);
+                    }
+                    let healthy = resp.data.map(|d| d.healthy).unwrap_or(false);
+                    if healthy { 0 } else { 1 }
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            }
         }
-        Commands::Db { command } => match command {
-            DbCommands::Backup { service } => {
-                let app_name = resolve_app_name(None).unwrap_or_else(|_| "default-app".to_string());
-                let req = DbBackupRequest {
-                    app: app_name,
-                    service,
-                };
-                let res = client.db_backup(req).await;
-                print_result(json_mode, res);
-            }
-            DbCommands::Restore { backup_id, service } => {
-                let app_name = resolve_app_name(None).unwrap_or_else(|_| "default-app".to_string());
-                let req = DbRestoreRequest {
-                    app: app_name,
-                    service,
-                    backup_id,
-                };
-                let res = client.db_restore(req).await;
-                print_result(json_mode, res);
-            }
-        },
-        Commands::Token { command } => match command {
-            TokenCommands::Create { app, name } => {
-                let res = client.token_create(&app, &name).await;
-                print_result(json_mode, res);
-            }
-            TokenCommands::List { app } => {
-                let res = client.token_list(&app).await;
-                print_result(json_mode, res);
-            }
-        },
-        Commands::AgentGuide => {
-            let guide = r#"# Skoci Agent Guide
 
-## Instructions for AI Coding Agents:
-1. When deploying: always invoke `skoci deploy --json`.
-2. Check `{ "success": true, "data": { ... } }`.
-3. On error `{ "code": "...", "message": "...", "fix": "..." }`:
-   - Read `fix` and execute the suggested corrective action.
-   - If code is `approval_required`: do NOT retry repeatedly. Report the `request_id` to the human user.
-4. Secrets: never write plaintext credentials to `skoci.yaml`.
-   - Use `skoci secret set <KEY> <VALUE> --json`.
-5. Rollback: if smoke test fails post-deploy, run `skoci rollback --json`.
-"#;
-            if json_mode {
-                let res = serde_json::json!({
-                    "success": true,
-                    "summary": "Panduan agen deployment Skoci",
-                    "guide": guide
-                });
-                println!("{}", serde_json::to_string_pretty(&res).unwrap());
+        Commands::Db { action } => {
+            let app_name = match resolve_app(None) {
+                Ok(a) => a,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+
+            match action {
+                DbCommands::Backup { service } => {
+                    let req = DbBackupRequest { app: app_name, service };
+                    match client.db_backup(req).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                let mb = (data.size_bytes as f64) / 1_048_576.0;
+                                println!("✓ Backup database berhasil dibuat. ID: {} ({:.2} MB)", data.backup_id, mb);
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+                DbCommands::List => {
+                    match client.db_backups(&app_name).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                if data.backups.is_empty() {
+                                    println!("Belum ada backup database untuk aplikasi '{app_name}'.");
+                                } else {
+                                    println!("{:<28} {:<12} {:<12} DIBUAT", "BACKUP ID", "SERVICE", "UKURAN");
+                                    println!("{}", "-".repeat(75));
+                                    for b in &data.backups {
+                                        let mb = (b.size_bytes as f64) / 1_048_576.0;
+                                        let ts = b.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                                        println!("{:<28} {:<12} {:<12.2} {}", b.backup_id, b.service, mb, ts);
+                                    }
+                                }
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+                DbCommands::Restore { backup_id, service } => {
+                    let req = DbRestoreRequest {
+                        app: app_name,
+                        service,
+                        backup_id,
+                    };
+                    match client.db_restore(req).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                if data.status == "pending_approval" {
+                                    let req_id = data.request_id.as_deref().unwrap_or("-");
+                                    println!("▸ Restore database diajukan untuk persetujuan admin (Request ID: {req_id})");
+                                    return 2;
+                                } else {
+                                    println!("✓ Database berhasil direstore.");
+                                }
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::App { action } => {
+            match action {
+                AppCommands::Delete { app } => {
+                    let app_name = match resolve_app(app) {
+                        Ok(a) => a,
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            return error_exit_code(&err);
+                        }
+                    };
+                    match client.app_delete(&app_name).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                if data.status == "pending_approval" {
+                                    let req_id = data.request_id.as_deref().unwrap_or("-");
+                                    println!("▸ Penghapusan aplikasi diajukan untuk persetujuan admin (Request ID: {req_id})");
+                                    return 2;
+                                } else {
+                                    println!("✓ Aplikasi '{app_name}' berhasil dihapus.");
+                                }
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::DefaultApp { app } => {
+            if let Some(app_name) = app {
+                let req = DefaultAppRequest { app: app_name.clone() };
+                match client.default_app_put(req).await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
+                            }
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else {
+                            println!("✓ Aplikasi default berhasil disetel ke: {app_name}");
+                        }
+                        0
+                    }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
+                    }
+                }
             } else {
-                println!("{guide}");
+                match client.default_app_get().await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
+                            }
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else if let Some(data) = &resp.data {
+                            let curr = data.app.as_deref().unwrap_or("(belum ada)");
+                            println!("Aplikasi default saat ini: {curr}");
+                        }
+                        0
+                    }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
+                    }
+                }
             }
         }
-        Commands::InstallService { service_name, bind } => {
-            let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/skoci"));
-            let unit = format!(
-                r#"[Unit]
-Description=Skoci Deployment Platform
-After=network.target docker.service
-Requires=docker.service
 
-[Service]
-Type=simple
-User=root
-ExecStart={} server --bind {}
-Restart=always
-RestartSec=5
-LimitNOFILE=65536
+        Commands::Token { action } => {
+            match action {
+                TokenCommands::Create { app, name } => {
+                    let req = TokenCreateRequest { app, name };
+                    match client.token_create(req).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                println!("✓ Token berhasil dibuat untuk '{}' ({}):", data.app, data.name);
+                                println!("  Token: {}", data.token);
+                                println!("  ID   : {}", data.id);
+                                println!("  (PENTING: Simpan token ini sekarang, token tidak akan ditampilkan kembali)");
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+                TokenCommands::List { app } => {
+                    match client.token_list(&app).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                output::render_tokens(&data.tokens);
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+                TokenCommands::Revoke { app, name } => {
+                    match client.token_revoke(&app, &name).await {
+                        Ok(resp) => {
+                            if !resp.success {
+                                if let Some(err) = &resp.error {
+                                    output::print_error(err, json);
+                                    return error_exit_code(err);
+                                }
+                            }
+                            if json {
+                                output::print_json(&resp);
+                            } else if let Some(data) = &resp.data {
+                                println!("✓ {} token berhasil dicabut.", data.revoked);
+                            }
+                            0
+                        }
+                        Err(err) => {
+                            output::print_error(&err, json);
+                            error_exit_code(&err)
+                        }
+                    }
+                }
+            }
+        }
 
-[Install]
-WantedBy=multi-user.target
-"#,
-                current_exe.display(),
-                bind
+        Commands::AgentGuide => {
+            println!(
+                r#"# Panduan Operasional Skoci untuk AI Agent
+
+Skoci adalah platform deployment berbasis agent yang aman dan deterministik.
+
+## Alur Kerja Standar (Workflow):
+1. **Hubungkan ke Server**:
+   `skoci connect --server <url> --token <token>`
+   Konfigurasi tersimpan di `.env.skoci` (permissions 0600) dan ditambahkan ke `.gitignore`.
+   JANGAN PERNAH mencetak token ke log atau menyimpannya di file publik.
+
+2. **Inisialisasi Proyek**:
+   `skoci init`
+   Skoci mendeteksi framework secara otomatis dan membuat `skoci.yaml`, `Dockerfile`, serta `.dockerignore`.
+
+3. **Deploy Aplikasi**:
+   `skoci deploy --json`
+   Gunakan flag `--json` untuk mendapatkan respons terstruktur (`ApiResponse<DeployResponse>`).
+   Jika gagal, baca field `error.fix` untuk solusi aksi langsung yang dapat dijalankan.
+
+4. **Penanganan Exit Code**:
+   • Exit Code 0: Sukses.
+   • Exit Code 1: Error operasional (periksa error message & fix).
+   • Exit Code 2: Tindakan membutuhkan persetujuan manusia (human approval required). Tunggu persetujuan atau beri tahu pengguna untuk menjalankan `skoci approvals` dan `skoci approve <id>`.
+   • Exit Code 3: Error autentikasi atau pembatasan kuota (unauthorized, scope_violation, rate_limited).
+
+5. **Aturan Keamanan Agent**:
+   • JANGAN PERNAH menggunakan SSH langsung jika tugas dapat dilakukan melalui CLI/API Skoci.
+   • JANGAN PERNAH menampilkan nilai secret atau token di console.
+   • Gunakan `skoci secret set <KEY> <VALUE>` untuk menyuntikkan env aman."#
             );
-            println!("=== Systemd Unit File (/etc/systemd/system/{service_name}.service) ===");
-            println!("{unit}");
-            println!("Untuk memasang di server Linux:");
-            println!("  echo '<unit di atas>' | sudo tee /etc/systemd/system/{service_name}.service");
-            println!("  sudo systemctl daemon-reload && sudo systemctl enable --now {service_name}");
+            0
         }
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn resolve_app_name(config_path: Option<&str>) -> SkociResult<String> {
-    let candidates = if let Some(p) = config_path {
-        vec![p.to_string()]
-    } else {
-        vec![
-            "skoci.yaml".to_string(),
-            ".skoci/skoci.yaml".to_string(),
-        ]
-    };
-
-    for p in candidates {
-        if let Ok(config) = ConfigLoader::load_config(&p) {
-            return Ok(config.app);
-        }
+    #[test]
+    fn test_error_exit_code() {
+        assert_eq!(error_exit_code(&SkociError::unauthorized("Unauthorized")), 3);
+        assert_eq!(error_exit_code(&SkociError::scope_violation("a", "b")), 3);
+        assert_eq!(error_exit_code(&SkociError::rate_limited()), 3);
+        assert_eq!(error_exit_code(&SkociError::approval_required("req_1", "promote")), 2);
+        assert_eq!(error_exit_code(&SkociError::bad_request("Bad", "Fix")), 1);
+        assert_eq!(error_exit_code(&SkociError::internal("Err", "Fix")), 1);
     }
 
-    let current_dir = std::env::current_dir().map_err(|e| {
-        SkociError::bad_request(e.to_string(), "Cek direktori kerja")
-    })?;
-    let name = current_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("app")
-        .to_lowercase()
-        .replace(' ', "-");
-    Ok(name)
-}
-
-fn execute_init(app: Option<String>, path: &str) -> SkociResult<ApiResponse<InitResponse>> {
-    let dir = Path::new(path);
-    let app_name = app.unwrap_or_else(|| {
-        dir.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("app")
-            .to_lowercase()
-            .replace(' ', "-")
-    });
-
-    let framework = ProjectDetector::detect(dir);
-    let mut created_files = Vec::new();
-
-    let yaml_path = dir.join("skoci.yaml");
-    if !yaml_path.exists() {
-        let yaml_content = ProjectDetector::generate_skoci_yaml(&app_name, &framework);
-        std::fs::write(&yaml_path, yaml_content).map_err(|e| {
-            SkociError::bad_request(format!("Gagal menulis skoci.yaml: {e}"), "Cek permissions")
-        })?;
-        created_files.push("skoci.yaml".to_string());
+    #[test]
+    fn test_resolve_app_explicit() {
+        assert_eq!(resolve_app(Some("my-app".to_string())).unwrap(), "my-app");
+        assert_eq!(resolve_app(Some("  custom-app  ".to_string())).unwrap(), "custom-app");
     }
-
-    let policy_path = dir.join("skoci.policy.yaml");
-    if !policy_path.exists() {
-        let policy_content = ProjectDetector::generate_policy_yaml();
-        std::fs::write(&policy_path, policy_content).map_err(|e| {
-            SkociError::bad_request(format!("Gagal menulis skoci.policy.yaml: {e}"), "Cek permissions")
-        })?;
-        created_files.push("skoci.policy.yaml".to_string());
-    }
-
-    let dockerfile_path = dir.join("Dockerfile");
-    if !dockerfile_path.exists() {
-        let dockerfile_content = framework.default_dockerfile();
-        std::fs::write(&dockerfile_path, dockerfile_content).map_err(|e| {
-            SkociError::bad_request(format!("Gagal menulis Dockerfile: {e}"), "Cek permissions")
-        })?;
-        created_files.push("Dockerfile".to_string());
-    }
-
-    let data = InitResponse {
-        detected_framework: framework.name().to_string(),
-        created_files,
-        app_name: app_name.clone(),
-    };
-
-    Ok(ApiResponse::ok(
-        data,
-        format!("Inisialisasi berhasil untuk framework {}", framework.name()),
-    ))
 }

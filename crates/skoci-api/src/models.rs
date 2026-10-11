@@ -2,32 +2,34 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const ENV_PREVIEW: &str = "preview";
+pub const ENV_PRODUCTION: &str = "production";
+
+/// Max length of an app name. Hostnames like `<app>-preview.<base>` need a DNS label <= 63 chars.
+pub const MAX_APP_NAME_LEN: usize = 40;
+
 /// `skoci.yaml` definition
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkociConfig {
     pub version: u32,
     pub app: String,
-    #[serde(default = "default_server")]
-    pub server: String,
     #[serde(default)]
     pub build: BuildConfig,
     pub run: RunConfig,
+    /// Production hostnames.
     #[serde(default)]
     pub domains: Vec<String>,
+    /// Preview hostnames.
+    #[serde(default)]
+    pub preview_domains: Vec<String>,
     #[serde(default)]
     pub env: EnvConfig,
     #[serde(default)]
     pub services: BTreeMap<String, ServiceConfig>,
 }
 
-fn default_server() -> String {
-    "default".to_string()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildConfig {
-    #[serde(default = "default_build_mode")]
-    pub mode: BuildMode,
     #[serde(default = "default_dockerfile")]
     pub dockerfile: String,
     #[serde(default = "default_context")]
@@ -37,15 +39,10 @@ pub struct BuildConfig {
 impl Default for BuildConfig {
     fn default() -> Self {
         Self {
-            mode: BuildMode::Server,
             dockerfile: default_dockerfile(),
             context: default_context(),
         }
     }
-}
-
-fn default_build_mode() -> BuildMode {
-    BuildMode::Server
 }
 
 fn default_dockerfile() -> String {
@@ -56,18 +53,13 @@ fn default_context() -> String {
     ".".to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuildMode {
-    Server,
-    Local,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunConfig {
     pub port: u16,
     #[serde(default = "default_health")]
     pub health: String,
+    #[serde(default = "default_health_timeout")]
+    pub health_timeout_secs: u32,
     #[serde(default)]
     pub memory: Option<String>,
     #[serde(default)]
@@ -78,10 +70,16 @@ fn default_health() -> String {
     "/healthz".to_string()
 }
 
+fn default_health_timeout() -> u32 {
+    60
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvConfig {
+    /// Non-secret variables injected into the container.
     #[serde(default)]
-    pub public: Vec<String>,
+    pub public: BTreeMap<String, String>,
+    /// Names of secrets (set via `skoci secret set`) that must exist before deploy.
     #[serde(default)]
     pub secrets: Vec<String>,
 }
@@ -106,60 +104,48 @@ pub enum DatabaseEngine {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackupPolicy {
+    /// 5-field cron expression, evaluated in UTC.
     pub schedule: String,
     #[serde(default = "default_keep")]
     pub keep: u32,
-    #[serde(default = "default_destination")]
-    pub to: String,
 }
 
 fn default_keep() -> u32 {
     7
 }
 
-fn default_destination() -> String {
-    "local".to_string()
-}
-
-/// `skoci.policy.yaml` definition
+/// Server-side policy. Built in; never read from the agent-controlled repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkociPolicy {
-    pub version: u32,
-    #[serde(default)]
     pub preview: EnvPolicy,
-    #[serde(default)]
     pub production: EnvPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvPolicy {
-    #[serde(default = "default_action_policy")]
-    pub deploy: ActionPermission,
-    #[serde(default = "default_action_policy")]
-    pub rollback: ActionPermission,
-    #[serde(default = "default_approve_policy")]
-    pub db_restore: ActionPermission,
-    #[serde(default = "default_approve_policy")]
-    pub delete: ActionPermission,
-}
-
-impl Default for EnvPolicy {
+impl Default for SkociPolicy {
     fn default() -> Self {
         Self {
-            deploy: ActionPermission::Auto,
-            rollback: ActionPermission::Auto,
-            db_restore: ActionPermission::Approve,
-            delete: ActionPermission::Approve,
+            preview: EnvPolicy {
+                deploy: ActionPermission::Auto,
+                rollback: ActionPermission::Auto,
+                db_restore: ActionPermission::Approve,
+                delete: ActionPermission::Approve,
+            },
+            production: EnvPolicy {
+                deploy: ActionPermission::Approve,
+                rollback: ActionPermission::Auto,
+                db_restore: ActionPermission::Approve,
+                delete: ActionPermission::Approve,
+            },
         }
     }
 }
 
-fn default_action_policy() -> ActionPermission {
-    ActionPermission::Auto
-}
-
-fn default_approve_policy() -> ActionPermission {
-    ActionPermission::Approve
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvPolicy {
+    pub deploy: ActionPermission,
+    pub rollback: ActionPermission,
+    pub db_restore: ActionPermission,
+    pub delete: ActionPermission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,15 +156,21 @@ pub enum ActionPermission {
     Deny,
 }
 
-/// `skoci.evidence.json` definition
+/// Evidence recorded for every finished deployment. Every field is measured, never assumed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkociEvidence {
+    pub deployment_id: String,
     pub app: String,
+    pub env: String,
     pub commit: String,
     pub timestamp: DateTime<Utc>,
-    pub url: String,
-    pub build_mode: String,
+    pub urls: Vec<String>,
+    pub image: String,
+    pub container: String,
+    pub health_check_url: String,
     pub health_check_passed: bool,
+    /// HTTP status of `GET /` sent through the proxy after cutover.
+    pub smoke_test_status: Option<u16>,
     pub smoke_test_passed: bool,
     #[serde(default)]
     pub previous_version: Option<String>,
@@ -186,6 +178,7 @@ pub struct SkociEvidence {
     pub triggered_by: String,
     #[serde(default)]
     pub approved_by: Option<String>,
+    pub duration_ms: u64,
 }
 
 /// Generic JSON response wrapper for agent-friendly output

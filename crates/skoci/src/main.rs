@@ -1,51 +1,57 @@
-use clap::{Parser, Subcommand};
-use skoci_cli::commands::run_command;
-use skoci_control::api::AppState;
-use skoci_control::approval::ApprovalService;
-use skoci_control::auth::AuthManager;
-use skoci_control::db::Database;
-use skoci_control::server::run_server;
+use clap::{Parser, Subcommand, ValueEnum};
+use skoci_control::config::{ServerConfig, TlsMode};
 use skoci_mcp::McpServer;
-use std::net::SocketAddr;
-use parking_lot::Mutex;
-use skoci_node::backup::BackupManager;
-use skoci_node::docker::DockerClient;
-use skoci_node::secret::SecretStore;
-use skoci_proxy::router::ProxyRouter;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "skoci", about = "Lightweight agent-native deployment platform", version)]
 struct MainCli {
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Output JSON (ApiResponse) only")]
     json: bool,
 
     #[arg(long, global = true, env = "SKOCI_SERVER_URL", default_value = "http://127.0.0.1:8787")]
     server_url: String,
 
-    #[arg(long, global = true, env = "SKOCI_TOKEN")]
+    #[arg(long, global = true, env = "SKOCI_TOKEN", hide_env_values = true)]
     token: Option<String>,
 
     #[command(subcommand)]
     command: MainCommands,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TlsArg {
+    Off,
+    Acme,
+}
+
 #[derive(Subcommand, Debug)]
 enum MainCommands {
-    #[command(about = "Run all-in-one control plane + node + proxy + dashboard")]
+    #[command(about = "Run control plane + builder + proxy + dashboard (on the VPS)")]
     Server {
-        #[arg(short, long, default_value = "127.0.0.1:8787")]
-        bind: String,
-        #[arg(long, default_value = "skoci.db")]
-        db: String,
-    },
-
-    #[command(about = "Run standalone worker node + proxy")]
-    Node {
-        #[arg(long)]
-        control_plane_url: String,
-        #[arg(long)]
-        token: String,
+        #[arg(long, env = "SKOCI_BIND", default_value = "127.0.0.1:8787", help = "Control API + dashboard address")]
+        bind: SocketAddr,
+        #[arg(long, env = "SKOCI_DATA_DIR", default_value = "/var/lib/skoci")]
+        data_dir: PathBuf,
+        #[arg(long, env = "SKOCI_HTTP_BIND", default_value = "0.0.0.0:80")]
+        http_bind: SocketAddr,
+        #[arg(long, env = "SKOCI_HTTPS_BIND", default_value = "0.0.0.0:443")]
+        https_bind: SocketAddr,
+        #[arg(long, env = "SKOCI_BASE_DOMAIN", help = "Auto hostnames: <app>.<base> and <app>-preview.<base>")]
+        base_domain: Option<String>,
+        #[arg(long, env = "SKOCI_API_DOMAIN", help = "Public hostname for the API/dashboard (default skoci.<base-domain>)")]
+        api_domain: Option<String>,
+        #[arg(long, env = "SKOCI_TLS", value_enum, default_value = "off")]
+        tls: TlsArg,
+        #[arg(long, env = "SKOCI_ACME_EMAIL")]
+        acme_email: Option<String>,
+        #[arg(long, env = "SKOCI_ACME_STAGING")]
+        acme_staging: bool,
+        #[arg(long, env = "SKOCI_MAX_UPLOAD_MB", default_value_t = 200)]
+        max_upload_mb: u64,
+        #[arg(long, env = "SKOCI_PUBLIC_IP", help = "Public server IP, reported as the URL of the default app")]
+        public_ip: Option<IpAddr>,
     },
 
     #[command(about = "Run Model Context Protocol (MCP) server over stdio")]
@@ -57,59 +63,62 @@ enum MainCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
+    skoci_cli::env::load_env_files();
     let args = MainCli::parse();
 
+    let default_filter = if matches!(args.command, MainCommands::Server { .. }) { "info" } else { "warn" };
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter)),
+        )
+        .init();
+
     match args.command {
-        MainCommands::Server { bind, db } => {
-            let addr: SocketAddr = bind.parse()?;
-            println!("🚀 Skoci Server starting on http://{addr}");
-            println!("💾 Database: {db}");
-            println!("🔒 Idle RAM budget target: <20MB");
-
-            let db = Database::open(db)?;
-            let auth = Arc::new(AuthManager::new(
-                args.token.unwrap_or_else(|| "sk_master_admin".to_string()),
-            ));
-            let approvals = ApprovalService::new(db.clone());
-
-            let proxy = ProxyRouter::new();
-            let docker = Arc::new(DockerClient::new());
-            let secrets = Arc::new(Mutex::new(SecretStore::new("skoci_master_node_seed")));
-            let backup_dir = std::path::PathBuf::from("backups");
-            let backup = Arc::new(BackupManager::new(backup_dir));
-
-            let proxy_runner = proxy.clone();
-            tokio::spawn(async move {
-                let proxy_addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
-                let _ = skoci_proxy::server::run_proxy_server(proxy_addr, proxy_runner).await;
-            });
-
-            let state = AppState {
-                db,
-                auth,
-                approvals,
-                proxy,
-                docker,
-                secrets,
-                backup,
+        MainCommands::Server {
+            bind,
+            data_dir,
+            http_bind,
+            https_bind,
+            base_domain,
+            api_domain,
+            tls,
+            acme_email,
+            acme_staging,
+            max_upload_mb,
+            public_ip,
+        } => {
+            let master_token = std::env::var("SKOCI_MASTER_TOKEN").unwrap_or_default();
+            let base_domain = base_domain.filter(|d| !d.trim().is_empty());
+            let api_domain = api_domain
+                .filter(|d| !d.trim().is_empty())
+                .or_else(|| base_domain.as_ref().map(|b| format!("skoci.{b}")));
+            let cfg = ServerConfig {
+                bind,
+                data_dir,
+                master_token,
+                http_bind,
+                https_bind,
+                base_domain,
+                api_domain,
+                tls: match tls {
+                    TlsArg::Off => TlsMode::Off,
+                    TlsArg::Acme => TlsMode::Acme,
+                },
+                acme_email: acme_email.filter(|e| !e.trim().is_empty()),
+                acme_staging,
+                max_upload_mb,
+                public_ip,
             };
-
-            run_server(addr, state).await?;
-        }
-        MainCommands::Node { control_plane_url, token: _ } => {
-            println!("🛰️ Skoci Node connected to {control_plane_url}");
-            println!("🔑 Token: [provided]");
-            // Standalone node loop
-            tokio::signal::ctrl_c().await?;
+            skoci_control::server::run_server(cfg).await?;
         }
         MainCommands::Mcp => {
-            let server = McpServer::new(args.server_url, args.token);
-            server.run_stdio().await?;
+            McpServer::new(args.server_url, args.token).run_stdio().await?;
         }
         MainCommands::Cli(cmd) => {
-            run_command(cmd, &args.server_url, args.token, args.json).await;
+            let code = skoci_cli::commands::run_command(cmd, &args.server_url, args.token, args.json).await;
+            std::process::exit(code);
         }
     }
 

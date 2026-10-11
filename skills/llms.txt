@@ -2,38 +2,57 @@
 > Self-hosted deploy platform: AI agents deploy, humans validate via dashboard, apps run on user VPS.
 
 ## Key Facts
-- Single Rust binary (<20MB idle RAM target)
+- Single Rust binary (<20MB idle RAM target, zero extra daemons)
 - Zero shell string interpolation (safe against prompt injection)
 - CLI & MCP tools return structured JSON with {code, message, fix} error format
-- Secrets are encrypted at rest with node keys and never returned to model context
-- Production actions require human approval
+- Secrets are encrypted at rest with ChaCha20-Poly1305 and never returned to model context
+- Policy is built-in to the server; production actions and restores require human approval
+- Zero SSH required after initial setup: all agent operations use scoped HTTPS tokens
+
+## Exit Codes
+- 0: Success
+- 1: General error (action failed, build failed, invalid config)
+- 2: Approval pending/required (production deploy, database restore, app delete)
+- 3: Authentication / authorization error (unauthorized, scope_violation, rate_limited)
+
+## Agent Rules & Guidelines
+1. Always run commands with `--json` for machine-parsable outputs.
+2. In case of error, inspect `error.code`, read the `error.fix` recommendation, and execute the suggested fix.
+3. Never use or request SSH access after initial server setup. Connect using `skoci connect --server <url> --token <token>`.
+4. Never print, log, or echo tokens (`sk_agent_*`, `sk_master_*`).
+5. When promoting to production (`skoci promote "<reason>"`), inform the human user of the `request_id` for approval on the dashboard or CLI.
+6. The project build always executes on the server inside Docker. The local machine does not require Docker.
 
 ## Agent Workflow
-1. Initialize: `skoci init` detects framework, creates `skoci.yaml` & `Dockerfile`
-2. Configure: Add domain and environment variable names (not secret values)
-3. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
-4. Deploy to Preview: `skoci deploy --env preview`
-5. Verify: Check health check & smoke test in output
-6. Request Production Promotion: `skoci promote "<reason>"` (returns request ID for human approval)
-7. Check Status & Logs: `skoci status` and `skoci logs`
+1. Connect: `skoci connect --server https://skoci.<base-domain> --token sk_agent_<app>_<hex>`
+2. Initialize: `skoci init` (generates `skoci.yaml`, `Dockerfile`, `.dockerignore` if missing)
+3. Configure: Adjust `skoci.yaml` (`app`, `run.port`, `domains`, `services`).
+4. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
+5. Deploy to Preview: `skoci deploy --env preview --json`
+6. Verify: Check health check, URLs, and smoke test status
+7. Promote to Production: `skoci promote "<reason>" --json` (returns request ID for human approval)
+8. Monitor: `skoci status --json` and `skoci logs --json`
 
-## CLI Commands
+## CLI Commands Reference
+- `skoci connect --server <url> --token <token>`
 - `skoci init [--app <name>]`
-- `skoci deploy [--env preview|production] [--force]`
+- `skoci deploy [--env preview|production] [--detach] [--commit <sha>]`
+- `skoci watch <deployment_id>`
+- `skoci deployments [--app <app>] [--limit 20]`
 - `skoci status [<app>]`
-- `skoci logs [<app>] [--tail 100]`
+- `skoci logs [<app>] [--env <env>] [--tail 100]`
 - `skoci secret set <KEY> <VALUE>`
 - `skoci secret list`
-- `skoci rollback [<version>]`
-- `skoci promote "<reason>"`
+- `skoci promote "<reason>" [--version <v>]`
+- `skoci approvals`
+- `skoci approve <request_id>` / `skoci reject <request_id>` (admin only)
+- `skoci rollback [--env preview] [--to <version>]`
 - `skoci doctor`
-- `skoci db backup <service>`
-- `skoci db restore <service> <backup_id>`
-
-## MCP Tools
-MCP server provides:
-- `skoci_init`, `skoci_deploy`, `skoci_status`, `skoci_logs`
-- `skoci_secret_set`, `skoci_secret_list`
-- `skoci_rollback`, `skoci_promote`, `skoci_doctor`
-- `skoci_db_backup`, `skoci_db_restore`
-Note: `approve` and `upgrade` are strictly restricted to humans.
+- `skoci db backup [service=db]`
+- `skoci db list`
+- `skoci db restore <backup_id> [service=db]` (requires approval)
+- `skoci app delete [<app>]` (requires approval)
+- `skoci token create --app <app> [--name <name>]` (admin only)
+- `skoci token list --app <app>` (admin only)
+- `skoci token revoke --app <app> --name <name>` (admin only)
+- `skoci agent-guide`

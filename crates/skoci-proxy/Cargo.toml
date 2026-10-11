@@ -19,3 +19,8 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
+futures-util = { workspace = true }
+rustls = { workspace = true }
+rustls-acme = { workspace = true }
+tokio-rustls = { workspace = true }
+parking_lot = { workspace = true }

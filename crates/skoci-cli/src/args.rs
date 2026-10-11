@@ -1,127 +1,155 @@
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
+use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
-#[command(name = "skoci", about = "Lightweight agent-native deployment platform", version)]
-pub struct Cli {
-    #[arg(long, global = true, help = "Output formatted JSON")]
-    pub json: bool,
-
-    #[arg(long, global = true, env = "SKOCI_SERVER_URL", default_value = "http://127.0.0.1:8787")]
-    pub server_url: String,
-
-    #[arg(long, global = true, env = "SKOCI_TOKEN")]
-    pub token: Option<String>,
-
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
-    #[command(about = "Detect project framework and create skoci.yaml & Dockerfile")]
+    #[command(about = "Hubungkan CLI ke server Skoci dan simpan konfigurasi")]
+    Connect {
+        #[arg(long)]
+        server: String,
+        #[arg(long)]
+        token: String,
+        #[arg(long, help = "Izinkan koneksi HTTP tidak terenkripsi ke host non-localhost")]
+        insecure: bool,
+    },
+
+    #[command(about = "Deteksi framework dan inisialisasi konfigurasi proyek")]
     Init {
-        #[arg(short, long, help = "App name (defaults to current directory name)")]
+        #[arg(long)]
         app: Option<String>,
         #[arg(default_value = ".")]
-        path: String,
+        path: PathBuf,
     },
 
-    #[command(about = "Build, deploy, and verify application")]
+    #[command(about = "Deploy proyek ke server Skoci")]
     Deploy {
-        #[arg(help = "Path to skoci.yaml config (optional)")]
-        config: Option<String>,
-        #[arg(short, long, default_value = "preview", help = "Target environment: preview or production")]
+        #[arg(long, default_value = "preview")]
         env: String,
-        #[arg(long, help = "Force deployment even if policy requires confirmation")]
-        force: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long, help = "Jalankan deployment di latar belakang tanpa menunggu event")]
+        detach: bool,
+        #[arg(long, help = "Commit SHA atau identifier git")]
+        commit: Option<String>,
     },
 
-    #[command(about = "Show application and service health status")]
+    #[command(about = "Pantau live event dari deployment yang sedang berjalan")]
+    Watch {
+        deployment_id: String,
+    },
+
+    #[command(about = "Daftar riwayat deployment")]
+    Deployments {
+        #[arg(long)]
+        app: Option<String>,
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    #[command(about = "Lihat status kesehatan aplikasi dan kontainer")]
     Status {
-        #[arg(help = "App name (reads from skoci.yaml if omitted)")]
         app: Option<String>,
     },
 
-    #[command(about = "Show recent application logs with error extraction")]
+    #[command(about = "Lihat log aplikasi dan ringkasan error")]
     Logs {
-        #[arg(help = "App name (reads from skoci.yaml if omitted)")]
         app: Option<String>,
-        #[arg(short, long, default_value_t = 100)]
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long, default_value = "100")]
         tail: usize,
     },
 
-    #[command(about = "Manage encrypted secrets")]
+    #[command(about = "Kelola secret dan variabel terenkripsi")]
     Secret {
         #[command(subcommand)]
-        command: SecretCommands,
+        action: SecretCommands,
     },
 
-    #[command(about = "Request promotion to production")]
+    #[command(about = "Promosikan versi preview ke production")]
     Promote {
-        #[arg(help = "Reason for promotion")]
         reason: String,
-        #[arg(short, long, default_value = "production")]
-        env: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long, help = "Jalankan deployment di latar belakang")]
+        detach: bool,
     },
+    #[command(about = "Lihat daftar permintaan persetujuan yang menunggu")]
+    Approvals,
 
-    #[command(about = "Approve pending promotion (human only)")]
+    #[command(about = "Setujui permintaan persetujuan (khusus admin)")]
     Approve {
-        #[arg(help = "Approval request ID")]
+        request_id: String,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long, help = "Jalankan deployment di latar belakang")]
+        detach: bool,
+    },
+    #[command(about = "Tolak permintaan persetujuan (khusus admin)")]
+    Reject {
         request_id: String,
     },
 
-    #[command(about = "Rollback application to last healthy version")]
+    #[command(about = "Rollback aplikasi ke versi sebelumnya")]
     Rollback {
-        #[arg(help = "Target version (defaults to previous healthy)")]
-        target: Option<String>,
+        #[arg(long, default_value = "preview")]
+        env: String,
+        #[arg(long, help = "Versi target rollback")]
+        to: Option<String>,
+        #[arg(long, help = "Jalankan deployment di latar belakang")]
+        detach: bool,
     },
-
-    #[command(about = "Check server environment, idle RAM, and Docker status")]
+    #[command(about = "Periksa kesehatan server, Docker, dan konfigurasi")]
     Doctor,
 
-    #[command(about = "Database backup and restore")]
+    #[command(about = "Backup dan restore database aplikasi")]
     Db {
         #[command(subcommand)]
-        command: DbCommands,
+        action: DbCommands,
     },
 
-    #[command(about = "Manage scoped agent tokens (cross-project isolation)")]
+    #[command(about = "Kelola aplikasi")]
+    App {
+        #[command(subcommand)]
+        action: AppCommands,
+    },
+
+    #[command(name = "default-app", about = "Lihat atau setel aplikasi default")]
+    DefaultApp {
+        app: Option<String>,
+    },
+
+    #[command(about = "Kelola scoped agent token")]
     Token {
         #[command(subcommand)]
-        command: TokenCommands,
+        action: TokenCommands,
     },
 
-    #[command(about = "Generate machine-readable guidelines and runtime summary for AI agents")]
+    #[command(name = "agent-guide", about = "Panduan operasional Skoci untuk AI agent")]
     AgentGuide,
-
-    #[command(about = "Generate systemd unit file for 24/7 VPS operation")]
-    InstallService {
-        #[arg(long, default_value = "skoci", help = "Systemd service name")]
-        service_name: String,
-        #[arg(long, default_value = "127.0.0.1:8787", help = "Bind address")]
-        bind: String,
-    },
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum SecretCommands {
-    #[command(about = "Store secret encrypted at rest")]
+    #[command(about = "Simpan secret untuk aplikasi")]
     Set {
         key: String,
         value: String,
     },
-    #[command(about = "List secret keys (values remain hidden)")]
+    #[command(about = "Daftar nama kunci secret aplikasi")]
     List,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum DbCommands {
-    #[command(about = "Create database backup immediately")]
+    #[command(about = "Buat backup database")]
     Backup {
         #[arg(default_value = "db")]
         service: String,
     },
-    #[command(about = "Restore database from backup")]
+    #[command(about = "Daftar riwayat backup database")]
+    List,
+    #[command(about = "Restore database dari backup")]
     Restore {
         backup_id: String,
         #[arg(default_value = "db")]
@@ -129,18 +157,33 @@ pub enum DbCommands {
     },
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
+pub enum AppCommands {
+    #[command(about = "Hapus aplikasi")]
+    Delete {
+        app: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum TokenCommands {
-    #[command(about = "Create a scoped agent token locked to a specific application")]
+    #[command(about = "Buat scoped agent token baru")]
     Create {
-        #[arg(short, long, help = "Application name this token is locked to")]
+        #[arg(long)]
         app: String,
-        #[arg(short, long, default_value = "agent", help = "Friendly token label")]
+        #[arg(long, default_value = "agent")]
         name: String,
     },
-    #[command(about = "List active tokens for an app")]
+    #[command(about = "Daftar token untuk aplikasi")]
     List {
-        #[arg(short, long, help = "Application name")]
+        #[arg(long)]
         app: String,
+    },
+    #[command(about = "Cabut token")]
+    Revoke {
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        name: String,
     },
 }

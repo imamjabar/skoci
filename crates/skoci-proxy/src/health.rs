@@ -4,7 +4,6 @@ use std::time::Duration;
 
 pub struct HealthChecker {
     client: reqwest::Client,
-    _timeout: Duration,
 }
 
 impl Default for HealthChecker {
@@ -14,27 +13,26 @@ impl Default for HealthChecker {
 }
 
 impl HealthChecker {
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(per_request_timeout: Duration) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(timeout)
+            .timeout(per_request_timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
-        Self { client, _timeout: timeout }
+        Self { client }
     }
 
-    pub async fn check(&self, addr: SocketAddr, path: &str) -> SkociResult<()> {
-        let url = format!("http://{addr}{path}");
+    pub async fn probe(&self, addr: SocketAddr, path: &str) -> SkociResult<u16> {
+        let path_clean = if path.is_empty() {
+            "/"
+        } else if path.starts_with('/') {
+            path
+        } else {
+            &format!("/{path}")
+        };
+        let url = format!("http://{addr}{path_clean}");
         match self.client.get(&url).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    Ok(())
-                } else {
-                    Err(SkociError::health_check_failed(
-                        &url,
-                        &format!("Status HTTP {}", resp.status()),
-                    ))
-                }
-            }
+            Ok(resp) => Ok(resp.status().as_u16()),
             Err(e) => Err(SkociError::health_check_failed(&url, &e.to_string())),
         }
     }
@@ -43,24 +41,30 @@ impl HealthChecker {
         &self,
         addr: SocketAddr,
         path: &str,
-        retries: usize,
-        delay: Duration,
+        total: Duration,
     ) -> SkociResult<()> {
-        let mut last_err = None;
-        for _ in 0..retries {
-            match self.check(addr, path).await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_err = Some(e);
-                    tokio::time::sleep(delay).await;
+        let start = tokio::time::Instant::now();
+        let mut last_detail;
+
+        loop {
+            match self.probe(addr, path).await {
+                Ok(status) if (200..400).contains(&status) => return Ok(()),
+                Ok(status) => {
+                    last_detail = format!("aplikasi membalas HTTP {status}");
+                }
+                Err(_) => {
+                    last_detail = "aplikasi belum menerima koneksi di port tersebut".to_string();
                 }
             }
+
+            let remaining = total.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Err(SkociError::health_check_failed(
+                    &format!("http://{addr}{path}"),
+                    &format!("{last_detail} setelah {} detik", total.as_secs()),
+                ));
+            }
+            tokio::time::sleep(Duration::from_secs(1).min(remaining)).await;
         }
-        Err(last_err.unwrap_or_else(|| {
-            SkociError::health_check_failed(
-                &addr.to_string(),
-                "Timeout menunggu container siap",
-            )
-        }))
     }
 }

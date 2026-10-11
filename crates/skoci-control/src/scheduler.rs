@@ -1,0 +1,178 @@
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use skoci_api::error::{SkociError, SkociResult};
+use std::collections::HashSet;
+use std::time::Duration;
+use tokio::time::sleep;
+
+use crate::state::AppState;
+
+#[derive(Debug, Clone)]
+pub struct CronExpr {
+    pub minutes: HashSet<u32>,
+    pub hours: HashSet<u32>,
+    pub days_of_month: HashSet<u32>,
+    pub months: HashSet<u32>,
+    pub days_of_week: HashSet<u32>,
+}
+
+impl CronExpr {
+    pub fn parse(expr: &str) -> SkociResult<Self> {
+        let fields: Vec<&str> = expr.split_whitespace().collect();
+        if fields.len() != 5 {
+            return Err(SkociError::bad_request(
+                format!("Cron expression '{}' tidak valid (harus 5 field)", expr),
+                "Gunakan format cron 5 field: menit jam hari_bulan bulan hari_minggu",
+            ));
+        }
+
+        let minutes = parse_field(fields[0], 0, 59)?;
+        let hours = parse_field(fields[1], 0, 23)?;
+        let days_of_month = parse_field(fields[2], 1, 31)?;
+        let months = parse_field(fields[3], 1, 12)?;
+        let days_of_week = parse_field(fields[4], 0, 7)?; // 0 or 7 = Sunday
+
+        Ok(Self {
+            minutes,
+            hours,
+            days_of_month,
+            months,
+            days_of_week,
+        })
+    }
+
+    pub fn is_due(&self, dt: &DateTime<Utc>) -> bool {
+        let min = dt.minute();
+        let hour = dt.hour();
+        let day = dt.day();
+        let month = dt.month();
+        let mut dow = dt.weekday().num_days_from_sunday();
+        if dow == 7 {
+            dow = 0;
+        }
+
+        self.minutes.contains(&min)
+            && self.hours.contains(&hour)
+            && self.days_of_month.contains(&day)
+            && self.months.contains(&month)
+            && (self.days_of_week.contains(&dow) || (dow == 0 && self.days_of_week.contains(&7)))
+    }
+}
+
+fn parse_field(raw: &str, min: u32, max: u32) -> SkociResult<HashSet<u32>> {
+    let mut set = HashSet::new();
+
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part == "*" {
+            for v in min..=max {
+                set.insert(v);
+            }
+        } else if let Some(step_str) = part.strip_prefix("*/") {
+            let step: u32 = step_str.parse().map_err(|_| {
+                SkociError::bad_request(
+                    format!("Nilai step '{}' tidak valid", part),
+                    "Periksa ekspresi cron",
+                )
+            })?;
+            if step == 0 {
+                return Err(SkociError::bad_request("Step cron tidak boleh 0", "Gunakan step >= 1"));
+            }
+            let mut v = min;
+            while v <= max {
+                set.insert(v);
+                v += step;
+            }
+        } else if let Some((start_str, end_str)) = part.split_once('-') {
+            let start: u32 = start_str.parse().map_err(|_| {
+                SkociError::bad_request(format!("Rentang cron '{}' tidak valid", part), "Periksa ekspresi cron")
+            })?;
+            let end: u32 = end_str.parse().map_err(|_| {
+                SkociError::bad_request(format!("Rentang cron '{}' tidak valid", part), "Periksa ekspresi cron")
+            })?;
+            if start > end || start < min || end > max {
+                return Err(SkociError::bad_request(
+                    format!("Rentang cron '{part}' di luar batas {min}..={max}"),
+                    "Periksa ekspresi cron",
+                ));
+            }
+            for v in start..=end {
+                set.insert(v);
+            }
+        } else {
+            let val: u32 = part.parse().map_err(|_| {
+                SkociError::bad_request(format!("Nilai cron '{}' tidak valid", part), "Periksa ekspresi cron")
+            })?;
+            if val < min || val > max {
+                return Err(SkociError::bad_request(
+                    format!("Nilai cron '{val}' di luar batas {min}..={max}"),
+                    "Periksa ekspresi cron",
+                ));
+            }
+            set.insert(val);
+        }
+    }
+
+    Ok(set)
+}
+
+pub async fn start_backup_scheduler(state: AppState) {
+    tracing::info!("Backup scheduler aktif");
+    let mut last_minute: Option<u32> = None;
+
+    loop {
+        let now = Utc::now();
+        let current_minute = now.minute();
+
+        // Only run once per minute
+        if last_minute != Some(current_minute) {
+            last_minute = Some(current_minute);
+
+            if let Ok(configs) = state.db.list_app_configs() {
+                for (app, cfg) in configs {
+                    for (svc_name, svc_cfg) in cfg.services {
+                        if let Some(backup_policy) = &svc_cfg.backup {
+                            if let Ok(cron) = CronExpr::parse(&backup_policy.schedule) {
+                                if cron.is_due(&now) {
+                                    tracing::info!(
+                                        app = %app,
+                                        service = %svc_name,
+                                        "Menjalankan scheduled backup database"
+                                    );
+                                    let bm = state.backup_manager.clone();
+                                    let app_clone = app.clone();
+                                    let svc_clone = svc_name.clone();
+                                    let engine = svc_cfg.engine;
+                                    let keep = backup_policy.keep;
+
+                                    tokio::spawn(async move {
+                                        match bm.create_backup(&app_clone, &svc_clone, engine).await {
+                                            Ok(resp) => {
+                                                tracing::info!(
+                                                    backup_id = %resp.backup_id,
+                                                    app = %app_clone,
+                                                    service = %svc_clone,
+                                                    "Scheduled backup berhasil"
+                                                );
+                                                let _ = bm.prune(&app_clone, &svc_clone, keep);
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    app = %app_clone,
+                                                    service = %svc_clone,
+                                                    error = %e.message,
+                                                    "Scheduled backup gagal"
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        sleep(Duration::from_secs(10)).await;
+    }
+}

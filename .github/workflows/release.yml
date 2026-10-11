@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 runners keep the glibc requirement at 2.35 so the binary also runs on older distros (e.g. Debian 12, Raspberry Pi OS).
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: skoci-linux-x86_64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: skoci-linux-aarch64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: skoci-darwin-aarch64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            asset: skoci-darwin-x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build binary
+        run: cargo build --release -p skoci --locked --target ${{ matrix.target }}
+
+      - name: Package asset & checksum
+        run: |
+          cp "target/${{ matrix.target }}/release/skoci" "${{ matrix.asset }}"
+          strip "${{ matrix.asset }}" || true
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+
+  upload-installer:
+    name: Upload Installer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Upload install.sh
+        uses: softprops/action-gh-release@v2
+        with:
+          files: install.sh

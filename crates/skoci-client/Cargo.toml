@@ -12,3 +12,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+ignore = { workspace = true }
+futures-util = { workspace = true }
+uuid = { workspace = true }
+tokio-util = { workspace = true }

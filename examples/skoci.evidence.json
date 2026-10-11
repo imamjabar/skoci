@@ -1,13 +1,21 @@
 {
+  "deployment_id": "dep_20261011_020257_a1b2",
   "app": "toko",
-  "commit": "a1b2c3d4e5f6",
+  "env": "production",
+  "commit": "a1b2c3d4e5f67890abcdef1234567890abcdef12",
   "timestamp": "2026-10-11T12:00:00Z",
-  "url": "https://toko.example.com",
-  "build_mode": "server",
+  "urls": [
+    "https://toko.sumopod.id"
+  ],
+  "image": "skoci/toko:v20261011120000",
+  "container": "skoci-toko-production-v20261011120000",
+  "health_check_url": "http://127.0.0.1:32768/healthz",
   "health_check_passed": true,
+  "smoke_test_status": 200,
   "smoke_test_passed": true,
-  "previous_version": "v_20261010_1",
-  "live_version": "v_20261011_1",
-  "triggered_by": "agent_alpha",
-  "approved_by": "operator_imam"
+  "previous_version": "v20261010120000",
+  "live_version": "v20261011120000",
+  "triggered_by": "agent:toko/laptop#1234567890ab",
+  "approved_by": "admin",
+  "duration_ms": 14520
 }

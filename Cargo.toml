@@ -13,24 +13,24 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Imam Jabar <imam@zen.ai.id>"]
 license = "Apache-2.0"
-repository = "https://github.com/zen-ai/skoci"
-homepage = "https://zen.ai.id/skoci"
+repository = "https://github.com/imamjabar/skoci"
+homepage = "https://github.com/imamjabar/skoci"
 readme = "README.md"
 
 [workspace.dependencies]
 # Internal workspace crates
-skoci-api = { path = "crates/skoci-api", version = "0.1.0" }
-skoci-core = { path = "crates/skoci-core", version = "0.1.0" }
-skoci-proxy = { path = "crates/skoci-proxy", version = "0.1.0" }
-skoci-node = { path = "crates/skoci-node", version = "0.1.0" }
-skoci-control = { path = "crates/skoci-control", version = "0.1.0" }
-skoci-client = { path = "crates/skoci-client", version = "0.1.0" }
-skoci-cli = { path = "crates/skoci-cli", version = "0.1.0" }
-skoci-mcp = { path = "crates/skoci-mcp", version = "0.1.0" }
+skoci-api = { path = "crates/skoci-api", version = "0.2.0" }
+skoci-core = { path = "crates/skoci-core", version = "0.2.0" }
+skoci-proxy = { path = "crates/skoci-proxy", version = "0.2.0" }
+skoci-node = { path = "crates/skoci-node", version = "0.2.0" }
+skoci-control = { path = "crates/skoci-control", version = "0.2.0" }
+skoci-client = { path = "crates/skoci-client", version = "0.2.0" }
+skoci-cli = { path = "crates/skoci-cli", version = "0.2.0" }
+skoci-mcp = { path = "crates/skoci-mcp", version = "0.2.0" }
 
 # Common async & network
 tokio = { version = "1.40", features = ["full"] }
@@ -40,7 +40,7 @@ http-body-util = "0.1"
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -69,3 +69,15 @@ libc = "0.2"
 thiserror = "1.0"
 anyhow = "1.0"
 async-trait = "0.1"
+
+# skoci-client / skoci-cli
+tar = "0.4"
+flate2 = "1.0"
+ignore = "0.4"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# skoci-proxy
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std"] }
+rustls-acme = { version = "0.15", default-features = false, features = ["ring", "tokio", "webpki-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
