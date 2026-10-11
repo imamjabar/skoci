@@ -14,12 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 ## What You Get
 
 * **One-Command Agent Deploys:** Deploy directly from your agent with `skoci deploy`. No SSH access needed, and no Docker daemon required on your laptop — the server builds the image.
-* **Live Progress Streaming:** Real-time build logs, health checks, and proxy cutover events. Static sites deploy in ~10–20 s after the first build.
-* **Scoped Tokens, Not Root SSH:** Per-app tokens (`sk_agent_<app>_*`) replace root SSH keys. Tokens are verified via SHA-256 hashes in SQLite and isolated to their specific app.
-* **Human Approval Gates:** Production promotions, database restores, and app deletions require human sign-off via web dashboard or master CLI.
+* **Live Progress & Duration Tracking:** Real-time build logs, per-stage durations, progress bar with ETA, and proxy cutover events.
+* **Pinned Control TLS & Scoped Tokens:** The control plane connects over HTTPS on port `8443` pinned to an immutable SPKI public key (`sha256:...`). Per-app tokens (`sk_agent_<app>_*`) replace root SSH keys.
+* **Human Approval Gates:** Production promotions, database restores, and app deletions require human sign-off via web dashboard (`https://<server-ip>:8443`) or master CLI.
 * **Encrypted Secrets:** Environment secrets are encrypted at rest with ChaCha20-Poly1305, injected through ephemeral files, masked in logs, and never returned to the agent context.
-* **Automatic HTTPS:** Embedded reverse proxy provisions Let's Encrypt TLS certificates automatically with free `*.sslip.io` domains or custom hostnames.
-* **Zero-Downtime Cutover & Rollback:** Atomic proxy route switching after health check verification, with one-command rollback (`skoci rollback`) if anything fails.
+* **Automatic HTTPS & Domain Verification:** Embedded reverse proxy provisions Let's Encrypt TLS certificates. Pre-validate DNS records before certificate issuance with `skoci domain check <host>`. Production applications require custom domains (magic DNS `*.sslip.io` is strictly opt-in via `--magic-dns` and rejected in production due to third-party zone control and shared rate limits).
+* **Three Deployment Result States:** Deployments verify root route accessibility via smoke tests: `live` (fully operational), `degraded` (health check passed, but smoke test `GET /` failed; inspect with `skoci logs`), or `failed`. Rollback with one command (`skoci rollback`).
 * **Batteries-Included Databases:** Declarative Postgres, MySQL, and Valkey services with cron-scheduled backups, on-demand snapshots (`skoci db backup`), and approval-gated restores.
 * **Self-Correcting Agents:** Structured JSON output (`--json`), actionable `fix` hints, and consistent exit codes enable agents to diagnose and fix errors autonomously.
 * **Ultra-Lightweight Binary:** A single pure Rust binary consuming ~9 MB idle RSS (measured on Linux release build), leaving virtually all VPS memory for your workloads.
@@ -62,24 +62,29 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 
 ## Quickstart
 
-### 1. Install on VPS
-Run on your 64-bit Linux server (open ports **80** and **443** in your cloud firewall):
+### 1. Install or Setup VPS
+Configure your remote VPS directly from your laptop over SSH:
+```bash
+skoci server setup --host <server-public-ip> --user root
+```
+Or install directly on your 64-bit Linux server terminal (ensure ports **80**, **443**, and **8443** are open in your firewall):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
 
 ### 2. Create Scoped Token (on VPS)
-Generate an agent token scoped strictly to your application:
+If installing manually on the server, generate an agent token scoped strictly to your application:
 ```bash
 sudo skoci token create --app my-app --name laptop
 ```
 
 ### 3. Connect Laptop to Server
-On your workstation, install the client and connect your workspace (macOS installs the client only; on a Linux laptop add `--client-only`):
+On your workstation, install the client and link your workspace using the server IP, token, and SPKI certificate pin:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only
-skoci connect --server https://skoci.<base-domain> --token <token>
+skoci connect --server <server-public-ip> --token <token> --pin sha256:<spki-pin>
 ```
+Profiles are saved in `~/.config/skoci/servers.json` (0600) and `.env.skoci` (0600, added to `.gitignore`).
 
 ### 4. Initialize & Deploy to Preview
 Inside your project repository:
@@ -93,7 +98,7 @@ Request a production promotion:
 ```bash
 skoci promote "All preview tests passed, ready for production"
 ```
-The command outputs exit code 2 and a `request_id`. Approve it via the web dashboard at `https://skoci.<base-domain>` or on the server:
+The command outputs exit code 2 and a `request_id`. Approve it via the web dashboard at `https://<server-public-ip>:8443` or on the server:
 ```bash
 sudo skoci approve <request_id>
 ```
@@ -105,14 +110,14 @@ sudo skoci approve <request_id>
 Copy and paste this prompt snippet into your AI coding assistant (Claude Code, OMP, Cursor, etc.):
 
 ```text
-You can deploy and manage this application using the Skoci CLI.
 Operational Rules:
 1. Always run commands with `--json` for structured output (e.g. `skoci deploy --json`).
 2. If a command fails, inspect `error.code` and execute the command provided in `error.fix`.
-3. Exit code 2 means human approval is required (production deploy, db restore, app delete). Report the `request_id` to the user so they can approve via dashboard or `skoci approve`.
-4. Never attempt or request SSH access. All operations use HTTPS via the configured scoped token.
-5. Never print, log, or commit tokens (`sk_agent_*`, `sk_master_*`).
-```
+3. Exit code 2 means human approval is required (production deploy, db restore, app delete). Report the `request_id` to the user so they can approve via dashboard at https://<server-ip>:8443 or `skoci approve`.
+4. Never attempt or request SSH access. All operations use pinned HTTPS via the configured scoped token.
+5. Production deployments require genuine custom domains (magic DNS *.sslip.io is rejected). Verify DNS before deploying with `skoci domain check <host>`.
+6. Treat `degraded` deployments as a failure to investigate: check logs with `skoci logs --tail 100 --json` and never promote a degraded version.
+7. Never print, log, or commit tokens (`sk_agent_*`, `sk_master_*`).
 
 ---
 
@@ -120,10 +125,10 @@ Operational Rules:
 
 * **No Shell Injection:** Docker and system commands run as structured argument vectors (`tokio::process::Command`); user or agent input is never interpolated into a shell string.
 * **Isolated Scoped Tokens & Stdin Entry:** Agent tokens (`sk_agent_<app>_*`) are hashed with SHA-256; app boundaries are enforced in SQLite. Tokens and secrets can be piped via stdin to prevent leaking into process listings (`ps`, `/proc`) or shell history.
-* **Zero-SSH Policy:** No private SSH keys stored in developer environments or agent contexts.
+* **Zero-SSH Policy & SPKI Pinning:** No private SSH keys stored in developer environments or agent contexts. All communication routes through `https://<server-ip>:8443` pinned to the server's immutable SPKI key (`sha256:...`).
 * **Encrypted Secrets & Cleaned Envs:** Secrets are encrypted with ChaCha20-Poly1305 on the node, injected via ephemeral `0600` env files unlinked immediately, and masked as `[REDACTED]` in logs. Client `.env.skoci` is restricted to an allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), and spawned subprocesses run with sanitized environments.
 * **Packaging Deny List:** `skoci deploy` excludes sensitive files (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`) by default, and uploads use private `0600` temporary archives.
-* **Local Control Plane & HTTPS SNI Binding:** API binds strictly to `127.0.0.1:8787`. On public HTTPS, requests enforce strict TLS SNI matching against `:authority`/`Host` headers (rejecting mismatches with `421 Misdirected Request`).
+* **Local Control Plane & Pinned TLS Bind:** API binds to `127.0.0.1:8787` locally and `0.0.0.0:8443` with SPKI-pinned TLS. On public HTTPS (port 443), requests enforce strict TLS SNI matching against `:authority`/`Host` headers (rejecting mismatches with `421 Misdirected Request`).
 * **Host Ownership Protection:** Custom domains and auto hosts are strictly partitioned; cross-app host collisions or hijacking are rejected.
 * **Human Approval Gates & Image ID Pinning:** Production releases, database restorations, and destructive operations enforce human sign-off pinned to immutable Docker image IDs (preventing TOCTOU tampering).
 * **Systemd Hardening:** Service runs under a sandboxed unit with `UMask=0077`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`, `RestrictNamespaces=true`, and `LimitNOFILE=65536`.
@@ -133,11 +138,10 @@ Operational Rules:
 
 * **Docker Group ≈ Root:** Access to `/var/run/docker.sock` is root-equivalent on Linux; Skoci hardens process execution, but Docker socket privileges remain root-level.
 * **Unrestricted Container Outbound Network:** Containers execute user/agent code inside standard Docker sandboxes with unrestricted outbound internet connectivity.
+* **First-Use Trust Established Over SSH (TOFU):** Initial server setup (`skoci server setup`) provisions the VPS and establishes the SPKI pin over SSH. If the initial SSH connection is intercepted without verifying SSH host keys, the initial pin trust could be compromised. Future connections are pinned in `~/.config/skoci/servers.json`.
+* **Single-Server Docker Isolation:** Isolation relies on Linux kernel namespaces and cgroups (Docker defaults) without hardware microVM isolation.
 * **First-Come Custom Domains:** An agent can claim any custom domain not yet registered by another application on the instance.
 * **Same-Origin Release Checksums:** Release checksums are hosted alongside binary assets; verify provenance with `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
-* **Single-Server Docker Isolation:** Isolation relies on Linux kernel namespaces and cgroups (Docker defaults) without hardware microVM isolation.
-* **ACME & sslip.io Rate Limits:** Automatic TLS for `*.sslip.io` subdomains shares global Let's Encrypt rate limits across all users of `sslip.io`. Use custom domains for production reliability.
-
 ---
 
 ## Upgrading from 0.1

@@ -158,6 +158,7 @@ pub fn decide_routing_authority(
     host_header: Option<&str>,
     is_https: bool,
     sni: Option<&str>,
+    public_ip: Option<IpAddr>,
 ) -> Result<RoutingDecision, RoutingAuthorityError> {
     let raw_authority = match (uri_authority, host_header) {
         (Some(u), Some(h)) => {
@@ -182,23 +183,50 @@ pub fn decide_routing_authority(
     let clean = clean_hostname(raw_authority);
 
     if is_https {
-        if is_ip_literal_or_empty(&clean) {
-            return Err(RoutingAuthorityError::MisdirectedRequest(
-                "Empty or IP authority forbidden on HTTPS",
-            ));
-        }
-        let sni_host = match sni {
-            Some(s) if !s.trim().is_empty() => clean_hostname(s),
-            _ => {
+        let sni_opt = match sni {
+            Some(s) if !s.trim().is_empty() => Some(clean_hostname(s)),
+            _ => None,
+        };
+
+        if let Some(sni_host) = sni_opt {
+            if is_ip_literal_or_empty(&clean) {
                 return Err(RoutingAuthorityError::MisdirectedRequest(
-                    "Missing TLS SNI on HTTPS request",
+                    "Empty or IP authority forbidden on HTTPS",
                 ));
             }
-        };
-        if !clean.eq_ignore_ascii_case(&sni_host) {
-            return Err(RoutingAuthorityError::MisdirectedRequest(
-                "Authority does not match TLS SNI",
-            ));
+            if !clean.eq_ignore_ascii_case(&sni_host) {
+                return Err(RoutingAuthorityError::MisdirectedRequest(
+                    "Authority does not match TLS SNI",
+                ));
+            }
+        } else {
+            let req_ip = if clean.is_empty() {
+                None
+            } else {
+                let s = clean
+                    .strip_prefix('[')
+                    .and_then(|h| h.strip_suffix(']'))
+                    .unwrap_or(&clean);
+                s.parse::<IpAddr>().ok()
+            };
+
+            let is_allowed_raw_ip = match (req_ip, public_ip) {
+                (Some(ip), Some(pub_ip)) => ip == pub_ip,
+                (None, Some(_)) if clean.is_empty() => true,
+                _ => false,
+            };
+
+            if !is_allowed_raw_ip {
+                if is_ip_literal_or_empty(&clean) {
+                    return Err(RoutingAuthorityError::MisdirectedRequest(
+                        "Empty or IP authority forbidden on HTTPS",
+                    ));
+                } else {
+                    return Err(RoutingAuthorityError::MisdirectedRequest(
+                        "Missing TLS SNI on HTTPS request",
+                    ));
+                }
+            }
         }
     }
 
@@ -385,5 +413,169 @@ impl RouterInner {
                 self.host_map.entry(clean).or_insert_with(|| k.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    #[test]
+    fn test_raw_ip_tls_routing_decision() {
+        let pub_v4: IpAddr = "198.51.100.1".parse().unwrap();
+        let pub_v6: IpAddr = "2001:db8::1".parse().unwrap();
+        // no-SNI + authority == public_ip (IPv4) -> allowed, routed to raw-IP path
+        let dec = decide_routing_authority(
+            None,
+            Some("198.51.100.1"),
+            true,
+            None,
+            Some(pub_v4),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "198.51.100.1");
+        assert_eq!(dec.forward_host, "198.51.100.1");
+
+        // with port in authority
+        let dec = decide_routing_authority(
+            None,
+            Some("198.51.100.1:443"),
+            true,
+            None,
+            Some(pub_v4),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "198.51.100.1");
+        assert_eq!(dec.forward_host, "198.51.100.1:443");
+
+        // no-SNI + authority == public_ip (IPv6 bracketed) -> allowed
+        let dec = decide_routing_authority(
+            None,
+            Some("[2001:db8::1]"),
+            true,
+            None,
+            Some(pub_v6),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "[2001:db8::1]");
+        assert_eq!(dec.forward_host, "[2001:db8::1]");
+
+        let dec = decide_routing_authority(
+            None,
+            Some("[2001:db8::1]:8443"),
+            true,
+            None,
+            Some(pub_v6),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "[2001:db8::1]");
+        assert_eq!(dec.forward_host, "[2001:db8::1]:8443");
+
+        // no-SNI + authority is a different IP -> 421
+        let err = decide_routing_authority(
+            None,
+            Some("198.51.100.2"),
+            true,
+            None,
+            Some(pub_v4),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
+        );
+
+        // no-SNI + authority is a DNS name -> 421
+        let err = decide_routing_authority(
+            None,
+            Some("app.example.com"),
+            true,
+            None,
+            Some(pub_v4),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            RoutingAuthorityError::MisdirectedRequest("Missing TLS SNI on HTTPS request")
+        );
+
+        // SNI present but != authority -> still 421 (regression guard for HTTP/2 misrouting)
+        let err = decide_routing_authority(
+            None,
+            Some("victim.example.com"),
+            true,
+            Some("attacker.example.com"),
+            Some(pub_v4),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            RoutingAuthorityError::MisdirectedRequest("Authority does not match TLS SNI")
+        );
+
+        // SNI present and == authority -> Ok
+        let dec = decide_routing_authority(
+            None,
+            Some("app.example.com"),
+            true,
+            Some("app.example.com"),
+            Some(pub_v4),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "app.example.com");
+        assert_eq!(dec.forward_host, "app.example.com");
+
+        // no-SNI + no public_ip configured -> 421
+        let err = decide_routing_authority(
+            None,
+            Some("198.51.100.1"),
+            true,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
+        );
+
+        // no-SNI + absent authority (HTTP/1.1 without Host) + public_ip configured -> allowed
+        let dec = decide_routing_authority(
+            None,
+            None,
+            true,
+            None,
+            Some(pub_v4),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "");
+        assert_eq!(dec.forward_host, "localhost");
+
+        // no-SNI + absent authority + no public_ip -> 421
+        let err = decide_routing_authority(
+            None,
+            None,
+            true,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
+        );
+
+        // Plain HTTP: unaffected by public_ip setting
+        let dec = decide_routing_authority(
+            None,
+            Some("198.51.100.99"),
+            false,
+            None,
+            Some(pub_v4),
+        )
+        .unwrap();
+        assert_eq!(dec.clean_host, "198.51.100.99");
+        assert_eq!(dec.forward_host, "198.51.100.99");
     }
 }

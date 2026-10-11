@@ -7,35 +7,38 @@
 - CLI & MCP tools return structured JSON with {code, message, fix} error format
 - Secrets are encrypted at rest with ChaCha20-Poly1305 and never returned to model context
 - Policy is built-in to the server; production actions and restores require human approval
-- Zero SSH required after initial setup: all agent operations use scoped HTTPS tokens
+- Zero SSH required after initial setup: all agent operations use scoped HTTPS tokens over pinned TLS (:8443 with SPKI pin)
 
-## Exit Codes
-- 0: Success
+## Exit Codes & Statuses
+- 0: Success (`live`)
 - 1: General error (action failed, build failed, invalid config)
 - 2: Approval pending/required (production deploy, database restore, app delete)
-- 3: Authentication / authorization error (unauthorized, scope_violation, rate_limited)
+- 3: Authentication / TLS error (unauthorized, scope_violation, pin_required, pin_mismatch, rate_limited)
+- Deploy Statuses: `live` (healthy), `degraded` (health check passed, GET / failed), `failed` (build/startup error)
 
 ## Agent Rules & Guidelines
 1. Always run commands with `--json` for machine-parsable outputs.
 2. In case of error, inspect `error.code`, read the `error.fix` recommendation, and execute the suggested fix.
-3. Never use or request SSH access after initial server setup. Connect using `skoci connect --server <url> --token <token>`.
+3. Never use or request SSH access after initial server setup. Connect using `skoci connect --server <server-ip> --token <token> --pin sha256:<spki-pin>`.
 4. Never print, log, or echo tokens (`sk_agent_*`, `sk_master_*`).
-5. When promoting to production (`skoci promote "<reason>"`), inform the human user of the `request_id` for approval on the dashboard or CLI.
-6. The project build always executes on the server inside Docker. The local machine does not require Docker.
-
+5. Production deployments require genuine custom domains (magic DNS `*.sslip.io` is rejected). Verify DNS before deploying with `skoci domain check <host>`.
+6. Treat `degraded` deployments as a failure to investigate: check logs with `skoci logs --tail 100 --json` and never promote a degraded deployment.
+7. When promoting to production (`skoci promote "<reason>"`), inform the human user of the `request_id` for approval on the dashboard (`https://<server-ip>:8443`) or CLI.
+8. The project build always executes on the server inside Docker. The local machine does not require Docker.
 ## Agent Workflow
-1. Connect: `skoci connect --server https://skoci.<base-domain> --token sk_agent_<app>_<hex>`
+1. Connect: `skoci connect --server <server-ip> --token sk_agent_<app>_<hex> --pin sha256:<spki-pin>`
 2. Initialize: `skoci init` (generates `skoci.yaml`, `Dockerfile`, `.dockerignore` if missing)
 3. Configure: Adjust `skoci.yaml` (`app`, `run.port`, `domains`, `services`).
-4. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
-5. Deploy to Preview: `skoci deploy --env preview --json`
-6. Verify: Check health check, URLs, and smoke test status
-7. Promote to Production: `skoci promote "<reason>" --json` (returns request ID for human approval)
-8. Monitor: `skoci status --json` and `skoci logs --json`
-
+4. Verify Domain: `skoci domain check <host>` (ensures A/AAAA points to server before cert issuance)
+5. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
+6. Deploy to Preview: `skoci deploy --env preview --json` (verify status is `live`, not `degraded`)
+7. Verify: Check health check, URLs, and smoke test status
+8. Promote to Production: `skoci promote "<reason>" --json` (returns request ID for human approval)
+9. Monitor: `skoci status --json` and `skoci logs --json`
 ## CLI Commands Reference
-- `skoci connect --server <url> --token <token>`
-- `skoci init [--app <name>]`
+- `skoci server setup --host <ip> --user <u>` (one-time setup of remote VPS from laptop)
+- `skoci connect --server <ip> --token <token> [--pin <spki-pin>] [--profile <name>]`
+- `skoci domain check <host>` / `skoci domain add <host>`
 - `skoci deploy [--env preview|production] [--detach] [--commit <sha>]`
 - `skoci watch <deployment_id>`
 - `skoci deployments [--app <app>] [--limit 20]`

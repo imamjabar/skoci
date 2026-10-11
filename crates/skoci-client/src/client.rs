@@ -5,14 +5,14 @@ use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::ApiResponse;
 use skoci_api::requests::{
     ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
-    DeploymentsQuery, LogsQuery, PromoteRequest, RollbackRequest, SecretSetRequest,
-    TokenCreateRequest,
+    DeploymentsQuery, DomainCheckRequest, LogsQuery, PromoteRequest, RollbackRequest,
+    SecretSetRequest, TokenCreateRequest,
 };
 use skoci_api::responses::{
     AppDeleteResponse, AppSummary, ApprovalInfo, ApproveResponse, AuditEntry,
     DbBackupListResponse, DbBackupResponse, DbRestoreResponse, DefaultAppResponse,
     DeployAccepted, DeployEvent, DeployStage, DeploymentInfo, DoctorResponse,
-    LogsResponse, PromoteResponse, SecretListResponse, StatusResponse,
+    DomainCheckResponse, LogsResponse, PromoteResponse, SecretListResponse, StatusResponse,
     TokenCreateResponse, TokenListResponse, TokenRevokeResponse,
 };
 use std::path::Path;
@@ -20,25 +20,231 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+
+#[derive(Debug, Clone)]
+struct PinMismatch {
+    server: String,
+    expected: String,
+    got: String,
+}
+
+#[derive(Debug)]
+struct SpkiPinVerifier {
+    server: String,
+    expected_pin: String,
+    mismatch_slot: Arc<parking_lot::Mutex<Option<PinMismatch>>>,
+    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+impl ServerCertVerifier for SpkiPinVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        let (_, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref())
+            .map_err(|_| RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+
+        let spki_der = cert.tbs_certificate.subject_pki.raw;
+        let got = skoci_api::models::spki_pin_from_der(spki_der);
+
+        if !constant_time_eq(got.as_bytes(), self.expected_pin.as_bytes()) {
+            *self.mismatch_slot.lock() = Some(PinMismatch {
+                server: self.server.clone(),
+                expected: self.expected_pin.clone(),
+                got: got.clone(),
+            });
+            return Err(RustlsError::General(format!(
+                "SPKI pin mismatch: expected {}, got {}",
+                self.expected_pin, got
+            )));
+        }
+
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.supported_algs.supported_schemes()
+    }
+}
+
 #[derive(Clone)]
 pub struct SkociClient {
     base_url: String,
     token: Option<String>,
+    pin: Option<String>,
     client: reqwest::Client,
+    pin_mismatch_slot: Option<Arc<parking_lot::Mutex<Option<PinMismatch>>>>,
+}
+
+impl std::fmt::Debug for SkociClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkociClient")
+            .field("base_url", &self.base_url)
+            .field("token", &"[REDACTED]")
+            .field("pin", &self.pin)
+            .finish()
+    }
 }
 
 impl SkociClient {
-    pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+    pub fn new(
+        base_url: impl Into<String>,
+        token: Option<String>,
+        pin: Option<String>,
+    ) -> SkociResult<Self> {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
 
-        Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            token,
-            client,
+        let normalized_pin = match pin.as_deref() {
+            Some(p) if !p.trim().is_empty() => {
+                match skoci_api::models::normalize_spki_pin(p) {
+                    Some(np) => Some(np),
+                    None => {
+                        return Err(SkociError::bad_request(
+                            format!("Malformed SPKI pin '{p}': expected sha256:<64 hex> or bare 64-char hex"),
+                            "Check the pin format or retrieve a fresh pin with 'skoci server fingerprint'",
+                        ));
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        let parsed_url = reqwest::Url::parse(&base_url).map_err(|e| {
+            SkociError::bad_request(
+                format!("Invalid server URL '{base_url}': {e}"),
+                "Provide a valid URL with scheme (e.g., https://1.2.3.4:8443 or http://localhost:8787)",
+            )
+        })?;
+
+        let host_str = parsed_url.host_str().unwrap_or("").to_string();
+        let is_ip_literal = host_str.parse::<std::net::IpAddr>().is_ok()
+            || host_str.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok();
+
+        if parsed_url.scheme() == "https" && is_ip_literal && normalized_pin.is_none() {
+            return Err(SkociError::pin_required(&host_str));
         }
+
+        let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+        let pin_mismatch_slot = if let Some(expected_pin) = &normalized_pin {
+            let mismatch_slot = Arc::new(parking_lot::Mutex::new(None));
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let supported_algs = provider.signature_verification_algorithms;
+            let verifier = Arc::new(SpkiPinVerifier {
+                server: host_str.clone(),
+                expected_pin: expected_pin.clone(),
+                mismatch_slot: Arc::clone(&mismatch_slot),
+                supported_algs,
+            });
+
+            let client_config: rustls::ClientConfig = rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|e| {
+                    SkociError::internal(
+                        format!("Failed to configure TLS protocol versions: {e}"),
+                        "Check TLS configuration",
+                    )
+                })?
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth();
+
+            builder = builder.use_preconfigured_tls(client_config);
+            Some(mismatch_slot)
+        } else {
+            None
+        };
+
+        let client = builder.build().map_err(|e| {
+            SkociError::internal(
+                format!("Failed to build HTTP client: {e}"),
+                "Check client configuration and system network stack",
+            )
+        })?;
+
+        Ok(Self {
+            base_url,
+            token,
+            pin: normalized_pin,
+            client,
+            pin_mismatch_slot,
+        })
+    }
+
+    fn map_reqwest_err(&self, e: &reqwest::Error, default_msg: String, default_fix: impl Into<String>) -> SkociError {
+        if let Some(slot) = &self.pin_mismatch_slot {
+            if let Some(m) = slot.lock().take() {
+                return SkociError::pin_mismatch(&m.server, &m.expected, &m.got);
+            }
+        }
+
+        let err_str = e.to_string();
+        if let Some(pos) = err_str.find("SPKI pin mismatch: expected ") {
+            let rest = &err_str[pos + "SPKI pin mismatch: expected ".len()..];
+            if let Some(sep) = rest.find(", got ") {
+                let exp = &rest[..sep];
+                let got_rest = &rest[sep + ", got ".len()..];
+                let got = got_rest.split(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '"').next().unwrap_or(got_rest);
+                let server = self.server_host();
+                return SkociError::pin_mismatch(&server, exp, got);
+            }
+        }
+
+        SkociError::internal(default_msg, default_fix.into())
+    }
+
+    fn server_host(&self) -> String {
+        reqwest::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()))
+            .unwrap_or_else(|| self.base_url.clone())
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
+    pub fn pin(&self) -> Option<&str> {
+        self.pin.as_deref()
     }
 
     fn auth(&self, mut rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -53,7 +259,8 @@ impl SkociClient {
         rb: reqwest::RequestBuilder,
     ) -> SkociResult<ApiResponse<T>> {
         let resp = rb.send().await.map_err(|e| {
-            SkociError::internal(
+            self.map_reqwest_err(
+                &e,
                 format!("Failed to connect to Skoci server: {e}"),
                 "Check whether the Skoci server is running and the server URL is correct (SKOCI_SERVER_URL)",
             )
@@ -133,9 +340,11 @@ impl SkociClient {
         let rb = self.auth(rb);
         let id_str = id.to_string();
 
+        let this = self.clone();
         let init = async move {
             let resp = rb.send().await.map_err(|e| {
-                SkociError::internal(
+                this.map_reqwest_err(
+                    &e,
                     format!("Failed to connect to event stream: {e}"),
                     format!("Use `skoci watch {id_str}` to retry"),
                 )
@@ -311,6 +520,15 @@ impl SkociClient {
     pub async fn doctor(&self) -> SkociResult<ApiResponse<DoctorResponse>> {
         let url = format!("{}/api/doctor", self.base_url);
         self.send(self.auth(self.client.get(&url))).await
+    }
+
+    pub async fn domain_check(&self, host: &str) -> SkociResult<ApiResponse<DomainCheckResponse>> {
+        let url = format!("{}/api/domains/check", self.base_url);
+        let body = DomainCheckRequest {
+            host: host.to_string(),
+        };
+        let rb = self.auth(self.client.post(&url).json(&body));
+        self.send(rb).await
     }
 }
 
@@ -520,5 +738,75 @@ mod tests {
         assert!(err.fix.contains("skoci watch dep_eof"));
 
         assert!(sse.next().await.is_none());
+    }
+    #[test]
+    fn test_pin_normalization() {
+        let valid_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let prefixed = format!("sha256:{valid_hex}");
+        let upper = format!("SHA256:{}", valid_hex.to_ascii_uppercase());
+
+        assert_eq!(
+            skoci_api::models::normalize_spki_pin(&prefixed).unwrap(),
+            prefixed
+        );
+        assert_eq!(
+            skoci_api::models::normalize_spki_pin(valid_hex).unwrap(),
+            prefixed
+        );
+        assert_eq!(
+            skoci_api::models::normalize_spki_pin(&upper).unwrap(),
+            prefixed
+        );
+
+        assert!(skoci_api::models::normalize_spki_pin("").is_none());
+        assert!(skoci_api::models::normalize_spki_pin("   ").is_none());
+        assert!(skoci_api::models::normalize_spki_pin("sha256:too_short").is_none());
+        assert!(skoci_api::models::normalize_spki_pin("not_hex_chars_0123456789abcdef0123456789abcdef0123456789abcdefgh").is_none());
+
+        // Bad pin in client creation fails with bad_request
+        let res = SkociClient::new("http://localhost:8787", None, Some("bad_pin".to_string()));
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().code, "bad_request");
+    }
+
+    #[test]
+    fn test_https_ip_without_pin_requires_pin() {
+        let res = SkociClient::new("https://127.0.0.1:8443", None, None);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert_eq!(err.code, "pin_required");
+
+        let res_v6 = SkociClient::new("https://[::1]:8443", None, None);
+        assert!(res_v6.is_err());
+        let err_v6 = res_v6.unwrap_err();
+        assert_eq!(err_v6.code, "pin_required");
+    }
+
+    #[test]
+    fn test_https_hostname_without_pin_allowed() {
+        let res = SkociClient::new("https://api.skoci.example.com", None, None);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_http_ip_without_pin_allowed() {
+        let res = SkociClient::new("http://127.0.0.1:8787", None, None);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_spki_computation_matches_der() {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let der = cert.cert.der();
+
+        let (_, parsed) = x509_parser::parse_x509_certificate(der).unwrap();
+        let spki_der = parsed.tbs_certificate.subject_pki.raw;
+        let pin = skoci_api::models::spki_pin_from_der(spki_der);
+
+        assert!(pin.starts_with("sha256:"));
+        assert_eq!(pin.len(), 71);
+
+        let client = SkociClient::new("https://127.0.0.1:8443", None, Some(pin.clone())).unwrap();
+        assert_eq!(client.pin(), Some(pin.as_str()));
     }
 }

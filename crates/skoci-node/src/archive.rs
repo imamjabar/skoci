@@ -318,6 +318,11 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
                     SkociError::bad_request(format!("Failed to write file: {e}"), "Check disk space")
                 })?;
             }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&target_path, fs::Permissions::from_mode(mode));
+            }
         } else {
             return Err(SkociError::bad_request(
                 format!("Unsupported archive entry type {:?}", entry_type),

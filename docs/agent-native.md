@@ -18,7 +18,8 @@ Skoci ships with a built-in MCP server that communicates over JSON-RPC 2.0 via s
       "command": "skoci",
       "args": ["mcp"],
       "env": {
-        "SKOCI_SERVER_URL": "https://skoci.<base-domain>",
+        "SKOCI_SERVER_URL": "https://<server-ip>:8443",
+        "SKOCI_SERVER_PIN": "sha256:<spki-pin>",
         "SKOCI_TOKEN": "sk_agent_toko_xxxxxxxxxxxx"
       }
     }
@@ -34,7 +35,8 @@ Skoci ships with a built-in MCP server that communicates over JSON-RPC 2.0 via s
       "command": "skoci",
       "args": ["mcp"],
       "env": {
-        "SKOCI_SERVER_URL": "https://skoci.<base-domain>",
+        "SKOCI_SERVER_URL": "https://<server-ip>:8443",
+        "SKOCI_SERVER_PIN": "sha256:<spki-pin>",
         "SKOCI_TOKEN": "sk_agent_toko_xxxxxxxxxxxx"
       }
     }
@@ -42,9 +44,8 @@ Skoci ships with a built-in MCP server that communicates over JSON-RPC 2.0 via s
 }
 ```
 
-### C. Zero-Config Mode (Auto-Detect via `.env.skoci`)
-If you have run `skoci connect`, the `.env.skoci` file in your project directory is automatically loaded by `skoci mcp` without needing manual environment variables.
-
+### C. Zero-Config Mode (Auto-Detect via Profile & `.env.skoci`)
+If you have run `skoci connect` or `skoci server setup`, credentials and pins stored in `~/.config/skoci/servers.json` or project-local `.env.skoci` are loaded automatically by `skoci mcp` without requiring manual environment variables.
 ---
 
 ## 2. Available MCP Tools
@@ -75,7 +76,7 @@ The approval action (`approve`) is **intentionally EXCLUDED from the agent tool 
 
 ---
 
-## 4. Standard Exit Codes
+## 4. Standard Exit Codes & Deployment Result States
 
 Skoci returns consistent exit codes for agent automation:
 
@@ -84,8 +85,14 @@ Skoci returns consistent exit codes for agent automation:
 | `0` | `Success` | Command completed successfully. | Proceed to next workflow step. |
 | `1` | `General Error` | Build failure, health check timeout, or invalid configuration. | Inspect the `fix` field in the JSON error and remediate. |
 | `2` | `Approval Pending` | Action requires human approval (`promote`, `db restore`). | Note the `request_id` and ask human to approve in the dashboard. |
-| `3` | `Auth Error` | `unauthorized`, `scope_violation`, or `rate_limited`. | Check token and application scope permissions. |
+| `3` | `Auth Error` | `unauthorized`, `scope_violation`, or `rate_limited`. | Check token, pin, and application scope permissions. |
 
+### Handling `degraded` Deployment Results
+When `skoci deploy --json` completes, inspect `data.status`:
+* `live`: Container started, health checks passed, and smoke test (`GET /`) returned 2xx/3xx/401. Deployment is fully healthy.
+* `degraded`: Container started and passed health checks, but smoke test (`GET /`) failed (e.g. 502, 500, or connection refused).
+  - **Agent Action:** **Treat `degraded` as a failure to investigate.** Do NOT report success to the user and do NOT attempt to promote a degraded version to production. Run `skoci logs --tail 100 --json` to diagnose the error, fix the root route or listening address, and redeploy.
+* `failed`: Compilation or startup failure. Inspect `error.fix` and resolve.
 ---
 
 ## 5. Error Handling: `{code, message, fix}`
@@ -111,6 +118,8 @@ The agent reads the `fix` field and executes the suggested fix directly without 
 ## 6. Core Rules for Coding Agents
 
 1. **Always use `--json`:** Ensure outputs are structured and machine-parsable.
-2. **Never request SSH:** After initial server installation, never ask for or run SSH commands. Use the REST API / MCP tools.
-3. **Never print tokens:** Do not output secret tokens into chat context or repository files.
-4. **Follow `fix` guidance:** When an error occurs, inspect and execute the remedy in `error.fix`.
+2. **Connect with Pin & Zero SSH:** Use `skoci connect --server <ip> --token <token> --pin <pin>` (or saved profiles). After initial setup, never request or attempt SSH operations.
+3. **Production Requires Real Domains:** Production deployments reject magic DNS hostnames (`*.sslip.io`). Verify domain DNS before deploying with `skoci domain check <host>`.
+4. **Treat `degraded` as an Issue:** When a deploy reports `status: "degraded"`, do not promote. Read `skoci logs --tail 100 --json`, remediate the failure, and deploy again.
+5. **Never print tokens:** Do not output secret tokens into chat context or repository files.
+6. **Follow `fix` guidance:** When an error occurs, inspect and execute the remedy in `error.fix`.

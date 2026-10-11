@@ -203,6 +203,53 @@ pub async fn handle_doctor(
             None
         },
     });
+    // 7. Control TLS
+    let control_tls_info = state.control_tls.read().clone();
+    if let Some(info) = &control_tls_info {
+        let is_expiring = info.mode == "acme-ip"
+            && info
+                .not_after
+                .map(|na| (na - chrono::Utc::now()).num_hours() < 48)
+                .unwrap_or(false);
+        let fallback_with_error = info.mode == "self-signed" && info.last_error.is_some();
+
+        let (passed, message, fix) = if is_expiring {
+            (
+                false,
+                format!(
+                    "Control TLS certificate expiring soon (mode {}, pin {})",
+                    info.mode, info.spki_pin
+                ),
+                Some("Open port 80, check firewall, or re-run with --tls acme".to_string()),
+            )
+        } else if fallback_with_error {
+            let err = info.last_error.as_deref().unwrap_or("unknown error");
+            (
+                false,
+                format!(
+                    "Control TLS running on fallback (mode {}, pin {}): {}",
+                    info.mode, info.spki_pin, err
+                ),
+                Some("Open port 80, check firewall, or re-run with --tls acme".to_string()),
+            )
+        } else {
+            (
+                true,
+                format!(
+                    "Control TLS active (mode {}, pin {})",
+                    info.mode, info.spki_pin
+                ),
+                None,
+            )
+        };
+
+        checks.push(DoctorCheck {
+            name: "control_tls".to_string(),
+            passed,
+            message,
+            fix,
+        });
+    }
 
     let ram_mb = get_idle_ram_mb();
     let healthy = checks.iter().all(|c| c.passed);
@@ -212,6 +259,7 @@ pub async fn handle_doctor(
         version: env!("CARGO_PKG_VERSION").to_string(),
         idle_ram_mb: ram_mb,
         checks,
+        control_tls: control_tls_info,
     }))
 }
 

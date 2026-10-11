@@ -16,12 +16,18 @@ pub fn parse_env_file_content(content: &str) -> Vec<(String, String)> {
 
         if let Some((k, v)) = line.split_once('=') {
             let key = k.trim().to_string();
-            let mut val = v.trim();
-            if (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
-                || (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
+            let val = v.trim();
+            let val = if (val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\''))
             {
-                val = &val[1..val.len() - 1];
-            }
+                if val.len() >= 2 {
+                    &val[1..val.len() - 1]
+                } else {
+                    val
+                }
+            } else {
+                val
+            };
             pairs.push((key, val.to_string()));
         }
     }
@@ -37,7 +43,7 @@ pub fn is_local_url(url_str: &str) -> bool {
             let h = host.trim_start_matches('[').trim_end_matches(']');
             h.eq_ignore_ascii_case("127.0.0.1")
                 || h.eq_ignore_ascii_case("localhost")
-                || h.eq_ignore_ascii_case("::1")
+                || h == "::1"
         } else {
             false
         }
@@ -49,17 +55,16 @@ pub fn is_local_url(url_str: &str) -> bool {
 pub fn filter_skoci_env_pairs(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut filtered = Vec::new();
     for (k, v) in pairs {
-        if k == "SKOCI_SERVER_URL" || k == "SKOCI_TOKEN" {
+        if k == "SKOCI_SERVER_URL" || k == "SKOCI_TOKEN" || k == "SKOCI_SERVER_PIN" {
             filtered.push((k, v));
         } else {
-            eprintln!("Warning: Ignoring disallowed key '{k}' in .env.skoci (only SKOCI_SERVER_URL and SKOCI_TOKEN are allowed)");
+            eprintln!("Warning: Ignoring disallowed key '{k}' in .env.skoci (only SKOCI_SERVER_URL, SKOCI_TOKEN, and SKOCI_SERVER_PIN are allowed)");
         }
     }
     filtered
 }
 
 pub fn load_env_files() {
-    let mut server_url_set_by_env_skoci = false;
     let cwd_env = Path::new(".env.skoci");
     if cwd_env.exists() {
         if let Ok(content) = std::fs::read_to_string(cwd_env) {
@@ -67,43 +72,62 @@ pub fn load_env_files() {
             for (k, v) in pairs {
                 if std::env::var(&k).is_err() {
                     std::env::set_var(&k, &v);
-                    if k == "SKOCI_SERVER_URL" {
-                        server_url_set_by_env_skoci = true;
-                    }
                 }
             }
         }
     }
+}
 
-    if std::env::var("SKOCI_TOKEN").is_err() && !server_url_set_by_env_skoci {
-        let server_url = std::env::var("SKOCI_SERVER_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
-        let is_local = is_local_url(&server_url);
+pub fn local_master_token() -> Option<String> {
+    local_master_token_from_path(Path::new("/etc/skoci/skoci.env"))
+}
 
-        if is_local {
-            let etc_path = Path::new("/etc/skoci/skoci.env");
-            if etc_path.exists() {
-                match std::fs::read_to_string(etc_path) {
-                    Ok(content) => {
-                        for (k, v) in parse_env_file_content(&content) {
-                            if k == "SKOCI_MASTER_TOKEN" && std::env::var("SKOCI_TOKEN").is_err() {
-                                std::env::set_var("SKOCI_TOKEN", &v);
-                            }
-                            if std::env::var(&k).is_err() {
-                                std::env::set_var(&k, &v);
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                        eprintln!("Permission denied reading /etc/skoci/skoci.env: {e}");
-                        eprintln!(
-                            "Fix: sudo usermod -aG skoci $USER then log in again, or use sudo."
-                        );
-                    }
-                    Err(_) => {}
+pub fn local_master_token_from_path(path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            for (k, v) in parse_env_file_content(&content) {
+                if k == "SKOCI_MASTER_TOKEN" && !v.trim().is_empty() {
+                    return Some(v.trim().to_string());
                 }
             }
+            None
         }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("Permission denied reading {}: {e}", path.display());
+            eprintln!("Fix: sudo usermod -aG skoci $USER then log in again, or use sudo.");
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+pub fn read_project_env() -> Option<(String, String, Option<String>)> {
+    read_project_env_from_path(Path::new(".env.skoci"))
+}
+
+pub fn read_project_env_from_path(path: &Path) -> Option<(String, String, Option<String>)> {
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let pairs = filter_skoci_env_pairs(parse_env_file_content(&content));
+    let mut url = None;
+    let mut token = None;
+    let mut pin = None;
+    for (k, v) in pairs {
+        match k.as_str() {
+            "SKOCI_SERVER_URL" => url = Some(v),
+            "SKOCI_TOKEN" => token = Some(v),
+            "SKOCI_SERVER_PIN" => pin = Some(v),
+            _ => {}
+        }
+    }
+    match (url, token) {
+        (Some(u), Some(t)) => Some((u, t, pin)),
+        _ => None,
     }
 }
 
@@ -158,6 +182,7 @@ SPACED = spaced_val
         let sample = r#"
 SKOCI_SERVER_URL=http://localhost:8787
 SKOCI_TOKEN=sk_token_123
+SKOCI_SERVER_PIN=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 LD_PRELOAD=/evil/lib.so
 DYLD_INSERT_LIBRARIES=/evil/lib.dylib
 PATH=/malicious/bin
@@ -166,8 +191,52 @@ HTTP_PROXY=http://attacker.proxy
 "#;
         let pairs = parse_env_file_content(sample);
         let filtered = filter_skoci_env_pairs(pairs);
-        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0], ("SKOCI_SERVER_URL".to_string(), "http://localhost:8787".to_string()));
         assert_eq!(filtered[1], ("SKOCI_TOKEN".to_string(), "sk_token_123".to_string()));
+        assert_eq!(
+            filtered[2],
+            (
+                "SKOCI_SERVER_PIN".to_string(),
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_local_master_token_absent_and_present() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let absent_path = temp_dir.join(format!("absent_skoci_env_{unique_id}.env"));
+        assert_eq!(local_master_token_from_path(&absent_path), None);
+
+        let present_path = temp_dir.join(format!("present_skoci_env_{unique_id}.env"));
+        let sample = "OTHER_VAR=xyz\nSKOCI_MASTER_TOKEN=tok_super_secret_999\nANOTHER=abc\n";
+        std::fs::write(&present_path, sample).unwrap();
+        assert_eq!(
+            local_master_token_from_path(&present_path),
+            Some("tok_super_secret_999".to_string())
+        );
+        let _ = std::fs::remove_file(present_path);
+    }
+
+    #[test]
+    fn test_read_project_env() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let env_path = temp_dir.join(format!("proj_env_{unique_id}.env"));
+        let content = "SKOCI_SERVER_URL=https://1.2.3.4:8443\nSKOCI_TOKEN=mytoken\nSKOCI_SERVER_PIN=sha256:abcd\nDISALLOWED=true\n";
+        std::fs::write(&env_path, content).unwrap();
+
+        let parsed = read_project_env_from_path(&env_path);
+        assert_eq!(
+            parsed,
+            Some((
+                "https://1.2.3.4:8443".to_string(),
+                "mytoken".to_string(),
+                Some("sha256:abcd".to_string())
+            ))
+        );
+        let _ = std::fs::remove_file(env_path);
     }
 }

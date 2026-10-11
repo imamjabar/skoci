@@ -14,12 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 ## Fitur Unggulan
 
 * **Deploy Agen 1-Perintah:** Deploy langsung dari terminal agen dengan `skoci deploy`. Tanpa membutuhkan akses SSH, dan tanpa Docker di laptop — server yang mengompilasi image.
-* **Streaming Progres Langsung:** Log build real-time, health check, dan event pengalihan rute proxy. Situs statis ter-deploy dalam ~10–20 detik setelah build pertama.
-* **Scoped Token, Bukan Root SSH:** Token per-aplikasi (`sk_agent_<app>_*`) menggantikan kunci SSH root. Token diverifikasi via hash SHA-256 di SQLite dan terisolasi khusus untuk aplikasinya.
-* **Gerbang Persetujuan Manusia:** Promosi produksi, pemulihan database, dan penghapusan aplikasi memerlukan persetujuan manusia via web dashboard atau CLI master.
+* **Streaming Progres & Durasi Per-Tahap:** Log build real-time, durasi tiap tahap, progress bar dengan estimasi waktu selesai, dan event pengalihan proxy.
+* **Control Plane TLS Ter-Pinning & Scoped Token:** Control plane terhubung via HTTPS di port `8443` ter-pinning ke kunci publik SPKI permanen (`sha256:...`). Token per-aplikasi (`sk_agent_<app>_*`) menggantikan kunci SSH root.
+* **Gerbang Persetujuan Manusia:** Promosi produksi, pemulihan database, dan penghapusan aplikasi memerlukan persetujuan manusia via web dashboard (`https://<server-ip>:8443`) atau CLI master.
 * **Enkripsi Secret:** Variabel rahasia dienkripsi saat tersimpan di host dengan ChaCha20-Poly1305, disuntikkan via berkas sementara, disamarkan di log, dan tidak pernah dikembalikan ke konteks agen.
-* **HTTPS Otomatis:** Embedded reverse proxy menerbitkan sertifikat TLS Let's Encrypt secara otomatis dengan domain gratis `*.sslip.io` atau domain kustom Anda.
-* **Pengalihan Nol-Downtime & Rollback:** Pengalihan rute proxy atomik setelah lolos health check, dengan fitur rollback 1-perintah (`skoci rollback`) jika terjadi kendala.
+* **HTTPS Otomatis & Verifikasi Domain:** Embedded reverse proxy menerbitkan sertifikat TLS Let's Encrypt. Pra-validasi record DNS sebelum sertifikat diterbitkan dengan `skoci domain check <host>`. Aplikasi produksi wajib menggunakan domain kustom (magic DNS `*.sslip.io` bersifat opt-in via `--magic-dns` dan ditolak di production karena risiko kontrol zona pihak ketiga dan kuota rate-limit bersama).
+* **Tiga Status Hasil Deploy:** Verifikasi rute root via smoke test: `live` (beroperasi normal), `degraded` (health check lulus, namun smoke test `GET /` gagal; periksa dengan `skoci logs`), atau `failed`. Rollback dengan satu perintah (`skoci rollback`).
 * **Database Bawaan Lengkap:** Layanan deklaratif Postgres, MySQL, dan Valkey dengan backup terjadwal (cron), snapshot instan (`skoci db backup`), dan restore yang wajib disetujui manusia.
 * **Agen yang Memperbaiki Diri:** Output JSON terstruktur (`--json`), rekomendasi `fix` yang jelas, dan kode keluar konsisten memungkinkan agen mendiagnosis dan memperbaiki error secara mandiri.
 * **Binary Sangat Ringan:** Satu binary Rust mandiri dengan konsumsi ~9 MB RSS saat idle (diukur pada build rilis Linux), menyisakan seluruh ruang memori VPS untuk aplikasi Anda.
@@ -62,24 +62,29 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 
 ## Panduan Cepat
 
-### 1. Pasang di VPS
-Jalankan di server Linux 64-bit Anda (pastikan port **80** dan **443** terbuka di firewall cloud):
+### 1. Pasang atau Setup VPS
+Konfigurasi VPS jarak jauh langsung dari laptop Anda melalui SSH:
+```bash
+skoci server setup --host <server-public-ip> --user root
+```
+Atau pasang langsung di terminal server Linux 64-bit Anda (pastikan port **80**, **443**, dan **8443** terbuka di firewall cloud):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
 
 ### 2. Buat Scoped Token (di VPS)
-Buat token agen yang dibatasi hak aksesnya khusus untuk aplikasi Anda:
+Jika memasang manual di server, buat token agen yang dibatasi hak aksesnya khusus untuk aplikasi Anda:
 ```bash
 sudo skoci token create --app my-app --name laptop
 ```
 
 ### 3. Hubungkan Laptop ke Server
-Di komputer kerja Anda, pasang client dan hubungkan workspace Anda (macOS otomatis hanya memasang client; di laptop Linux tambahkan `--client-only`):
+Di komputer kerja Anda, pasang client dan hubungkan workspace Anda menggunakan IP server, token, dan pin sertifikat SPKI:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only
-skoci connect --server https://skoci.<base-domain> --token <token>
+skoci connect --server <server-public-ip> --token <token> --pin sha256:<spki-pin>
 ```
+Profil disimpan di `~/.config/skoci/servers.json` (0600) dan `.env.skoci` (0600, masuk `.gitignore`).
 
 ### 4. Inisialisasi & Deploy ke Preview
 Masuk ke repositori proyek Anda:
@@ -93,7 +98,7 @@ Ajukan promosi ke production:
 ```bash
 skoci promote "Semua pengujian preview lolos, siap rilis produksi"
 ```
-Perintah mengembalikan kode keluar 2 dan `request_id`. Setujui melalui web dashboard di `https://skoci.<base-domain>` atau lewat terminal server:
+Perintah mengembalikan kode keluar 2 dan `request_id`. Setujui melalui web dashboard di `https://<server-public-ip>:8443` atau lewat terminal server:
 ```bash
 sudo skoci approve <request_id>
 ```
@@ -105,14 +110,14 @@ sudo skoci approve <request_id>
 Salin dan tempelkan instruksi prompt ini ke asisten coding AI Anda (Claude Code, OMP, Cursor, dll.):
 
 ```text
-Anda dapat mendeploy dan mengelola aplikasi ini menggunakan Skoci CLI.
-Aturan Operasional:
+Operational Rules:
 1. Selalu jalankan perintah dengan `--json` untuk output terstruktur (contoh: `skoci deploy --json`).
 2. Jika perintah gagal, periksa `error.code` dan jalankan perintah yang disarankan pada `error.fix`.
-3. Kode keluar 2 berarti membutuhkan persetujuan manusia (deploy produksi, restore db, hapus app). Laporkan `request_id` kepada pengguna agar dapat disetujui di dashboard atau via `skoci approve`.
-4. Jangan pernah mencoba atau meminta akses SSH. Semua interaksi berjalan via HTTPS menggunakan scoped token.
-5. Jangan pernah mencetak, mencatat di log, atau meng-commit token (`sk_agent_*`, `sk_master_*`).
-```
+3. Kode keluar 2 berarti membutuhkan persetujuan manusia (deploy produksi, restore db, hapus app). Laporkan `request_id` kepada pengguna agar dapat disetujui di dashboard pada https://<server-ip>:8443 atau via `skoci approve`.
+4. Jangan pernah mencoba atau meminta akses SSH. Semua interaksi berjalan via HTTPS ter-pinning menggunakan scoped token.
+5. Deployment produksi wajib menggunakan domain kustom asli (magic DNS *.sslip.io ditolak). Verifikasi DNS sebelum deploy dengan `skoci domain check <host>`.
+6. Perlakukan deployment `degraded` sebagai kegagalan yang perlu diselidiki: periksa log dengan `skoci logs --tail 100 --json` dan jangan promosikan ke produksi.
+7. Jangan pernah mencetak, mencatat di log, atau meng-commit token (`sk_agent_*`, `sk_master_*`).
 
 ---
 
@@ -120,10 +125,10 @@ Aturan Operasional:
 
 * **Bebas Injeksi Shell:** Perintah Docker dan sistem dijalankan sebagai vektor argumen terstruktur (`tokio::process::Command`); input dari user atau agen tidak pernah disisipkan ke string shell.
 * **Scoped Token Terisolasi & Input via Stdin:** Token agen (`sk_agent_<app>_*`) disimpan sebagai hash SHA-256; batasan aplikasi ditegakkan di SQLite. Token dan secret dapat dialirkan via stdin untuk mencegah kebocoran pada daftar proses (`ps`, `/proc`) atau riwayat shell.
-* **Kebijakan Tanpa SSH:** Tidak ada private key SSH yang disimpan pada workstation pengembang atau lingkungan agen.
+* **Kebijakan Tanpa SSH & SPKI Pinning:** Tidak ada private key SSH yang disimpan pada workstation pengembang atau lingkungan agen. Semua komunikasi diarahkan via `https://<server-ip>:8443` yang dipin ke kunci SPKI permanen server (`sha256:...`).
 * **Enkripsi Secret & Sanitasi Environment:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600` yang langsung dihapus, dan disamarkan sebagai `[REDACTED]` di log. Berkas `.env.skoci` pada client dibatasi pada allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), dan subprocess dijalankan dengan environment yang bersih.
 * **Deny List Pengemasan:** Perintah deploy secara otomatis mengecualikan berkas sensitif (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`), dan kompresi arsip menggunakan izin privat `0600`.
-* **Isolasi Kontrol Lokal & Binding HTTPS SNI:** API hanya mengikat `127.0.0.1:8787`. Pada listener HTTPS publik, header `:authority`/`Host` wajib cocok dengan TLS SNI (mencegah domain fronting dengan HTTP `421 Misdirected Request`).
+* **Isolasi Kontrol Lokal & Pinned TLS Bind:** API hanya mengikat `127.0.0.1:8787` secara lokal dan `0.0.0.0:8443` dengan TLS ter-pinning SPKI. Pada listener HTTPS publik (port 443), header `:authority`/`Host` wajib cocok dengan TLS SNI (mencegah domain fronting dengan HTTP `421 Misdirected Request`).
 * **Proteksi Kepemilikan Host:** Domain kustom dan auto-host dipartisi secara ketat; klaim silang atau pembajakan host antar-aplikasi ditolak.
 * **Gerbang Persetujuan Manusia & Pinning ID Image:** Rilis produksi, pemulihan database, dan operasi destruktif mewajibkan persetujuan manusia yang dikunci pada image ID Docker yang tidak dapat diubah (mencegah manipulasi TOCTOU).
 * **Hardening Systemd:** Layanan server diamankan dengan `UMask=0077`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`, `RestrictNamespaces=true`, dan `LimitNOFILE=65536`.
@@ -133,11 +138,10 @@ Aturan Operasional:
 
 * **Grup Docker ≈ Root:** Akses ke `/var/run/docker.sock` setara dengan hak akses root di Linux; Skoci memperketat proses server, namun akses soket Docker tetap berprivilese setara root.
 * **Jaringan Outbound Kontainer Terbuka:** Kontainer mengeksekusi kode user/agen di dalam sandbox Docker standar dengan koneksi keluar internet yang tidak dibatasi.
+* **Trust-on-First-Use (TOFU) via SSH:** Setup awal server (`skoci server setup`) mem-bootstrap VPS dan menetapkan pin SPKI melalui SSH. Jika koneksi SSH pertama disadap tanpa verifikasi host key SSH, trust awal bisa terganggu. Koneksi berikutnya dipin secara permanen di `~/.config/skoci/servers.json`.
+* **Isolasi Docker Server Tunggal:** Isolasi mengandalkan namespace dan cgroup kernel Linux bawaan Docker tanpa virtualisasi microVM perangkat keras.
 * **Klaim Domain Kustom First-Come:** Agen dapat mendaftarkan domain kustom apa pun yang belum digunakan oleh aplikasi lain pada server tersebut.
 * **Checksum Rilis dari Asal yang Sama:** Berkas checksum rilis berada pada rilis GitHub yang sama dengan binary; verifikasi keaslian dan integritas menggunakan `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
-* **Isolasi Docker Server Tunggal:** Isolasi mengandalkan namespace dan cgroup kernel Linux bawaan Docker tanpa virtualisasi microVM perangkat keras.
-* **Batas Kecepatan ACME & sslip.io:** Penyediaan TLS otomatis untuk subdomain `*.sslip.io` berbagi kuota global Let's Encrypt dengan semua pengguna publik `sslip.io`. Gunakan domain kustom untuk keandalan produksi.
-
 ---
 
 ## Migrasi dari Versi 0.1

@@ -1,6 +1,7 @@
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::tools::{call_tool, list_tools};
 use serde_json::json;
+use skoci_api::error::SkociResult;
 use skoci_client::SkociClient;
 use std::io::{self, BufRead, Write};
 
@@ -9,10 +10,13 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(server_url: impl Into<String>, token: Option<String>) -> Self {
-        Self {
-            client: SkociClient::new(server_url, token),
-        }
+    pub fn new(
+        server_url: impl Into<String>,
+        token: Option<String>,
+        pin: Option<String>,
+    ) -> SkociResult<Self> {
+        let client = SkociClient::new(server_url, token, pin)?;
+        Ok(Self { client })
     }
 
     pub async fn run_stdio(&self) -> anyhow::Result<()> {

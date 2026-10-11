@@ -2,6 +2,7 @@ use crate::router::{
     clean_hostname, decide_routing_authority, is_dns_name, ProxyRouter, Resolution,
     RoutingAuthorityError,
 };
+use crate::tls_shared::{CertSlot, HttpChallenges, HTTP01_PREFIX};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
@@ -165,6 +166,9 @@ pub struct ProxyConfig {
     pub http_bind: SocketAddr,
     pub https_bind: SocketAddr,
     pub acme: Option<AcmeSettings>,
+    pub public_ip: Option<IpAddr>,
+    pub http_challenges: HttpChallenges,
+    pub ip_cert: CertSlot,
 }
 
 #[derive(Clone, Default)]
@@ -270,12 +274,12 @@ impl ProxyStatus {
         certs.get(host).map(|s| s.issued).unwrap_or(false)
     }
 
-    pub(crate) fn init_certificate(&self, host: &str) {
+    pub fn init_certificate(&self, host: &str) {
         let mut certs = self.inner.certificates.write();
         certs.entry(host.to_string()).or_default();
     }
 
-    pub(crate) fn set_certificate_status(&self, host: &str, issued: bool, err: Option<String>) {
+    pub fn set_certificate_status(&self, host: &str, issued: bool, err: Option<String>) {
         let mut certs = self.inner.certificates.write();
         let entry = certs.entry(host.to_string()).or_default();
         entry.issued = issued;
@@ -291,14 +295,18 @@ impl ProxyStatus {
 #[derive(Debug)]
 struct SniCertResolver {
     resolvers: Arc<RwLock<HashMap<String, Arc<ResolvesServerCertAcme>>>>,
+    ip_cert: CertSlot,
 }
 
 impl ResolvesServerCert for SniCertResolver {
     fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
-        let sni = client_hello.server_name()?;
-        let clean = clean_hostname(sni);
-        let resolver = self.resolvers.read().get(&clean).cloned()?;
-        resolver.resolve(client_hello)
+        if let Some(sni) = client_hello.server_name() {
+            let clean = clean_hostname(sni);
+            let resolver = self.resolvers.read().get(&clean).cloned()?;
+            resolver.resolve(client_hello)
+        } else {
+            self.ip_cert.get()
+        }
     }
 }
 
@@ -326,17 +334,18 @@ pub async fn start_proxy_with_header_timeout(
             status.set_http_listening(true);
             status.set_http_addr(local_addr);
 
-            let router_clone = router.clone();
-            let client_clone = client.clone();
-            let status_clone = status.clone();
+            let ctx_clone = ProxyContext {
+                router: router.clone(),
+                client: client.clone(),
+                status: status.clone(),
+                challenges: cfg.http_challenges.clone(),
+                public_ip: cfg.public_ip,
+            };
             let sem_clone = conn_semaphore.clone();
-
             tokio::spawn(async move {
                 run_http_listener(
                     http_listener,
-                    router_clone,
-                    client_clone,
-                    status_clone,
+                    ctx_clone,
                     sem_clone,
                     header_read_timeout,
                 )
@@ -358,6 +367,7 @@ pub async fn start_proxy_with_header_timeout(
             Arc::new(RwLock::new(HashMap::new()));
         let sni_resolver = Arc::new(SniCertResolver {
             resolvers: resolvers.clone(),
+            ip_cert: cfg.ip_cert.clone(),
         });
 
         let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -400,18 +410,19 @@ pub async fn start_proxy_with_header_timeout(
                 status.set_https_listening(true);
                 status.set_https_addr(local_addr);
 
-                let router_clone = router.clone();
-                let client_clone = client.clone();
-                let status_clone = status.clone();
+                let ctx_clone = ProxyContext {
+                    router: router.clone(),
+                    client: client.clone(),
+                    status: status.clone(),
+                    challenges: cfg.http_challenges.clone(),
+                    public_ip: cfg.public_ip,
+                };
                 let sem_clone = conn_semaphore.clone();
-
                 tokio::spawn(async move {
                     run_https_listener(
                         https_listener,
                         tls_acceptor,
-                        router_clone,
-                        client_clone,
-                        status_clone,
+                        ctx_clone,
                         sem_clone,
                         header_read_timeout,
                     )
@@ -541,11 +552,18 @@ async fn run_acme_manager(
     }
 }
 
-async fn run_http_listener(
-    listener: tokio::net::TcpListener,
+#[derive(Clone)]
+struct ProxyContext {
     router: ProxyRouter,
     client: Arc<Client<HttpConnector, Incoming>>,
     status: ProxyStatus,
+    challenges: HttpChallenges,
+    public_ip: Option<IpAddr>,
+}
+
+async fn run_http_listener(
+    listener: tokio::net::TcpListener,
+    ctx: ProxyContext,
     conn_semaphore: Arc<tokio::sync::Semaphore>,
     header_read_timeout: Duration,
 ) {
@@ -571,25 +589,19 @@ async fn run_http_listener(
         };
 
         let io = TokioIo::new(stream);
-        let router_clone = router.clone();
-        let client_clone = client.clone();
-        let status_clone = status.clone();
+        let ctx_clone = ctx.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
             let service = service_fn(move |req: Request<Incoming>| {
-                let router_inner = router_clone.clone();
-                let client_inner = client_clone.clone();
-                let status_inner = status_clone.clone();
+                let ctx_inner = ctx_clone.clone();
                 async move {
                     handle_proxy_request(
                         req,
                         peer_addr.ip(),
                         "http",
                         None,
-                        router_inner,
-                        client_inner,
-                        status_inner,
+                        ctx_inner,
                     )
                     .await
                 }
@@ -616,9 +628,7 @@ async fn run_http_listener(
 async fn run_https_listener(
     listener: tokio::net::TcpListener,
     tls_acceptor: tokio_rustls::TlsAcceptor,
-    router: ProxyRouter,
-    client: Arc<Client<HttpConnector, Incoming>>,
-    status: ProxyStatus,
+    ctx: ProxyContext,
     conn_semaphore: Arc<tokio::sync::Semaphore>,
     header_read_timeout: Duration,
 ) {
@@ -644,9 +654,7 @@ async fn run_https_listener(
         };
 
         let tls_acceptor = tls_acceptor.clone();
-        let router_clone = router.clone();
-        let client_clone = client.clone();
-        let status_clone = status.clone();
+        let ctx_clone = ctx.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -679,9 +687,7 @@ async fn run_https_listener(
 
             let io = TokioIo::new(tls_stream);
             let service = service_fn(move |req: Request<Incoming>| {
-                let router_inner = router_clone.clone();
-                let client_inner = client_clone.clone();
-                let status_inner = status_clone.clone();
+                let ctx_inner = ctx_clone.clone();
                 let sni_inner = sni.clone();
                 async move {
                     handle_proxy_request(
@@ -689,9 +695,7 @@ async fn run_https_listener(
                         peer_addr.ip(),
                         "https",
                         sni_inner,
-                        router_inner,
-                        client_inner,
-                        status_inner,
+                        ctx_inner,
                     )
                     .await
                 }
@@ -736,10 +740,47 @@ async fn handle_proxy_request(
     peer_ip: IpAddr,
     proto: &'static str,
     sni: Option<String>,
-    router: ProxyRouter,
-    client: Arc<Client<HttpConnector, Incoming>>,
-    status: ProxyStatus,
+    ctx: ProxyContext,
 ) -> Result<Response<ProxyBody>, std::convert::Infallible> {
+    if proto == "http" && req.uri().path().starts_with(HTTP01_PREFIX) {
+        if req.method() != hyper::Method::GET && req.method() != hyper::Method::HEAD {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(hyper::header::CONTENT_LENGTH, "0")
+                .body(empty_body())
+                .unwrap());
+        }
+
+        let token = &req.uri().path()[HTTP01_PREFIX.len()..];
+        if token.is_empty() || token.contains('/') || token.len() > 128 {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(hyper::header::CONTENT_LENGTH, "0")
+                .body(empty_body())
+                .unwrap());
+        }
+
+        if let Some(key_auth) = ctx.challenges.get(token) {
+            let body = if req.method() == hyper::Method::HEAD {
+                empty_body()
+            } else {
+                full_body(key_auth.clone().into_bytes())
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "text/plain")
+                .header(hyper::header::CONTENT_LENGTH, key_auth.len().to_string())
+                .body(body)
+                .unwrap());
+        } else {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(hyper::header::CONTENT_LENGTH, "0")
+                .body(empty_body())
+                .unwrap());
+        }
+    }
+
     let uri_auth = req.uri().authority().map(|a| a.as_str());
     let host_hdr = match req.headers().get(hyper::header::HOST) {
         Some(v) => match v.to_str() {
@@ -761,6 +802,7 @@ async fn handle_proxy_request(
         host_hdr,
         is_https,
         sni.as_deref(),
+        ctx.public_ip,
     ) {
         Ok(d) => d,
         Err(RoutingAuthorityError::BadRequest(msg)) => {
@@ -782,7 +824,7 @@ async fn handle_proxy_request(
     let host = routing_decision.clean_host;
     let forward_host = routing_decision.forward_host;
 
-    if proto == "http" && is_dns_name(&host) && status.has_issued_cert(&host) {
+    if proto == "http" && is_dns_name(&host) && ctx.status.has_issued_cert(&host) {
         let pq = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
         let location = format!("https://{host}{pq}");
         return Ok(Response::builder()
@@ -793,11 +835,11 @@ async fn handle_proxy_request(
             .unwrap());
     }
 
-    let resolution = router.resolve(&host).await;
+    let resolution = ctx.router.resolve(&host).await;
 
     if proto == "http" {
         if let Resolution::Control(_) = resolution {
-            if status.tls_enabled() {
+            if ctx.status.tls_enabled() {
                 let pq = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
                 let location = format!("https://{host}{pq}");
                 return Ok(Response::builder()
@@ -921,7 +963,7 @@ async fn handle_proxy_request(
 
     let fwd_req = fwd_builder.body(body).unwrap();
 
-    let mut upstream_resp = match client.request(fwd_req).await {
+    let mut upstream_resp = match ctx.client.request(fwd_req).await {
         Ok(resp) => resp,
         Err(err) => {
             tracing::error!("Failed to connect to upstream {target}: {err}");

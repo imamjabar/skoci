@@ -94,6 +94,11 @@ pub struct DefaultAppRequest {
     pub app: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainCheckRequest {
+    pub host: String,
+}
+
 fn default_env() -> String {
     crate::models::ENV_PREVIEW.to_string()
 }

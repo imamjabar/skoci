@@ -8,6 +8,42 @@ pub const ENV_PRODUCTION: &str = "production";
 /// Max length of an app name. Hostnames like `<app>-preview.<base>` need a DNS label <= 63 chars.
 pub const MAX_APP_NAME_LEN: usize = 40;
 
+/// Default TCP port of the TLS control endpoint (`https://<public-ip>:8443`).
+pub const CONTROL_TLS_PORT: u16 = 8443;
+
+/// Third-party wildcard DNS zones that map `<ip>.<zone>` to an IP. Whoever controls the zone controls the name.
+pub const MAGIC_DNS_ZONES: &[&str] = &[
+    "sslip.io",
+    "nip.io",
+    "xip.io",
+    "traefik.me",
+    "localtest.me",
+    "lvh.me",
+    "nip.direct",
+];
+
+/// True when `host` is, or sits under, a known magic-DNS zone.
+pub fn is_magic_dns(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    MAGIC_DNS_ZONES
+        .iter()
+        .any(|z| h == *z || (h.len() > z.len() && h.ends_with(z) && h.as_bytes()[h.len() - z.len() - 1] == b'.'))
+}
+
+/// Pin format: `sha256:<64 lowercase hex>` of a DER SubjectPublicKeyInfo.
+pub fn spki_pin_from_der(spki_der: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{}", hex::encode(Sha256::digest(spki_der)))
+}
+
+/// Normalizes user input (`sha256:<hex>` or bare hex, any case) and rejects anything else.
+pub fn normalize_spki_pin(input: &str) -> Option<String> {
+    let s = input.trim();
+    let hex_part = s.strip_prefix("sha256:").or_else(|| s.strip_prefix("SHA256:")).unwrap_or(s);
+    (hex_part.len() == 64 && hex_part.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| format!("sha256:{}", hex_part.to_ascii_lowercase()))
+}
+
 /// `skoci.yaml` definition
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkociConfig {

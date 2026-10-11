@@ -45,6 +45,33 @@ pub fn is_sensitive_entry(name: &str, is_dir: bool) -> bool {
     }
     false
 }
+pub const DEFAULT_IGNORED_PATTERNS: &[&str] = &[
+    "node_modules/",
+    "__pycache__/",
+    ".pytest_cache/",
+    "target/",
+    ".venv/",
+    "venv/",
+    "dist/",
+    "build/",
+    ".next/",
+    ".DS_Store",
+];
+
+fn has_negation_under(rel_str: &str, negations: &[String]) -> bool {
+    let rel_slash = format!("{rel_str}/");
+    for neg in negations {
+        let neg_trimmed = neg.trim_start_matches('/');
+        if neg_trimmed.starts_with('*')
+            || neg_trimmed.starts_with(&rel_slash)
+            || neg_trimmed == rel_str
+        {
+            return true;
+        }
+    }
+    false
+}
+
 
 pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     let dir = dir.as_ref();
@@ -84,11 +111,46 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     let excluded_clone = std::sync::Arc::clone(&excluded_sensitive);
     let base_dir = dir.to_path_buf();
 
+    let dockerignore_path = dir.join(".dockerignore");
+    let mut negations = Vec::new();
+    let mut gb = ignore::gitignore::GitignoreBuilder::new(dir);
+
+    for pat in DEFAULT_IGNORED_PATTERNS {
+        let _ = gb.add_line(None, pat);
+    }
+
+    if dockerignore_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&dockerignore_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(neg) = trimmed.strip_prefix('!') {
+                    let neg = neg.trim();
+                    if !neg.is_empty() {
+                        negations.push(neg.to_string());
+                    }
+                }
+                let _ = gb.add_line(Some(dockerignore_path.clone()), trimmed);
+            }
+        }
+    }
+
+    let matcher = std::sync::Arc::new(gb.build().map_err(|e| {
+        SkociError::bad_request(
+            format!("Invalid ignore patterns: {e}"),
+            "Check patterns in .dockerignore",
+        )
+    })?);
+    let negations = std::sync::Arc::new(negations);
+    let matcher_clone = std::sync::Arc::clone(&matcher);
+    let negations_clone = std::sync::Arc::clone(&negations);
+
     let mut builder = WalkBuilder::new(dir);
     builder
         .hidden(false)
         .require_git(false)
-        .add_custom_ignore_filename(".dockerignore")
         .filter_entry(move |entry| {
             if entry.depth() > 0 {
                 let name = entry.file_name().to_string_lossy();
@@ -103,9 +165,31 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
                             .map(|c| c.as_os_str().to_string_lossy())
                             .collect::<Vec<_>>()
                             .join("/");
-                    excluded_clone.lock().push(rel_str);
+                        excluded_clone.lock().push(rel_str);
                     }
                     return false;
+                }
+
+                if let Ok(rel) = entry.path().strip_prefix(&base_dir) {
+                    let rel_str = rel
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/");
+
+                    let match_res = matcher_clone.matched_path_or_any_parents(entry.path(), is_dir);
+                    if match_res.is_ignore() {
+                        if is_dir {
+                            if has_negation_under(&rel_str, &negations_clone) {
+                                return true;
+                            }
+                            excluded_clone.lock().push(rel_str);
+                            return false;
+                        } else {
+                            excluded_clone.lock().push(rel_str);
+                            return false;
+                        }
+                    }
                 }
             }
             true
@@ -419,6 +503,57 @@ mod tests {
         assert!(!entries.contains(&".aws/credentials".to_string()));
         assert!(!entries.contains(&".ssh".to_string()));
         assert!(!entries.contains(&".ssh/id_rsa".to_string()));
+
+        drop(packed);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+    #[test]
+    fn test_package_defaults_and_dockerignore_negation() {
+        let temp = std::env::temp_dir().join(format!("skoci-test-defaults-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+
+        std::fs::write(temp.join("skoci.yaml"), "app: test-defaults\nversion: 1\n").unwrap();
+
+        // Create node_modules with foo.txt and keep.txt
+        let nm = temp.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("foo.txt"), "ignored").unwrap();
+        std::fs::write(nm.join("keep.txt"), "kept").unwrap();
+
+        // Create __pycache__
+        let pyc = temp.join("__pycache__");
+        std::fs::create_dir_all(&pyc).unwrap();
+        std::fs::write(pyc.join("test.pyc"), "bytecode").unwrap();
+
+        // Create .dockerignore with negation
+        std::fs::write(temp.join(".dockerignore"), "!node_modules/keep.txt\n").unwrap();
+
+        let packed = pack_context(&temp).unwrap();
+        let archive_path = packed.path.clone();
+
+        let file = File::open(&archive_path).unwrap();
+        let gz = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            entries.push(entry.path().unwrap().to_string_lossy().to_string());
+        }
+
+        // Whitelisted file must be in the archive
+        assert!(entries.contains(&"node_modules/keep.txt".to_string()));
+
+        // Default-ignored files must NOT be in the archive
+        assert!(!entries.contains(&"node_modules/foo.txt".to_string()));
+        assert!(!entries.contains(&"__pycache__/test.pyc".to_string()));
+
+        // Skipped items must be recorded in excluded_sensitive
+        assert!(
+            packed.excluded_sensitive.contains(&"node_modules/foo.txt".to_string())
+                || packed.excluded_sensitive.contains(&"node_modules".to_string())
+        );
+        assert!(packed.excluded_sensitive.contains(&"__pycache__".to_string()));
 
         drop(packed);
         let _ = std::fs::remove_dir_all(&temp);

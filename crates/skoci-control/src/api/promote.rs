@@ -19,6 +19,12 @@ pub async fn handle_promote(
     if let Err(err) = subject.require_app(&body.app) {
         return api_reply::<()>(Err(err));
     }
+    if let Ok(Some(cfg)) = state.db.get_app_config(&body.app) {
+        if let Err(e) = crate::deploy::check_production_domain_policy(&state, &body.app, "production", &cfg) {
+            return api_reply::<()>(Err(e));
+        }
+    }
+
 
     // Resolve version
     let version = match body.version {
@@ -112,7 +118,13 @@ pub async fn handle_promote(
         existing_image: Some(image_tag),
     };
 
-    tokio::spawn(run_deploy_pipeline(state, opts, buffer));
+    tokio::spawn(run_deploy_pipeline(state.clone(), opts, buffer));
+
+    let estimated_secs = state
+        .db
+        .get_estimated_deploy_duration(&body.app, "production")
+        .ok()
+        .flatten();
 
     let accepted = DeployAccepted {
         deployment_id: deployment_id.clone(),
@@ -120,6 +132,7 @@ pub async fn handle_promote(
         env: "production".to_string(),
         version: version.clone(),
         events_url: format!("/api/deployments/{deployment_id}/events"),
+        estimated_secs,
     };
 
     api_reply(Ok(PromoteResponse {

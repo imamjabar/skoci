@@ -655,6 +655,68 @@ impl Database {
         Ok(opt)
     }
 
+    pub fn get_estimated_deploy_duration(&self, app: &str, env: &str) -> SkociResult<Option<u64>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT created_at, finished_at, evidence_json
+                FROM deployments
+                WHERE app = ?1 AND env = ?2 AND status IN ('live', 'degraded') AND finished_at IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 5
+                "#,
+            )
+            .map_err(|e| SkociError::internal(format!("Failed to prepare query: {e}"), "Try again"))?;
+
+        let rows = stmt
+            .query_map(params![app, env], |row| {
+                let created: String = row.get(0)?;
+                let finished: Option<String> = row.get(1)?;
+                let evidence: Option<String> = row.get(2)?;
+                Ok((created, finished, evidence))
+            })
+            .map_err(|e| SkociError::internal(format!("Failed to execute query: {e}"), "Try again"))?;
+
+        let mut durations = Vec::new();
+        for row in rows {
+            let (created_str, finished_str, evidence_str) = row
+                .map_err(|e| SkociError::internal(format!("Failed to read row: {e}"), "Try again"))?;
+
+            if let Some(ev_str) = evidence_str {
+                if let Ok(ev) = serde_json::from_str::<serde_json::Value>(&ev_str) {
+                    if let Some(ms) = ev.get("duration_ms").and_then(|v| v.as_u64()) {
+                        durations.push(ms / 1000);
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(fin_str) = finished_str {
+                if let (Ok(created), Ok(finished)) = (
+                    DateTime::parse_from_rfc3339(&created_str),
+                    DateTime::parse_from_rfc3339(&fin_str),
+                ) {
+                    let diff = (finished - created).num_seconds();
+                    if diff >= 0 {
+                        durations.push(diff as u64);
+                    }
+                }
+            }
+        }
+
+        if durations.is_empty() {
+            Ok(None)
+        } else {
+            let sum: u64 = durations.iter().sum();
+            Ok(Some(sum / durations.len() as u64))
+        }
+    }
+
+    pub fn mean_deployment_duration_secs(&self, app: &str, env: &str) -> SkociResult<Option<u64>> {
+        self.get_estimated_deploy_duration(app, env)
+    }
+
     // --- Routes ---
 
     pub fn upsert_route(&self, rec: &RouteRecord) -> SkociResult<()> {

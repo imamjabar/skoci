@@ -23,7 +23,7 @@ Every layer of Skoci treats agent input as untrusted data and enforces defense-i
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 3. Zero-SSH Key Policy                        │ ◄── No root SSH keys stored on workstations
+│ 3. Zero-SSH Policy & Pinned Control TLS       │ ◄── HTTPS on :8443 with SPKI pin; no SSH keys
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
@@ -33,7 +33,7 @@ Every layer of Skoci treats agent input as untrusted data and enforces defense-i
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 5. Container Network Isolation & Local Bind   │ ◄── API bound to 127.0.0.1; per-app network
+│ 5. Pinned Control TLS & Network Isolation     │ ◄── 127.0.0.1:8787 local, 0.0.0.0:8443 TLS
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
@@ -69,10 +69,17 @@ Every layer of Skoci treats agent input as untrusted data and enforces defense-i
 
 ---
 
-### Pillar 3: Zero-SSH Policy (No Root SSH Keys)
-* Tools like Kamal require developers and CI runners to store root SSH private keys. If a developer workstation or AI agent sandbox is compromised, the attacker takes complete control of the host.
-* **Skoci eliminates SSH for day-to-day operations:** Agents communicate exclusively over HTTPS REST API and MCP authenticated by scoped application tokens.
-
+### Pillar 3: Zero-SSH Policy & SPKI-Pinned Control TLS
+* Tools like Kamal require developers and CI runners to store root SSH private keys on laptops and CI runners. If a workstation or AI agent sandbox is compromised, the attacker takes complete control of the host.
+* **Skoci eliminates SSH for day-to-day operations:** Server setup is run once from the laptop using `skoci server setup --host <ip> --user <u>` (or the server install script). Once installed, developers and AI agents communicate exclusively over HTTPS authenticated by scoped application tokens (`skoci connect --server <ip> --token <token> --pin <pin>`). No SSH keys are ever stored in agent sandboxes or project directories.
+* **SPKI Pinning Security Model (`sha256:...`):**
+  - The control plane generates an ECDSA P-256 private key at `/var/lib/skoci/tls/control.key` (permissions `0600`) upon initial startup. This key is generated once and **never rotated automatically**, ensuring that the SPKI fingerprint (`control.pin`, permissions `0644`) remains stable across certificate renewals (whether Let's Encrypt ACME IP certificates or self-signed fallbacks).
+  - When connecting with `skoci connect --server <ip> --token <t> --pin <p>`, the client enforces that the TLS leaf certificate's DER SubjectPublicKeyInfo SHA-256 hash matches the pinned value exactly.
+  - **What SPKI Pinning Protects Against:**
+    - **Rogue & Compromised Certificate Authorities:** Even if a public CA is compromised or issues an unauthorized certificate for your server IP or domain, the connection is rejected immediately because the key material does not match the pinned SPKI digest.
+    - **DNS Spoofing & BGP Hijacking:** An attacker intercepting or redirecting network traffic to an adversary-controlled server cannot complete the TLS handshake without the host's private key.
+    - **Man-in-the-Middle (MITM) Interception:** Network proxies or TLS-terminating firewalls attempting to inspect traffic cannot decrypt connections without triggering a fatal `pin_mismatch` error.
+    - **Zero Third-Party DNS Dependency:** Eliminates reliance on external wildcard DNS providers (like `sslip.io` or `nip.io`) for control plane identity.
 ---
 
 ### Pillar 4: Secret Encryption at Rest & Secure Injection
@@ -84,14 +91,19 @@ Every layer of Skoci treats agent input as untrusted data and enforces defense-i
 * **Packaging Deny List:** Project uploads (`pack_context`) enforce a non-overridable sensitive file deny list: `.env`, `.env.*` (except `.env.example`, `.env.sample`, `.env.template`), `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, and directories `.aws`, `.ssh`, `.docker`, `.gnupg`. Packed archive temp files are created with private `0600` permissions.
 * **Log Redaction:** Any secret value of length >= 4 characters is automatically scrubbed from container logs and replaced with `[REDACTED]`.
 
-### Pillar 5: Local Bind Isolation & Container Networks
-* **Local Bind `127.0.0.1:8787`:** The Skoci Control API binds strictly to `127.0.0.1:8787` and is never exposed directly to public interfaces. External traffic routes through the TLS reverse proxy or an SSH tunnel.
-* **HTTPS SNI Binding:** On the HTTPS listener, the HTTP/2 `:authority` or HTTP/1 `Host` header must strictly match the TLS SNI (Server Name Indication) negotiated during the handshake. If they differ, or if an empty/IP-literal host is sent over HTTPS, the proxy returns `421 Misdirected Request`. This prevents domain fronting and virtual host routing confusion. Default app fallback applies solely to plain-HTTP listeners for IP-literal or empty hosts.
-* **Host Ownership & Collision Protection:** An agent may route only its own auto hosts (`<app>.<base>`, `<app>-preview.<base>`) and custom domains that are not under `<base>`, not equal to the control/API domain, and not owned by another app. Host ownership is established on first use (any route entry or pending/active deployment); subsequent attempts by other apps or environments to claim an existing host are rejected with `conflict`. Admin deployments follow the exact same ownership rules.
+### Pillar 5: Control Plane TLS, Local Bind & Container Networks
+* **Local Bind `127.0.0.1:8787` & Pinned TLS `0.0.0.0:8443`:** The plain-HTTP Control API binds strictly to `127.0.0.1:8787` for local administration. Remote management traffic connects securely to the TLS-pinned port `8443` (`SKOCI_CONTROL_TLS_BIND`), protected by SPKI pinning.
+* **Elimination of Magic DNS in Production:**
+  - Skoci refuses production deployments configured with third-party magic DNS hostnames (such as `*.sslip.io`).
+  - **Why Magic DNS is Unsuitable for Production:**
+    1. **Third-Party Zone Control:** The DNS zone is operated by an external third party. Whoever controls or compromises the third-party zone can create or repoint DNS records and obtain a valid Let's Encrypt certificate for your hostname, completely breaking confidentiality and integrity.
+    2. **Shared Rate-Limit Bucket:** Thousands of unrelated internet users share the public Let's Encrypt rate-limit budget of `sslip.io`, resulting in intermittent or catastrophic certificate issuance failures.
+  - Magic DNS is strictly opt-in (`--magic-dns` installer flag) for preview and temporary testing only. Production environments require genuine custom domains verified with `skoci domain check <host>`.
+* **HTTPS SNI Binding:** On the HTTPS reverse proxy listener (port 443), the HTTP/2 `:authority` or HTTP/1 `Host` header must strictly match the TLS SNI (Server Name Indication) negotiated during the handshake. If they differ, or if an empty/IP-literal host is sent over HTTPS, the proxy returns `421 Misdirected Request`. This prevents domain fronting and virtual host routing confusion.
+* **Host Ownership & Collision Protection:** An agent may route only its own auto hosts and custom domains that are not under `<base>`, not equal to the control/API domain, and not owned by another app. Host ownership is established on first use; subsequent attempts by other apps or environments to claim an existing host are rejected with `conflict`.
 * **Dashboard Session Cookie:** The web dashboard uses a `skoci_session` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS) with a 12-hour expiry, and enforces the CSRF header `X-Skoci-Dashboard: 1` on all mutating requests.
 * **Constant-Time Verification:** Master tokens are validated using constant-time string comparisons to prevent timing attacks.
 * **Container Network Isolation:** Each application and its accessories run inside a dedicated Docker bridge network (`skoci-<app>`). Containers for app `toko` cannot access or interfere with containers for app `blog`.
-
 ### Pillar 6: Systemd Hardening & Docker Group Caveat
 The Skoci background service runs under a strictly confined systemd unit:
 * `User=skoci`, `Group=skoci`, `SupplementaryGroups=docker`
@@ -134,7 +146,7 @@ While Skoci implements strict defense-in-depth boundaries, operators must be awa
 
 1. **`docker group ≈ root`:** Any user or service belonging to the Linux `docker` group possesses access to `/var/run/docker.sock`. On Linux, access to the Docker socket is functionally equivalent to host root access. Skoci hardens its service process to mitigate injection, but socket access remains root-equivalent.
 2. **Unrestricted Container Outbound Network:** AI coding agents deploy and execute arbitrary code within their designated container sandbox. Container outbound network connections are unrestricted by default (containers can establish outbound connections to internet destinations).
-3. **First-Come Custom Domain Claiming:** Custom domains operate on a first-come, first-served basis. Any agent can claim an unclaimed custom domain for its application as long as no other application on the instance currently uses it.
-4. **Same-Origin Release Checksums:** The `.sha256` checksum files are hosted within the same GitHub Release assets as the binaries themselves. To verify release integrity against repository tampering, operators should use GitHub artifact attestations (`gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`).
-5. **Single-Server Docker Isolation:** Skoci is designed for single-node deployments and relies on standard Docker container boundaries (Linux cgroups and namespaces). It does not provide hypervisor or microVM-level isolation (e.g. Firecracker or gVisor).
-6. **ACME & sslip.io Rate Limits:** Automatic TLS provisioning using `sslip.io` subdomains shares global Let's Encrypt rate limits across all internet users of the public `sslip.io` service. For mission-critical production workloads, operators should configure custom domains with dedicated DNS.
+3. **First-Use Trust Established Over SSH (TOFU):** During initial setup (`skoci server setup --host <ip> --user <u>`), the server is bootstrapped and the initial SPKI pin is established over SSH. If the initial SSH connection itself is intercepted on first connection without verifying host keys, the initial trust could be compromised. Once the pin is saved in `~/.config/skoci/servers.json`, all future connections are pinned and immune to MITM.
+4. **Single-Server Docker Isolation:** Skoci is designed for single-node deployments and relies on standard Docker container boundaries (Linux cgroups and namespaces). It does not provide hypervisor or microVM-level isolation (e.g. Firecracker or gVisor).
+5. **First-Come Custom Domain Claiming:** Custom domains operate on a first-come, first-served basis within the instance. Any agent can claim an unclaimed custom domain for its application as long as no other application on the instance currently uses it.
+6. **Same-Origin Release Checksums:** The `.sha256` checksum files are hosted within the same GitHub Release assets as the binaries themselves. To verify release integrity against repository tampering, operators should use GitHub artifact attestations (`gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`).

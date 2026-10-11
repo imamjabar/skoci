@@ -2,7 +2,8 @@ use serde::Serialize;
 use skoci_api::error::SkociError;
 use skoci_api::models::ApiResponse;
 use skoci_api::responses::{
-    ApprovalInfo, DeploymentInfo, DoctorResponse, LogsResponse, StatusResponse, TokenInfo,
+    ApprovalInfo, DeploymentInfo, DoctorResponse, DomainCheckResponse, LogsResponse,
+    StatusResponse, TokenInfo,
 };
 
 pub fn print_json<T: Serialize>(resp: &ApiResponse<T>) {
@@ -204,6 +205,32 @@ pub fn render_logs(logs: &LogsResponse) {
         }
     }
 }
+pub fn render_domain_check(check: &DomainCheckResponse) {
+    if check.points_here {
+        println!("✓ Host '{}' correctly points to this server", check.host);
+    } else {
+        println!("✗ Host '{}' does NOT point to this server", check.host);
+    }
+    let exp = if check.expected_ips.is_empty() {
+        "(none)".to_string()
+    } else {
+        check.expected_ips.join(", ")
+    };
+    let res = if check.resolved_ips.is_empty() {
+        "(none)".to_string()
+    } else {
+        check.resolved_ips.join(", ")
+    };
+    println!("  Expected IPs: {exp}");
+    println!("  Resolved IPs: {res}");
+    if check.magic_dns {
+        println!("  Magic DNS:    Yes (preview only)");
+    }
+    if let Some(hint) = &check.record_hint {
+        println!("\nDNS Action Required:\n  {hint}");
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

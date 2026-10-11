@@ -41,23 +41,28 @@
 ## Quickstart (3 Minutes)
 
 ### 1. Install Skoci on VPS / 64-bit Raspberry Pi
-Run on your server:
+Run remote setup from your workstation:
+```bash
+skoci server setup --host <server-ip> --user root
+```
+Or run directly in your server terminal:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
-Ensure ports **80** and **443** are open in your VPS provider firewall.
+Ensure ports **80**, **443**, and **8443** are open in your VPS provider firewall.
 
 ### 2. Create Application Token on Server
-On the server, create a scoped token for your application:
+If installing manually on the server, create a scoped token for your application:
 ```bash
-skoci token create --app toko --name laptop
+sudo skoci token create --app toko --name laptop
 ```
 
 ### 3. Connect Laptop to Server
-On your local developer workstation:
+On your local developer workstation, link your workspace to the pinned control plane:
 ```bash
-skoci connect --server https://skoci.<base-domain> --token sk_agent_toko_xxxx
+skoci connect --server <server-ip> --token sk_agent_toko_xxxx --pin sha256:<spki-pin>
 ```
+Credentials and pins are saved in `~/.config/skoci/servers.json` and `.env.skoci`.
 
 ### 4. Deploy from Project Repository
 Navigate to your application repository directory:
@@ -67,8 +72,7 @@ skoci init
 skoci deploy --env preview
 ```
 
-Your application is immediately live at `https://toko-preview.<base-domain>`.
-
+Your application builds remotely on Docker and goes live with real-time progress streaming.
 ---
 
 ## Documentation Index

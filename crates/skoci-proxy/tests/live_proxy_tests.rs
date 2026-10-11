@@ -157,6 +157,9 @@ async fn test_live_proxy_end_to_end() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         https_bind: "127.0.0.1:0".parse().unwrap(),
         acme: None,
+        public_ip: None,
+        http_challenges: Default::default(),
+        ip_cert: Default::default(),
     };
 
     let status = start_proxy(cfg, router.clone()).await;
@@ -342,6 +345,9 @@ async fn test_websocket_upgrade_is_tunneled() {
             http_bind: "127.0.0.1:0".parse().unwrap(),
             https_bind: "127.0.0.1:0".parse().unwrap(),
             acme: None,
+            public_ip: None,
+            http_challenges: Default::default(),
+            ip_cert: Default::default(),
         },
         router,
     )
@@ -368,4 +374,291 @@ async fn test_websocket_upgrade_is_tunneled() {
         .expect("echo through the upgraded tunnel")
         .unwrap();
     assert_eq!(&buf[..n], b"frame-bytes");
+}
+
+#[tokio::test]
+async fn test_http01_challenge_live() {
+    let challenges = skoci_proxy::HttpChallenges::default();
+    challenges.insert("token-abc-123", "token-abc-123.auth-key-secret-456");
+    challenges.insert("token-xyz", "token-xyz.key-auth-foo");
+
+    let router = ProxyRouter::new();
+    let cfg = ProxyConfig {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        https_bind: "127.0.0.1:0".parse().unwrap(),
+        acme: None,
+        public_ip: None,
+        http_challenges: challenges.clone(),
+        ip_cert: Default::default(),
+    };
+
+    let status = start_proxy(cfg, router).await;
+    let http_addr = status.http_addr().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // 1. Token hit returns 200 + exact key authorization
+    let resp = client
+        .get(format!("http://{http_addr}/.well-known/acme-challenge/token-abc-123"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "text/plain"
+    );
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "token-abc-123.auth-key-secret-456");
+
+    // 2. Token hit with HEAD request returns 200 + empty body
+    let resp = client
+        .head(format!("http://{http_addr}/.well-known/acme-challenge/token-abc-123"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "text/plain"
+    );
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "");
+
+    // 3. Unknown token returns 404 with empty body
+    let resp = client
+        .get(format!("http://{http_addr}/.well-known/acme-challenge/unknown-token"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "");
+
+    // 4. Traversal-ish token returns 404
+    let resp = client
+        .get(format!("http://{http_addr}/.well-known/acme-challenge/foo/bar"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let resp = client
+        .get(format!("http://{http_addr}/.well-known/acme-challenge/../secret"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // 5. Token longer than 128 chars returns 404
+    let long_token = "a".repeat(129);
+    challenges.insert(&long_token, "should-not-reach");
+    let resp = client
+        .get(format!("http://{http_addr}/.well-known/acme-challenge/{long_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // 6. Challenge answered even when Host header is missing
+    let mut tcp = tokio::net::TcpStream::connect(http_addr).await.unwrap();
+    tcp.write_all(b"GET /.well-known/acme-challenge/token-xyz HTTP/1.0\r\n\r\n")
+        .await
+        .unwrap();
+    let mut raw_resp = Vec::new();
+    tcp.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    assert!(resp_str.starts_with("HTTP/1.0 200 OK") || resp_str.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp_str.contains("token-xyz.key-auth-foo"));
+
+    // 7. Challenge answered even when Host header is invalid authority syntax (userinfo or invalid domain)
+    let mut tcp = tokio::net::TcpStream::connect(http_addr).await.unwrap();
+    tcp.write_all(b"GET /.well-known/acme-challenge/token-xyz HTTP/1.1\r\nHost: user@evil.com\r\n\r\n")
+        .await
+        .unwrap();
+    let mut raw_resp = Vec::new();
+    tcp.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    assert!(resp_str.starts_with("HTTP/1.1 200 OK"), "expected 200 OK, got: {resp_str}");
+    assert!(resp_str.contains("token-xyz.key-auth-foo"));
+
+    // Non-UTF8 header bytes (obs-text) which fails to_str() on Host header
+    let mut tcp = tokio::net::TcpStream::connect(http_addr).await.unwrap();
+    tcp.write_all(b"GET /.well-known/acme-challenge/token-xyz HTTP/1.1\r\nHost: \xff\xff\r\n\r\n")
+        .await
+        .unwrap();
+    let mut raw_resp = Vec::new();
+    tcp.read_to_end(&mut raw_resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&raw_resp);
+    assert!(resp_str.starts_with("HTTP/1.1 200 OK"), "expected 200 OK, got: {resp_str}");
+    assert!(resp_str.contains("token-xyz.key-auth-foo"));
+    // 8. Challenge is never redirected to HTTPS even if domain cert is present
+    status.init_certificate("app.example.com");
+    status.set_certificate_status("app.example.com", true, None);
+    let resp = client
+        .get(format!("http://{http_addr}/.well-known/acme-challenge/token-abc-123"))
+        .header("Host", "app.example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "token-abc-123.auth-key-secret-456");
+}
+
+#[derive(Debug)]
+struct DangerNoVerify;
+
+impl rustls::client::danger::ServerCertVerifier for DangerNoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+#[tokio::test]
+async fn test_raw_ip_tls_live() {
+    let (upstream_addr, _upstream_state) = spawn_raw_upstream().await;
+
+    let router = ProxyRouter::new();
+    router
+        .upsert_route(Route {
+            app: "my-app".to_string(),
+            env: "production".to_string(),
+            hosts: vec!["my-app.local".to_string()],
+            target: upstream_addr,
+            version: "v1".to_string(),
+        })
+        .await
+        .unwrap();
+    router.set_default_app(Some("my-app".to_string())).await;
+
+    // Generate self-signed cert for IP 127.0.0.1
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let cert_der = cert.cert.der().to_vec();
+    let key_der = cert.key_pair.serialized_der().to_vec();
+
+    let cert_chain = vec![rustls::pki_types::CertificateDer::from(cert_der)];
+    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(key_der),
+    );
+    let signing_key = rustls::crypto::ring::sign::any_supported_type(&private_key).unwrap();
+    let certified_key = Arc::new(rustls::sign::CertifiedKey::new(cert_chain, signing_key));
+
+    let ip_cert = skoci_proxy::CertSlot::default();
+    ip_cert.set(certified_key);
+
+    let temp_dir = std::env::temp_dir().join(format!("skoci-test-acme-{}", std::process::id()));
+    let acme = skoci_proxy::server::AcmeSettings {
+        email: None,
+        cache_dir: temp_dir,
+        staging: true,
+    };
+
+    let public_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let cfg = ProxyConfig {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        https_bind: "127.0.0.1:0".parse().unwrap(),
+        acme: Some(acme),
+        public_ip: Some(public_ip),
+        http_challenges: Default::default(),
+        ip_cert,
+    };
+
+    let status = start_proxy(cfg, router).await;
+    assert!(status.https_listening());
+    let https_addr = status.https_addr().unwrap();
+
+    let client_tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(DangerNoVerify))
+    .with_no_client_auth();
+
+    let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(client_tls_config));
+
+    // 1. no-SNI (ServerName::IpAddress) + authority == public_ip -> routed to default app (200 OK)
+    {
+        let server_name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let stream = tokio::net::TcpStream::connect(https_addr).await.unwrap();
+        let mut tls_stream = tls_connector.connect(server_name, stream).await.unwrap();
+
+        let req = format!("GET / HTTP/1.1\r\nHost: {public_ip}\r\nConnection: close\r\n\r\n");
+        tls_stream.write_all(req.as_bytes()).await.unwrap();
+
+        let mut resp_bytes = Vec::new();
+        tls_stream.read_to_end(&mut resp_bytes).await.unwrap();
+        let resp_str = String::from_utf8_lossy(&resp_bytes);
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"), "expected 200 OK, got: {resp_str}");
+    }
+
+    // 2. no-SNI + authority is a different IP -> 421 Misdirected Request
+    {
+        let server_name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let stream = tokio::net::TcpStream::connect(https_addr).await.unwrap();
+        let mut tls_stream = tls_connector.connect(server_name, stream).await.unwrap();
+
+        let req = "GET / HTTP/1.1\r\nHost: 127.0.0.2\r\nConnection: close\r\n\r\n";
+        tls_stream.write_all(req.as_bytes()).await.unwrap();
+
+        let mut resp_bytes = Vec::new();
+        tls_stream.read_to_end(&mut resp_bytes).await.unwrap();
+        let resp_str = String::from_utf8_lossy(&resp_bytes);
+        assert!(
+            resp_str.starts_with("HTTP/1.1 421 Misdirected Request"),
+            "expected 421, got: {resp_str}"
+        );
+    }
+
+    // 3. no-SNI + authority is a DNS name -> 421 Misdirected Request
+    {
+        let server_name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let stream = tokio::net::TcpStream::connect(https_addr).await.unwrap();
+        let mut tls_stream = tls_connector.connect(server_name, stream).await.unwrap();
+
+        let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
+        tls_stream.write_all(req.as_bytes()).await.unwrap();
+
+        let mut resp_bytes = Vec::new();
+        tls_stream.read_to_end(&mut resp_bytes).await.unwrap();
+        let resp_str = String::from_utf8_lossy(&resp_bytes);
+        assert!(
+            resp_str.starts_with("HTTP/1.1 421 Misdirected Request"),
+            "expected 421, got: {resp_str}"
+        );
+    }
 }

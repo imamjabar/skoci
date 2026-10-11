@@ -84,6 +84,12 @@ pub async fn handle_approve(
                     "Create a new promotion request",
                 )));
             }
+            if let Ok(Some(cfg)) = state.db.get_app_config(&approval.app) {
+                if let Err(e) = crate::deploy::check_production_domain_policy(&state, &approval.app, "production", &cfg) {
+                    return api_reply::<()>(Err(e));
+                }
+            }
+
 
             let image_tag = format!("skoci/{}:{}", approval.app, version);
             let deployment_id = format!("dep_{}", uuid::Uuid::new_v4().simple());
@@ -124,12 +130,19 @@ pub async fn handle_approve(
                 &format!("Approval {} approved", body.request_id),
             );
 
+            let estimated_secs = state
+                .db
+                .get_estimated_deploy_duration(&approval.app, "production")
+                .ok()
+                .flatten();
+
             let accepted = DeployAccepted {
                 deployment_id: deployment_id.clone(),
                 app: approval.app,
                 env: "production".to_string(),
                 version: version.clone(),
                 events_url: format!("/api/deployments/{deployment_id}/events"),
+                estimated_secs,
             };
 
             api_reply(Ok(ApproveResponse {

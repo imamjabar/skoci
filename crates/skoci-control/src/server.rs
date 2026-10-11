@@ -129,6 +129,15 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
     // Set control host
     router.set_control(cfg.api_domain.clone(), cfg.bind).await;
 
+    // Initialize Control TLS & HTTP challenges
+    let http_challenges = skoci_proxy::HttpChallenges::default();
+    let control_tls = crate::tls::ControlTls::load_or_create(
+        &cfg.data_dir,
+        cfg.public_ip,
+        cfg.api_domain.as_deref(),
+    )
+    .context("Failed to initialize control plane TLS")?;
+
     // Start proxy
     let acme_settings = AcmeSettings {
         email: cfg.acme_email.clone(),
@@ -145,13 +154,35 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
         http_bind: cfg.http_bind,
         https_bind: cfg.https_bind,
         acme,
+        public_ip: cfg.public_ip,
+        http_challenges: http_challenges.clone(),
+        ip_cert: control_tls.cert_slot.clone(),
     };
 
     let proxy_status = start_proxy(proxy_cfg, router.clone()).await;
 
+    // Start ACME IP certificate renewal if eligible
+    if cfg.tls == TlsMode::Acme {
+        if let Some(ip) = cfg.public_ip {
+            if crate::tls::is_global_unicast(ip) {
+                crate::tls::start_acme_renewal(
+                    Arc::new(cfg.clone()),
+                    control_tls.clone(),
+                    http_challenges.clone(),
+                );
+            }
+        }
+    }
+
     let sessions = SessionStore::new();
     let rate_limiter = AuthRateLimiter::new();
     let jobs = JobRegistry::new();
+
+    let control_tls_status = if cfg.control_tls_bind.is_some() {
+        control_tls.status()
+    } else {
+        Arc::new(parking_lot::RwLock::new(None))
+    };
 
     let app_state = AppState {
         config: Arc::new(cfg.clone()),
@@ -166,6 +197,7 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
         backup_manager,
         proxy_status: Some(proxy_status),
         upload_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
+        control_tls: control_tls_status,
     };
     // Eviction task for JobRegistry
     let jobs_clone = jobs.clone();
@@ -181,6 +213,17 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
 
     // Axum server
     let app = build_router(app_state);
+
+    if let Some(control_tls_bind) = cfg.control_tls_bind {
+        let app_tls = app.clone();
+        let cert_slot = control_tls.cert_slot.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::tls::serve_control_tls(control_tls_bind, app_tls, cert_slot).await {
+                tracing::error!("Control TLS server failed: {e}");
+            }
+        });
+    }
+
     let listener = TcpListener::bind(cfg.bind)
         .await
         .with_context(|| format!("Failed to bind control API on {}", cfg.bind))?;

@@ -597,7 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_tool() {
-        let client = SkociClient::new("http://localhost:8787", None);
+        let client = SkociClient::new("http://localhost:8787", None, None).unwrap();
         let res = call_tool(&client, "unknown_tool", json!({})).await;
         assert_eq!(res.is_error, Some(true));
         assert!(res.content[0].text.contains("not found"));

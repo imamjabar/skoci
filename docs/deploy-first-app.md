@@ -6,14 +6,16 @@ A step-by-step guide to deploying a web application to your server using Skoci.
 
 ## 1. Connect Workspace to Skoci Server
 
-Before deploying, link your local repository to your Skoci server using the application token created on the server:
+Link your local repository to your Skoci server using the server IP, application token, and SPKI certificate pin:
 
 ```bash
-skoci connect --server https://skoci.203-0-113-10.sslip.io --token sk_agent_toko_xxxxxxxxxxxx
+skoci connect --server <server-public-ip> --token sk_agent_toko_xxxxxxxxxxxx --pin sha256:7b5fa1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd
 ```
 
-This validates the server connection and securely stores credentials in `.env.skoci` (file permissions `0600`, automatically added to `.gitignore`).
+The control plane is reachable at `https://<public-ip>:8443` over TLS pinned to the server's SPKI public key (`sha256:...`). Connections do not depend on third-party wildcard DNS.
 
+* **Global Server Profiles:** Connection profiles are saved securely in `~/.config/skoci/servers.json` (permissions `0600`).
+* **Project Override:** A local `.env.skoci` file (permissions `0600`) is created in your repository and automatically added to `.gitignore`.
 ---
 
 ## 2. Initialize the Project (`skoci init`)
@@ -99,38 +101,57 @@ skoci deploy --env preview
 
 ### Skoci Deployment Pipeline Stages:
 1. **Packaging & Upload:** Project files are packed respecting `.gitignore` and uploaded over HTTPS.
-2. **Extract:** Server extracts the archive and validates `skoci.yaml`.
+2. **Extract:** Server extracts the archive (preserving executable bits for non-root containers) and validates `skoci.yaml`.
 3. **Build:** Server builds the Docker image `skoci/<app>:<version>` with live streaming logs.
 4. **Services:** Server ensures database containers (if declared) are healthy and ready.
 5. **Start:** The new container starts with secrets injected via a secure temporary env-file.
 6. **Health Check:** Reverse proxy polls `run.health` until the container returns HTTP 2xx/3xx.
 7. **Cutover:** Reverse proxy atomically swaps routing targets without downtime.
-8. **Smoke Test:** HTTP GET check verifies the new container is serving responses.
+8. **Smoke Test:** HTTP GET check (`GET /`) verifies the new container is answering public traffic.
 9. **Cleanup:** Old container is stopped and removed after a 5-second drain window.
 
-Your preview application is immediately accessible at:
-`https://toko-preview.203-0-113-10.sslip.io` (or your configured preview domain).
+### Deployment Result States:
+Every deployment finishes in one of three distinct result states:
 
-*Note: accessing the server IP directly (`http://203.0.113.10`) serves the **default app** (the first app deployed; change via `skoci default-app <app>` using a master token). This IP URL is printed in deploy output if your app is the default app.*
+* **`live` (Success):** The container started, passed the internal health probe (`run.health`), and the reverse proxy smoke test (`GET /`) answered 2xx, 3xx, or 401. Your application is active and serving traffic.
+* **`degraded` (Warning):** The container started and passed internal health checks, but the smoke test (`GET /`) did **not** return 2xx/3xx/401 (e.g. returned HTTP 502, 500, or connection refused on the root path).
+  - **What It Means:** The application container is running, but end-user requests to `/` are failing.
+  - **What to Do:** Inspect application logs immediately with `skoci logs --tail 100`. Verify that your web application binds to `0.0.0.0` (not `127.0.0.1`), that required environment variables are set, and that the root route (`/`) is properly handled.
+* **`failed` (Error):** Image build failed, container exited unexpectedly during startup, or readiness probes timed out. The previous container (if any) remains live.
 
----
+Your preview application is immediately accessible at your configured preview domain (e.g. `https://toko-preview.sumopod.id`).
 
-## 6. Using Custom Domains
+## 6. Domains & DNS Pre-Verification
 
-To use your own domain:
-1. Point DNS **A Records** to your server public IP:
-   - `toko.sumopod.id` → `SERVER_IP`
-   - `toko-preview.sumopod.id` → `SERVER_IP`
-2. Add them to `skoci.yaml`:
-   ```yaml
-   domains:
-     - toko.sumopod.id
-   preview_domains:
-     - toko-preview.sumopod.id
-   ```
-3. Run `skoci deploy --env preview` or `skoci deploy --env production`. Skoci's reverse proxy automatically provisions TLS certificates from Let's Encrypt!
+Production deployments on Skoci require a genuine custom domain. Magic DNS domains (such as `*.sslip.io`) are strictly rejected in production because third-party zones expose deployments to hijacking risks and shared Let's Encrypt rate limits.
 
----
+### A. Check DNS Record Before Deploying
+Before requesting Let's Encrypt certificates, verify your DNS configuration:
+
+```bash
+skoci domain check toko.sumopod.id
+```
+
+Skoci queries DNS resolvers and displays the exact record required:
+```
+Domain: toko.sumopod.id
+Status: Points to this server (A -> 203.0.113.10)
+```
+If the record does not point to your server yet, `skoci domain check` prints the exact record hint to create at your DNS provider (e.g. `A toko.sumopod.id -> 203.0.113.10`).
+
+### B. Associate Domain with Application
+You can register custom domains via CLI or in `skoci.yaml`:
+```bash
+skoci domain add toko.sumopod.id
+```
+Or declare them in `skoci.yaml`:
+```yaml
+domains:
+  - toko.sumopod.id           # Production custom domain
+preview_domains:
+  - toko-preview.sumopod.id   # Preview custom domain
+```
+When deploying, Skoci's reverse proxy automatically provisions TLS certificates from Let's Encrypt via HTTP-01 challenges.
 
 ## 7. Inspecting Status & Logs
 
@@ -157,12 +178,11 @@ skoci promote "All preview tests passed, ready for production"
 The command returns exit code 2 (*pending approval*) and a `request_id`, e.g. `appr_4e052b4e...`.
 
 A human operator approves it via:
-* **Web Dashboard:** Open `https://skoci.<base-domain>`, log in with the master token, and click **Approve**.
+* **Web Dashboard:** Open `https://<server-public-ip>:8443` in your browser, log in with the master token, and click **Approve** in the Approvals tab.
 * **Server CLI:**
   ```bash
   sudo skoci approve appr_4e052b4e...
   ```
-
 Once approved, the production container becomes active and traffic is routed to `https://toko.<base-domain>`.
 
 ---

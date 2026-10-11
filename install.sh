@@ -26,18 +26,19 @@ BANNER
 echo -e "${NC}"
 
 # 0. Sudo & User Helpers
+# Probe real sudo usability: passwordless (sudo -n true) or interactive TTY.
+SUDO=""
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=""
-else
-  if command -v sudo >/dev/null 2>&1; then
+elif command -v sudo >/dev/null 2>&1; then
+  if sudo -n true 2>/dev/null; then
     SUDO="sudo"
-  else
-    echo -e "${RED}Error: Installer requires root or sudo privileges.${NC}" >&2
-    exit 1
+  elif [ -t 0 ]; then
+    SUDO="sudo"
   fi
 fi
 
-INVOKING_USER="${SUDO_USER:-$USER}"
+INVOKING_USER="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo "user")}}"
 
 # 1. Parse Command Line Arguments
 CLI_DOMAIN=""
@@ -45,6 +46,7 @@ CLI_EMAIL=""
 NO_TLS=0
 CLI_VERSION="latest"
 CLIENT_ONLY=0
+MAGIC_DNS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,6 +83,10 @@ while [ $# -gt 0 ]; do
       ;;
     --client-only)
       CLIENT_ONLY=1
+      shift
+      ;;
+    --magic-dns)
+      MAGIC_DNS=1
       shift
       ;;
     *)
@@ -121,6 +127,14 @@ case "${ARCH}" in
 esac
 
 echo -e "${GREEN}✓ Detected:${NC} ${OS_NAME} (${ARCH_NAME})"
+
+if [ "$CLIENT_ONLY" != "1" ]; then
+  if [ "$(id -u)" -ne 0 ] && [ -z "$SUDO" ]; then
+    echo -e "${RED}Error: Linux server installation requires root or sudo privileges.${NC}" >&2
+    echo -e "${RED}Neither root access nor a usable sudo environment was detected.${NC}" >&2
+    exit 1
+  fi
+fi
 
 # Helpers
 verify_checksum() {
@@ -235,8 +249,23 @@ fi
 # 4. Install Binary for Client-Only (macOS or --client-only)
 if [ "$CLIENT_ONLY" = "1" ]; then
   INSTALL_DIR="/usr/local/bin"
-  if [ "$OS_NAME" = "darwin" ] && [ ! -w "/usr/local/bin" ] && [ -z "$SUDO" ]; then
-    INSTALL_DIR="$HOME/.local/bin"
+  if [ "$(id -u)" -ne 0 ] && { [ -z "$SUDO" ] || [ ! -w "/usr/local/bin" ]; }; then
+    INSTALL_DIR="${HOME}/.local/bin"
+  fi
+
+  if [ "$INSTALL_DIR" = "${HOME}/.local/bin" ]; then
+    mkdir -p "$INSTALL_DIR"
+    install -m 0755 "${TMP_DIR}/${ASSET_NAME}" "${INSTALL_DIR}/skoci.new"
+    mv -f "${INSTALL_DIR}/skoci.new" "${INSTALL_DIR}/skoci"
+    case ":${PATH:-}:" in
+      *":${INSTALL_DIR}:"*) ;;
+      *)
+        echo -e "\n${YELLOW}Note:${NC} ${INSTALL_DIR} is not in your PATH."
+        echo -e "Add it to your PATH by adding this line to your ~/.bashrc or ~/.zshrc:"
+        echo -e "  ${BOLD}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
+        ;;
+    esac
+  elif [ -w "/usr/local/bin" ]; then
     mkdir -p "$INSTALL_DIR"
     install -m 0755 "${TMP_DIR}/${ASSET_NAME}" "${INSTALL_DIR}/skoci.new"
     mv -f "${INSTALL_DIR}/skoci.new" "${INSTALL_DIR}/skoci"
@@ -252,8 +281,9 @@ if [ "$CLIENT_ONLY" = "1" ]; then
   echo -e "Binary installed at: ${BOLD}${INSTALL_DIR}/skoci${NC}"
   echo -e "\n${BOLD}Next Steps:${NC}"
   echo -e "1. Connect to your Skoci server:"
-  echo -e "   ${BOLD}skoci connect --server https://skoci.<base-domain>${NC}"
-  echo -e "   (Paste token when prompted, or pass via stdin: ${BOLD}echo \"\$TOKEN\" | skoci connect --server ...${NC})"
+  echo -e "   ${BOLD}skoci connect --server <server-ip> --token <token> --pin <pin>${NC}"
+  echo -e "   (Or with custom domain: ${BOLD}skoci connect --server https://skoci.<base-domain>${NC})"
+  echo -e "   Tip: Use ${BOLD}skoci server setup --host <ip> --user <user>${NC} for automatic zero-SSH setup."
   echo -e "2. Navigate to your project repository:"
   echo -e "   ${BOLD}skoci init${NC}"
   echo -e "3. Deploy the application:"
@@ -345,11 +375,15 @@ if [ -z "$PUBLIC_IP" ]; then
   exit 1
 fi
 
+BASE_DOMAIN=""
 if [ -n "$CLI_DOMAIN" ]; then
   BASE_DOMAIN="$CLI_DOMAIN"
-else
+elif [ "$MAGIC_DNS" = "1" ]; then
   DASHED_IP="$(echo "$PUBLIC_IP" | tr '.' '-')"
   BASE_DOMAIN="${DASHED_IP}.sslip.io"
+  echo -e "\n${YELLOW}⚠️ WARNING: Using magic DNS (${BASE_DOMAIN}).${NC}"
+  echo -e "${YELLOW}   Magic DNS (sslip.io) is a third-party zone with shared Let's Encrypt rate limits.${NC}"
+  echo -e "${YELLOW}   It is suitable for preview only, NOT for production!${NC}\n"
 fi
 
 if [ "$NO_TLS" = "1" ]; then
@@ -359,12 +393,17 @@ else
 fi
 
 # Write /etc/skoci/skoci.env
-$SUDO tee /etc/skoci/skoci.env >/dev/null <<EOF
-SKOCI_MASTER_TOKEN=${MASTER_TOKEN}
-SKOCI_BASE_DOMAIN=${BASE_DOMAIN}
+ENV_CONTENT="SKOCI_MASTER_TOKEN=${MASTER_TOKEN}"
+if [ -n "$BASE_DOMAIN" ]; then
+  ENV_CONTENT="${ENV_CONTENT}
+SKOCI_BASE_DOMAIN=${BASE_DOMAIN}"
+fi
+ENV_CONTENT="${ENV_CONTENT}
 SKOCI_TLS=${TLS_MODE}
 SKOCI_PUBLIC_IP=${PUBLIC_IP}
-EOF
+SKOCI_CONTROL_TLS_BIND=0.0.0.0:8443"
+
+echo "$ENV_CONTENT" | $SUDO tee /etc/skoci/skoci.env >/dev/null
 if [ -n "$CLI_EMAIL" ]; then
   echo "SKOCI_ACME_EMAIL=${CLI_EMAIL}" | $SUDO tee -a /etc/skoci/skoci.env >/dev/null
 fi
@@ -428,7 +467,7 @@ LockPersonality=true
 RestrictNamespaces=true
 ReadWritePaths=/var/lib/skoci
 EnvironmentFile=/etc/skoci/skoci.env
-ExecStart=/usr/local/bin/skoci server --data-dir /var/lib/skoci --bind 127.0.0.1:8787
+ExecStart=/usr/local/bin/skoci server run
 Restart=always
 RestartSec=3
 
@@ -445,12 +484,13 @@ if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qw "ac
   echo "Configuring UFW firewall..."
   $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
   $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
+  $SUDO ufw allow 8443/tcp >/dev/null 2>&1 || true
   if $SUDO ufw status 2>/dev/null | grep -q "8787"; then
     echo -e "${YELLOW}Port 8787 is no longer published externally (127.0.0.1 only).${NC}"
     echo -e "Remove old rule: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
   fi
 fi
-echo -e "${YELLOW}IMPORTANT: Ensure ports 80 and 443 are also open in your cloud firewall (e.g., Sumopod panel, AWS Security Group, Hetzner Firewall).${NC}"
+echo -e "${YELLOW}IMPORTANT: Ensure ports 80, 443, and 8443 are also open in your cloud firewall (e.g., Sumopod panel, AWS Security Group, Hetzner Firewall).${NC}"
 
 # Health Check Wait (up to 20s)
 echo "Waiting for Skoci service to become ready..."
@@ -471,53 +511,98 @@ if [ "$HEALTHY" -ne 1 ]; then
 fi
 
 API_HTTPS_OK=0
-if [ "$TLS_MODE" = "acme" ]; then
-  echo "Waiting for HTTPS certificate for skoci.${BASE_DOMAIN} (up to 90 seconds)..."
-  for i in $(seq 1 45); do
-    if curl -fsS --max-time 5 "https://skoci.${BASE_DOMAIN}/api/health" >/dev/null 2>&1; then
-      API_HTTPS_OK=1
+if [ -n "$BASE_DOMAIN" ]; then
+  if [ "$TLS_MODE" = "acme" ]; then
+    echo "Waiting for HTTPS certificate for skoci.${BASE_DOMAIN} (up to 90 seconds)..."
+    for i in $(seq 1 45); do
+      if curl -fsS --max-time 5 "https://skoci.${BASE_DOMAIN}/api/health" >/dev/null 2>&1; then
+        API_HTTPS_OK=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$API_HTTPS_OK" -ne 1 ]; then
+      echo -e "${YELLOW}⚠️ HTTPS for skoci.${BASE_DOMAIN} is not active yet.${NC}"
+      echo -e "${YELLOW}   Common causes: ports 80/443 not open in cloud firewall, port conflict, or Let's Encrypt rate limits.${NC}"
+      echo -e "${YELLOW}   Skoci will keep retrying in the background. Check logs with: sudo journalctl -u skoci -n 50 --no-pager${NC}"
+      echo -e "${YELLOW}   In the meantime, use the pinned control endpoint or an SSH tunnel.${NC}"
+    fi
+  fi
+else
+  echo "Waiting for pinned control TLS endpoint (up to 20 seconds)..."
+  CONTROL_TLS_OK=0
+  for i in $(seq 1 20); do
+    # -k is acceptable here because this is a loopback probe for liveness only, not an authentication path.
+    if curl -k -fsS --max-time 5 "https://127.0.0.1:8443/api/health" >/dev/null 2>&1; then
+      CONTROL_TLS_OK=1
       break
     fi
-    sleep 2
+    sleep 1
   done
-  if [ "$API_HTTPS_OK" -ne 1 ]; then
-    echo -e "${YELLOW}⚠️ HTTPS for skoci.${BASE_DOMAIN} is not active yet.${NC}"
-    echo -e "${YELLOW}   Common causes: ports 80/443 not open in cloud firewall, port conflict, or Let's Encrypt rate limits for sslip.io.${NC}"
-    echo -e "${YELLOW}   Skoci will keep retrying in the background. Check logs with: sudo journalctl -u skoci -n 50 --no-pager${NC}"
-    echo -e "${YELLOW}   In the meantime, use an SSH tunnel (see below). Custom domain: re-run installer with --domain <domain> --email <email>.${NC}"
+  if [ "$CONTROL_TLS_OK" -ne 1 ]; then
+    echo -e "${YELLOW}⚠️ Pinned control TLS endpoint did not respond on https://127.0.0.1:8443/api/health.${NC}"
+    echo -e "${YELLOW}   Check logs with: sudo journalctl -u skoci -n 50 --no-pager${NC}"
   fi
+fi
+
+# Read server TLS key fingerprint
+PIN=""
+FINGERPRINT_JSON="$($SUDO "$BIN_TARGET" server fingerprint --json 2>/dev/null || true)"
+if [ -n "$FINGERPRINT_JSON" ]; then
+  PIN="$(echo "$FINGERPRINT_JSON" | grep -o '"spki_pin"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"spki_pin"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+fi
+if [ -z "$PIN" ] && $SUDO test -f /var/lib/skoci/tls/control.pin; then
+  PIN="$($SUDO cat /var/lib/skoci/tls/control.pin 2>/dev/null | tr -d '\r\n ' || true)"
 fi
 
 echo -e "\n${GREEN}${BOLD}==============================================================================${NC}"
 echo -e "${GREEN}${BOLD}🎉 SKOCI SERVER INSTALLED SUCCESSFULLY!${NC}"
 echo -e "${GREEN}${BOLD}==============================================================================${NC}"
-if [ "$API_HTTPS_OK" = "1" ]; then
-  echo -e "• ${BOLD}Dashboard & API:${NC}      https://skoci.${BASE_DOMAIN}"
-else
-  echo -e "• ${BOLD}Dashboard & API (SSH):${NC} Run SSH tunnel:"
-  echo -e "                          ${BOLD}ssh -L 8787:127.0.0.1:8787 ${INVOKING_USER}@${PUBLIC_IP}${NC}"
-  echo -e "                          then open in browser: ${BOLD}http://localhost:8787${NC}"
+if [ -n "$BASE_DOMAIN" ]; then
+  if [ "$API_HTTPS_OK" = "1" ]; then
+    echo -e "• ${BOLD}Dashboard & API:${NC}      https://skoci.${BASE_DOMAIN}"
+  fi
+  echo -e "• ${BOLD}App Base Domain:${NC}      *.${BASE_DOMAIN}"
 fi
-echo -e "• ${BOLD}App Base Domain:${NC}      *.${BASE_DOMAIN}"
+echo -e "• ${BOLD}Control URL:${NC}          https://${PUBLIC_IP}:8443"
+if [ -n "$PIN" ]; then
+  echo -e "• ${BOLD}TLS SPKI Pin:${NC}         ${PIN}"
+fi
 echo -e "• ${BOLD}Master Token:${NC}         Stored securely at /etc/skoci/master_token"
 echo -e "                          (Read with: ${BOLD}sudo cat /etc/skoci/master_token${NC})"
+
+if [ -n "$PIN" ]; then
+  echo -e "\n${BLUE}${BOLD}┌────────────────────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${BLUE}${BOLD}│ PINNED CONTROL ENDPOINT (Zero Third-Party Trust)                          │${NC}"
+  echo -e "${BLUE}${BOLD}├────────────────────────────────────────────────────────────────────────────┤${NC}"
+  echo -e "${BLUE}${BOLD}│${NC} Control URL: ${BOLD}https://${PUBLIC_IP}:8443${NC}"
+  echo -e "${BLUE}${BOLD}│${NC} SPKI Pin:    ${BOLD}${PIN}${NC}"
+  echo -e "${BLUE}${BOLD}│${NC}"
+  echo -e "${BLUE}${BOLD}│${NC} This SPKI pin authenticates your server's TLS certificate directly,"
+  echo -e "${BLUE}${BOLD}│${NC} making the connection safe against MITM attacks without a domain."
+  echo -e "${BLUE}${BOLD}└────────────────────────────────────────────────────────────────────────────┘${NC}"
+fi
+
 echo -e "\n${BOLD}Next Steps:${NC}"
 echo -e "1. Create a token for your laptop/agent (on this server):"
-echo -e "   ${BOLD}sudo skoci token create --app <app-name> --name laptop${NC}"
+echo -e "   ${BOLD}sudo skoci token create --app <app> --name laptop${NC}"
 if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
   echo -e "   (If newly added to the skoci group, re-login or logout first to run skoci without sudo)"
 fi
+
 echo -e "\n2. On your laptop/developer workstation:"
-if [ "$API_HTTPS_OK" = "1" ]; then
-  echo -e "   ${BOLD}skoci connect --server https://skoci.${BASE_DOMAIN}${NC}"
-  echo -e "   (Paste token when prompted, or pass via stdin)"
+if [ -n "$PIN" ]; then
+  echo -e "   ${BOLD}skoci connect --server ${PUBLIC_IP} --token <token> --pin ${PIN}${NC}"
 else
-  echo -e "   Open tunnel in a separate terminal (keep running):"
-  echo -e "   ${BOLD}ssh -N -L 8787:127.0.0.1:8787 ${INVOKING_USER}@${PUBLIC_IP}${NC}"
-  echo -e "   ${BOLD}skoci connect --server http://127.0.0.1:8787${NC}"
-  echo -e "   (Paste token when prompted, or pass via stdin)"
+  echo -e "   ${BOLD}skoci connect --server ${PUBLIC_IP} --token <token>${NC}"
 fi
+
+echo -e "\n3. Deploy your application:"
 echo -e "   Navigate to your project repository:"
 echo -e "   ${BOLD}skoci init${NC}"
 echo -e "   ${BOLD}skoci deploy${NC}"
+
+echo -e "\n${BOLD}Tip (Zero-SSH Setup):${NC}"
+echo -e "   Alternatively, install and connect automatically from your laptop:"
+echo -e "   ${BOLD}skoci server setup --host ${PUBLIC_IP} --user ${INVOKING_USER}${NC}"
 echo -e "\n${GREEN}Done! Your app is ready to deploy.${NC}"

@@ -59,6 +59,8 @@ async fn setup_test_state(max_upload_mb: u64) -> (AppState, TestDir) {
         acme_staging: false,
         max_upload_mb,
         public_ip: None,
+        control_tls_bind: None,
+        allow_magic_dns_production: false,
     });
 
     let secret_cipher = Arc::new(SecretCipher::from_key([42u8; 32]));
@@ -83,6 +85,7 @@ async fn setup_test_state(max_upload_mb: u64) -> (AppState, TestDir) {
         backup_manager,
         proxy_status: None,
         upload_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
+        control_tls: Default::default(),
     };
 
     (state, temp_dir)
@@ -482,6 +485,8 @@ async fn test_master_token_min_length_validation() {
         acme_staging: false,
         max_upload_mb: 10,
         public_ip: None,
+        control_tls_bind: None,
+        allow_magic_dns_production: false,
     };
 
     let res = skoci_control::server::run_server(cfg).await;
@@ -559,4 +564,226 @@ async fn test_logout_requires_authentication() {
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn test_smoke_classification_table_full() {
+    use skoci_control::deploy::is_smoke_status_passed;
+
+    let cases = [
+        (Some(200), true),
+        (Some(301), true),
+        (Some(401), true),
+        (Some(403), false),
+        (Some(404), false),
+        (Some(500), false),
+        (None, false),
+    ];
+    for (status, expected_pass) in cases {
+        let passed = status.map(is_smoke_status_passed).unwrap_or(false);
+        assert_eq!(
+            passed, expected_pass,
+            "Failed classification for status {:?}",
+            status
+        );
+    }
+}
+
+fn test_skoci_config(app: &str, domains: Vec<String>) -> skoci_api::models::SkociConfig {
+    skoci_api::models::SkociConfig {
+        version: 1,
+        app: app.to_string(),
+        build: Default::default(),
+        run: skoci_api::models::RunConfig {
+            port: 8080,
+            health: "/".to_string(),
+            health_timeout_secs: 10,
+            memory: None,
+            cpus: None,
+        },
+        domains,
+        preview_domains: vec![],
+        env: Default::default(),
+        services: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn test_production_domain_policy_enforcement() {
+    use skoci_control::deploy::check_production_domain_policy;
+
+    let (state, _temp) = setup_test_state(10).await;
+
+    // 1. Production with no domains and no base domain => Err(production_requires_domain)
+    let cfg_empty = test_skoci_config("myapp", vec![]);
+    let err = check_production_domain_policy(&state, "myapp", "production", &cfg_empty).unwrap_err();
+    assert_eq!(err.code, "production_requires_domain");
+
+    // 2. Production with magic-DNS domain only => Err(production_requires_domain)
+    let cfg_magic = test_skoci_config("myapp", vec!["myapp.127.0.0.1.sslip.io".to_string()]);
+    let err = check_production_domain_policy(&state, "myapp", "production", &cfg_magic).unwrap_err();
+    assert_eq!(err.code, "production_requires_domain");
+
+    // 3. Production with owned custom domain => Ok
+    let cfg_owned = test_skoci_config("myapp", vec!["example.com".to_string()]);
+    assert!(check_production_domain_policy(&state, "myapp", "production", &cfg_owned).is_ok());
+
+    // 4. Preview with magic-DNS => Ok (preview allows magic DNS)
+    assert!(check_production_domain_policy(&state, "myapp", "preview", &cfg_magic).is_ok());
+
+    // 5. Operator override: allow_magic_dns_production = true => Ok for magic-DNS
+    let mut config_override = (*state.config).clone();
+    config_override.allow_magic_dns_production = true;
+    let mut state_override = state.clone();
+    state_override.config = Arc::new(config_override);
+    assert!(check_production_domain_policy(&state_override, "myapp", "production", &cfg_magic).is_ok());
+}
+
+#[tokio::test]
+async fn test_domain_check_api_endpoint() {
+    use skoci_api::responses::DomainCheckResponse;
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    let mut config = (*state.config).clone();
+    config.public_ip = Some("203.0.113.10".parse().unwrap());
+    state.config = Arc::new(config);
+
+    let app = build_router(state);
+
+    // 1. Host that does not resolve here and is not magic DNS
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/check")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "unresolvable-test-host-99999.invalid" }).to_string()))
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let resp: ApiResponse<DomainCheckResponse> = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(resp.success);
+    let data = resp.data.unwrap();
+    assert!(!data.points_here);
+    assert!(!data.magic_dns);
+    assert_eq!(data.expected_ips, vec!["203.0.113.10"]);
+    assert_eq!(data.record_hint, Some("A unresolvable-test-host-99999.invalid -> 203.0.113.10".to_string()));
+
+    // 2. Magic DNS host (e.g. 1-2-3-4.sslip.io)
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/check")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "1-2-3-4.sslip.io" }).to_string()))
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let resp: ApiResponse<DomainCheckResponse> = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(resp.success);
+    let data = resp.data.unwrap();
+    assert!(data.magic_dns);
+    assert!(!data.points_here);
+    // 3. Invalid host rejected with bad request (400)
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/check")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "https://invalid-with-scheme.com" }).to_string()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn test_estimated_deploy_duration_mean_calculation() {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use skoci_control::db::DeploymentRecord;
+
+    let db = Database::open_in_memory().unwrap();
+
+    // 1. No history -> returns None
+    let eta = db.get_estimated_deploy_duration("myapp", "production").unwrap();
+    assert_eq!(eta, None);
+
+    let now = Utc::now();
+
+    // Insert 2 successful deployments (live) with durations 10s and 20s
+    let dep1 = DeploymentRecord {
+        id: "dep_1".to_string(),
+        app: "myapp".to_string(),
+        env: "production".to_string(),
+        version: "v1".to_string(),
+        kind: "deploy".to_string(),
+        status: "live".to_string(),
+        commit_hash: "abc".to_string(),
+        image: "img".to_string(),
+        container: "c1".to_string(),
+        host_port: Some(8080),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(100),
+        finished_at: Some(now - ChronoDuration::seconds(90)),
+        error_json: None,
+        evidence_json: Some(json!({ "duration_ms": 10000 }).to_string()),
+    };
+    db.insert_deployment(&dep1).unwrap();
+
+    let dep2 = DeploymentRecord {
+        id: "dep_2".to_string(),
+        app: "myapp".to_string(),
+        env: "production".to_string(),
+        version: "v2".to_string(),
+        kind: "deploy".to_string(),
+        status: "degraded".to_string(),
+        commit_hash: "def".to_string(),
+        image: "img".to_string(),
+        container: "c2".to_string(),
+        host_port: Some(8081),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(80),
+        finished_at: Some(now - ChronoDuration::seconds(60)),
+        error_json: None,
+        evidence_json: Some(json!({ "duration_ms": 20000 }).to_string()),
+    };
+    db.insert_deployment(&dep2).unwrap();
+
+    // Mean of 10 and 20 is 15
+    let eta = db.get_estimated_deploy_duration("myapp", "production").unwrap();
+    assert_eq!(eta, Some(15));
+
+    // Also check alias
+    let eta_alias = db.mean_deployment_duration_secs("myapp", "production").unwrap();
+    assert_eq!(eta_alias, Some(15));
+
+    // Failed deployment should NOT affect calculation
+    let dep_fail = DeploymentRecord {
+        id: "dep_fail".to_string(),
+        app: "myapp".to_string(),
+        env: "production".to_string(),
+        version: "v3".to_string(),
+        kind: "deploy".to_string(),
+        status: "failed".to_string(),
+        commit_hash: "ghi".to_string(),
+        image: "img".to_string(),
+        container: "c3".to_string(),
+        host_port: Some(8082),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(50),
+        finished_at: Some(now - ChronoDuration::seconds(10)),
+        error_json: None,
+        evidence_json: None,
+    };
+    db.insert_deployment(&dep_fail).unwrap();
+
+    let eta = db.get_estimated_deploy_duration("myapp", "production").unwrap();
+    assert_eq!(eta, Some(15));
+
+    // Different app/env should return None
+    assert_eq!(db.get_estimated_deploy_duration("myapp", "preview").unwrap(), None);
+    assert_eq!(db.get_estimated_deploy_duration("otherapp", "production").unwrap(), None);
 }

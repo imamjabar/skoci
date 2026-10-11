@@ -378,12 +378,12 @@ fn test_decide_routing_authority_unit() {
     use skoci_proxy::{decide_routing_authority, RoutingAuthorityError};
 
     // 1. URI authority only
-    let dec = decide_routing_authority(Some("app.example.com"), None, false, None).unwrap();
+    let dec = decide_routing_authority(Some("app.example.com"), None, false, None, None).unwrap();
     assert_eq!(dec.clean_host, "app.example.com");
     assert_eq!(dec.forward_host, "app.example.com");
 
     // 2. Host header only
-    let dec = decide_routing_authority(None, Some("app.example.com"), false, None).unwrap();
+    let dec = decide_routing_authority(None, Some("app.example.com"), false, None, None).unwrap();
     assert_eq!(dec.clean_host, "app.example.com");
     assert_eq!(dec.forward_host, "app.example.com");
 
@@ -392,6 +392,7 @@ fn test_decide_routing_authority_unit() {
         Some("app.example.com:8080"),
         Some("app.example.com:8080"),
         false,
+        None,
         None,
     )
     .unwrap();
@@ -404,6 +405,7 @@ fn test_decide_routing_authority_unit() {
         Some("app.example.com"),
         false,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(dec.clean_host, "app.example.com");
@@ -414,6 +416,7 @@ fn test_decide_routing_authority_unit() {
         Some("app2.example.com"),
         false,
         None,
+        None,
     )
     .unwrap_err();
     assert_eq!(
@@ -422,7 +425,7 @@ fn test_decide_routing_authority_unit() {
     );
 
     // 6. Userinfo in authority -> 400 BadRequest
-    let err = decide_routing_authority(None, Some("a.example:@evil.example"), false, None)
+    let err = decide_routing_authority(None, Some("a.example:@evil.example"), false, None, None)
         .unwrap_err();
     assert_eq!(
         err,
@@ -430,16 +433,16 @@ fn test_decide_routing_authority_unit() {
     );
 
     // 7. Plain HTTP: empty host -> allowed (for default app fallback)
-    let dec = decide_routing_authority(None, None, false, None).unwrap();
+    let dec = decide_routing_authority(None, None, false, None, None).unwrap();
     assert_eq!(dec.clean_host, "");
     assert_eq!(dec.forward_host, "localhost");
 
     // 8. Plain HTTP: IP host -> allowed
-    let dec = decide_routing_authority(None, Some("127.0.0.1"), false, None).unwrap();
+    let dec = decide_routing_authority(None, Some("127.0.0.1"), false, None, None).unwrap();
     assert_eq!(dec.clean_host, "127.0.0.1");
 
     // 9. HTTPS: empty host -> 421 MisdirectedRequest
-    let err = decide_routing_authority(None, None, true, Some("example.com")).unwrap_err();
+    let err = decide_routing_authority(None, None, true, Some("example.com"), None).unwrap_err();
     assert_eq!(
         err,
         RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
@@ -447,14 +450,14 @@ fn test_decide_routing_authority_unit() {
 
     // 10. HTTPS: IP host -> 421 MisdirectedRequest
     let err =
-        decide_routing_authority(None, Some("127.0.0.1"), true, Some("127.0.0.1")).unwrap_err();
+        decide_routing_authority(None, Some("127.0.0.1"), true, Some("127.0.0.1"), None).unwrap_err();
     assert_eq!(
         err,
         RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
     );
 
     // 11. HTTPS: missing SNI -> 421 MisdirectedRequest
-    let err = decide_routing_authority(None, Some("example.com"), true, None).unwrap_err();
+    let err = decide_routing_authority(None, Some("example.com"), true, None, None).unwrap_err();
     assert_eq!(
         err,
         RoutingAuthorityError::MisdirectedRequest("Missing TLS SNI on HTTPS request")
@@ -466,6 +469,7 @@ fn test_decide_routing_authority_unit() {
         Some("victim.com"),
         true,
         Some("attacker.com"),
+        None,
     )
     .unwrap_err();
     assert_eq!(
@@ -479,8 +483,76 @@ fn test_decide_routing_authority_unit() {
         Some("EXPLICIT.COM:443"),
         true,
         Some("explicit.com"),
+        None,
     )
     .unwrap();
     assert_eq!(dec.clean_host, "explicit.com");
     assert_eq!(dec.forward_host, "EXPLICIT.COM:443");
+
+    // 14. HTTPS: no-SNI + authority == public_ip -> Ok
+    let pub_ip: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+    let dec = decide_routing_authority(
+        None,
+        Some("192.0.2.1"),
+        true,
+        None,
+        Some(pub_ip),
+    )
+    .unwrap();
+    assert_eq!(dec.clean_host, "192.0.2.1");
+    assert_eq!(dec.forward_host, "192.0.2.1");
+
+    // 15. HTTPS: no-SNI + authority is a different IP -> 421
+    let err = decide_routing_authority(
+        None,
+        Some("192.0.2.2"),
+        true,
+        None,
+        Some(pub_ip),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
+    );
+
+    // 16. HTTPS: no-SNI + authority is a DNS name -> 421
+    let err = decide_routing_authority(
+        None,
+        Some("example.com"),
+        true,
+        None,
+        Some(pub_ip),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        RoutingAuthorityError::MisdirectedRequest("Missing TLS SNI on HTTPS request")
+    );
+
+    // 17. HTTPS: no-SNI + no public_ip configured -> 421
+    let err = decide_routing_authority(
+        None,
+        Some("192.0.2.1"),
+        true,
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        RoutingAuthorityError::MisdirectedRequest("Empty or IP authority forbidden on HTTPS")
+    );
+
+    // 18. HTTPS: no-SNI + absent authority + public_ip configured -> Ok
+    let dec = decide_routing_authority(
+        None,
+        None,
+        true,
+        None,
+        Some(pub_ip),
+    )
+    .unwrap();
+    assert_eq!(dec.clean_host, "");
+    assert_eq!(dec.forward_host, "localhost");
 }

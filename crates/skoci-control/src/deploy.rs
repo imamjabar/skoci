@@ -266,6 +266,9 @@ async fn execute_pipeline(
                 }
             }
 
+            check_production_domain_policy(state, &opts.app, &opts.env, &cfg)?;
+            check_production_dns_records(state, &opts.env, &cfg).await?;
+
             // Validate required secrets
             let existing_secrets = state.db.list_secret_keys_for_app(&opts.app)?;
             let secret_set: HashSet<String> = existing_secrets.into_iter().collect();
@@ -413,6 +416,9 @@ async fn execute_pipeline(
             (cfg, image_tag)
         }
     };
+
+    check_production_domain_policy(state, &opts.app, &opts.env, &cfg)?;
+    check_production_dns_records(state, &opts.env, &cfg).await?;
 
     // Stage 3: Services (60 -> 65)
     if cfg.services.is_empty() {
@@ -740,7 +746,7 @@ async fn execute_pipeline(
     );
 
     let smoke_status = health_checker.probe(target_addr, "/").await.ok();
-    let smoke_passed = smoke_status.map(|s| s < 500).unwrap_or(false);
+    let smoke_passed = smoke_status.map(is_smoke_status_passed).unwrap_or(false);
 
     match smoke_status {
         Some(status) if smoke_passed => buffer.emit(
@@ -797,6 +803,20 @@ async fn execute_pipeline(
 
     // Stage 9: Done (100)
     let urls = compute_urls(state, &opts.app, &opts.env, &hosts);
+    if urls.is_empty() {
+        buffer.emit(
+            DeployStage::Cleanup,
+            StageStatus::Log,
+            format!(
+                "Container is running but has no public address: no domain is configured for '{}' and it is not the default app. \
+Fix: point a domain at this server and add it under 'domains'/'preview_domains' in skoci.yaml, or run 'skoci default-app {}' to serve it on the raw server IP.",
+                opts.app, opts.app
+            ),
+            99,
+            None,
+            None,
+        );
+    }
     let previous_version = prev_route.as_ref().map(|r| r.version.clone());
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -821,25 +841,33 @@ async fn execute_pipeline(
         duration_ms,
     };
 
+    let status_str = if smoke_passed { "live" } else { "degraded" };
+
     let deploy_response = DeployResponse {
         deployment_id: opts.deployment_id.clone(),
         app: opts.app.clone(),
         env: opts.env.clone(),
         version: opts.version.clone(),
         urls,
-        status: "live".to_string(),
+        status: status_str.to_string(),
         evidence: evidence.clone(),
     };
 
-    rec.status = "live".to_string();
+    rec.status = status_str.to_string();
     rec.finished_at = Some(Utc::now());
     rec.evidence_json = serde_json::to_string(&evidence).ok();
     state.db.update_deployment(&rec)?;
 
+    let done_msg = if smoke_passed {
+        format!("Deployment {} live!", opts.version)
+    } else {
+        format!("Deployment {} live (degraded: smoke test failed)!", opts.version)
+    };
+
     buffer.emit(
         DeployStage::Done,
         StageStatus::Ok,
-        format!("Deployment {} live!", opts.version),
+        done_msg,
         100,
         Some(deploy_response.clone()),
         None,
@@ -962,4 +990,104 @@ fn allocate_host_port(reserved: &HashSet<u16>) -> SkociResult<u16> {
         }
     }
     Err(SkociError::internal("Could not find free port for container", "Try deploying again"))
+}
+
+pub fn is_smoke_status_passed(status: u16) -> bool {
+    (200..=399).contains(&status) || status == 401
+}
+
+pub fn check_production_domain_policy(
+    state: &AppState,
+    app: &str,
+    env: &str,
+    cfg: &SkociConfig,
+) -> SkociResult<()> {
+    if env != skoci_api::models::ENV_PRODUCTION {
+        return Ok(());
+    }
+
+    let hosts = compute_hosts(&state.config.base_domain, cfg, env);
+    if hosts.is_empty() {
+        return Err(SkociError::production_requires_domain(app, &[]));
+    }
+
+    if !state.config.allow_magic_dns_production {
+        let explicit_magic: Vec<String> = cfg
+            .domains
+            .iter()
+            .filter(|d| skoci_api::models::is_magic_dns(d))
+            .cloned()
+            .collect();
+        let all_magic = hosts.iter().all(|h| skoci_api::models::is_magic_dns(h));
+
+        if !explicit_magic.is_empty() || all_magic {
+            let mut rejected = explicit_magic;
+            for h in &hosts {
+                if skoci_api::models::is_magic_dns(h) && !rejected.contains(h) {
+                    rejected.push(h.clone());
+                }
+            }
+            return Err(SkociError::production_requires_domain(app, &rejected));
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn check_production_dns_records(
+    state: &AppState,
+    env: &str,
+    cfg: &SkociConfig,
+) -> SkociResult<()> {
+    if env != skoci_api::models::ENV_PRODUCTION {
+        return Ok(());
+    }
+
+    let public_ip = match state.config.public_ip {
+        Some(ip) => ip,
+        None => return Ok(()),
+    };
+
+    let hosts = compute_hosts(&state.config.base_domain, cfg, env);
+    let expected = vec![public_ip.to_string()];
+
+    for host in hosts {
+        if skoci_api::models::is_magic_dns(&host) {
+            continue;
+        }
+
+        let resolved = crate::api::domains::resolve_host_ips(&host).await;
+        if !resolved.contains(&public_ip) {
+            let resolved_strs: Vec<String> = resolved.into_iter().map(|ip| ip.to_string()).collect();
+            return Err(SkociError::dns_mismatch(&host, &expected, &resolved_strs));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smoke_classification_table() {
+        let cases = [
+            (Some(200), true),
+            (Some(301), true),
+            (Some(401), true),
+            (Some(403), false),
+            (Some(404), false),
+            (Some(500), false),
+            (None, false),
+        ];
+        for (status, expected_pass) in cases {
+            let passed = status.map(is_smoke_status_passed).unwrap_or(false);
+            assert_eq!(
+                passed, expected_pass,
+                "Failed classification for status {:?}",
+                status
+            );
+        }
+    }
 }

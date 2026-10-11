@@ -21,12 +21,21 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy
 
       - name: Rust cache
         uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c # v2.7.7
 
-      - name: Build workspace
-        run: cargo build --workspace --locked
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test workspace
-        run: cargo test --workspace --locked
+        run: cargo test --workspace
+
+      - name: Lint install.sh
+        run: |
+          bash -n install.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck install.sh
+          fi

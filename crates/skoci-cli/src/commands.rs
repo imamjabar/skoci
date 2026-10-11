@@ -16,9 +16,11 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::args::{AppCommands, Commands, DbCommands, SecretCommands, TokenCommands};
+use crate::args::{
+    AppCommands, Commands, DbCommands, DomainCommands, SecretCommands, TokenCommands,
+};
 use crate::output;
-
+use crate::progress::DeployProgressTracker;
 pub fn error_exit_code(err: &SkociError) -> i32 {
     match err.code.as_str() {
         "unauthorized" | "scope_violation" | "rate_limited" => 3,
@@ -54,6 +56,141 @@ pub fn resolve_app_in(path: &Path, provided: Option<&str>) -> SkociResult<String
 pub fn resolve_app(provided: Option<String>) -> SkociResult<String> {
     resolve_app_in(Path::new("."), provided.as_deref())
 }
+#[derive(Debug, Default, Clone)]
+pub struct GlobalOpts {
+    pub server_url: Option<String>,
+    pub token: Option<String>,
+    pub pin: Option<String>,
+    pub profile: Option<String>,
+}
+
+pub fn resolve_global(global: &GlobalOpts) -> SkociResult<skoci_client::profile::ResolvedTarget> {
+    let project_env = crate::env::read_project_env();
+    let mut target = skoci_client::profile::resolve_target(
+        global.server_url.as_deref(),
+        global.token.clone(),
+        global.pin.as_deref(),
+        global.profile.as_deref(),
+        project_env,
+    )?;
+
+    if target.token.is_none() && crate::env::is_local_url(&target.url) {
+        if let Some(master) = crate::env::local_master_token() {
+            target.token = Some(master);
+        }
+    }
+
+    Ok(target)
+}
+
+pub fn normalize_server_url(input: &str) -> Result<String, SkociError> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(SkociError::bad_request(
+            "Server URL cannot be empty",
+            "Provide --server <url|ip|host>",
+        ));
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return Ok(trimmed.to_string());
+    }
+
+    // Bare IPv4 literal
+    if let Ok(ip4) = trimmed.parse::<std::net::Ipv4Addr>() {
+        return Ok(format!("https://{ip4}:{}", skoci_api::models::CONTROL_TLS_PORT));
+    }
+
+    // Bare IPv6 literal
+    if let Ok(ip6) = trimmed.parse::<std::net::Ipv6Addr>() {
+        return Ok(format!("https://[{ip6}]:{}", skoci_api::models::CONTROL_TLS_PORT));
+    }
+
+    // Bracketed IPv6 literal with port, e.g. [::1]:8443
+    if trimmed.starts_with('[') {
+        return Ok(format!("https://{trimmed}"));
+    }
+
+    // Host or host:port
+    Ok(format!("https://{trimmed}"))
+}
+
+pub fn parse_semver_triplet(ver: &str) -> Option<(u64, u64, u64)> {
+    let s = ver.trim().trim_start_matches(['v', 'V']);
+    let mut parts = s.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch_part = parts.next()?;
+    let patch_str = patch_part.split(['-', '+']).next()?;
+    let patch = patch_str.parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+pub fn check_version_compatibility(cli: &str, server: &str) -> Result<Option<String>, SkociError> {
+    let (c_maj, c_min, c_patch) = match parse_semver_triplet(cli) {
+        Some(t) => t,
+        None => return Err(SkociError::version_mismatch(cli, server)),
+    };
+    let (s_maj, s_min, s_patch) = match parse_semver_triplet(server) {
+        Some(t) => t,
+        None => return Err(SkociError::version_mismatch(cli, server)),
+    };
+
+    if c_maj != s_maj {
+        return Err(SkociError::version_mismatch(cli, server));
+    }
+
+    if c_maj == 0 {
+        if c_min != s_min {
+            return Err(SkociError::version_mismatch(cli, server));
+        }
+        if c_patch != s_patch {
+            return Ok(Some(format!(
+                "Warning: CLI version ({cli}) differs from server version ({server}) by patch version."
+            )));
+        }
+    } else {
+        if c_min != s_min {
+            return Ok(Some(format!(
+                "Warning: CLI minor version ({cli}) differs from server version ({server})."
+            )));
+        }
+        if c_patch != s_patch {
+            return Ok(Some(format!(
+                "Warning: CLI version ({cli}) differs from server version ({server}) by patch version."
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn verify_version_compatibility(client: &SkociClient, json: bool) -> Result<(), i32> {
+    match client.doctor().await {
+        Ok(resp) => {
+            if let Some(doc) = &resp.data {
+                match check_version_compatibility(env!("CARGO_PKG_VERSION"), &doc.version) {
+                    Ok(Some(warning)) => {
+                        if !json {
+                            eprintln!("{warning}");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        return Err(error_exit_code(&err));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Err(err) => {
+            output::print_error(&err, json);
+            Err(error_exit_code(&err))
+        }
+    }
+}
+
 
 pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> SkociResult<InitResponse> {
     let path = path.as_ref();
@@ -162,16 +299,13 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
     })
 }
 
-fn step_number(stage: DeployStage) -> Option<usize> {
-    DeployStage::STEPS.iter().position(|&s| s == stage).map(|idx| idx + 1)
-}
-
 pub async fn stream_events_and_render(
     client: &SkociClient,
     deployment_id: &str,
     _app: &str,
     _env: &str,
     version: Option<&str>,
+    estimated_secs: Option<u64>,
     is_json: bool,
 ) -> i32 {
     let mut stream = client.follow_events(deployment_id);
@@ -183,11 +317,21 @@ pub async fn stream_events_and_render(
     }
 
     let mut accumulated_logs = Vec::new();
-    let mut log_window: Vec<String> = Vec::new();
-    let mut active_stage: Option<(usize, &'static str)> = None;
+    let mut tracker = DeployProgressTracker::new(estimated_secs);
     let mut rendered_lines: usize = 0;
     let mut final_response: Option<DeployResponse> = None;
     let mut final_error: Option<SkociError> = None;
+
+    if is_term && !is_json {
+        use std::io::Write;
+        let mut out = std::io::stderr().lock();
+        let lines = tracker.render_full(true);
+        for l in &lines {
+            let _ = writeln!(out, "{l}");
+        }
+        let _ = out.flush();
+        rendered_lines = lines.len();
+    }
 
     while let Some(res) = stream.next().await {
         match res {
@@ -202,107 +346,67 @@ pub async fn stream_events_and_render(
                     continue;
                 }
 
-                if event.status == StageStatus::Log {
-                    accumulated_logs.push(event.message.clone());
-                    if accumulated_logs.len() > 100 {
-                        accumulated_logs.remove(0);
+                tracker.update_progress(event.progress);
+
+                match event.status {
+                    StageStatus::Log => {
+                        accumulated_logs.push(event.message.clone());
+                        if accumulated_logs.len() > 100 {
+                            accumulated_logs.remove(0);
+                        }
+                        tracker.on_log(event.message);
                     }
-                    if let (true, Some((n, label))) = (is_term, active_stage) {
-                        let truncated = if event.message.chars().count() > 100 {
-                            let mut s: String = event.message.chars().take(97).collect();
-                            s.push_str("...");
-                            s
-                        } else {
-                            event.message.clone()
-                        };
-                        log_window.push(truncated);
-                        if log_window.len() > 5 {
-                            log_window.remove(0);
+                    StageStatus::Running => {
+                        let step = tracker.on_stage_running(event.stage);
+                        if !is_term {
+                            if let Some(n) = step {
+                                eprintln!("▸ [{n}/8] {}", event.stage.label());
+                            }
                         }
-                        use std::io::Write;
-                        let mut out = std::io::stderr().lock();
-                        for _ in 0..rendered_lines {
-                            let _ = write!(out, "\x1b[1A\x1b[2K\r");
-                        }
-                        let _ = writeln!(out, "  \x1b[36m▸ [{}/8] {}\x1b[0m", n, label);
-                        for l in &log_window {
-                            let _ = writeln!(out, "    \x1b[2m│ {}\x1b[0m", l);
-                        }
-                        let _ = out.flush();
-                        rendered_lines = 1 + log_window.len();
                     }
-                } else if let Some(n) = step_number(event.stage) {
-                    let label = event.stage.label();
-                    match event.status {
-                        StageStatus::Running => {
-                            if is_term {
-                                use std::io::Write;
-                                let mut out = std::io::stderr().lock();
-                                for _ in 0..rendered_lines {
-                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
-                                }
-                                let _ = writeln!(out, "  \x1b[36m▸ [{}/8] {}\x1b[0m", n, label);
-                                let _ = out.flush();
-                                log_window.clear();
-                                active_stage = Some((n, label));
-                                rendered_lines = 1;
+                    StageStatus::Ok => {
+                        let step_info = tracker.on_stage_ok(event.stage);
+                        if !is_term {
+                            if let Some((n, dur)) = step_info {
+                                eprintln!("✓ [{n}/8] {} ({:.1}s)", event.stage.label(), dur.as_secs_f64());
                             }
                         }
-                        StageStatus::Ok => {
-                            if is_term {
-                                use std::io::Write;
-                                let mut out = std::io::stderr().lock();
-                                for _ in 0..rendered_lines {
-                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
-                                }
-                                let _ = writeln!(out, "  \x1b[32m✓ [{}/8] {}\x1b[0m", n, label);
-                                let _ = out.flush();
-                                log_window.clear();
-                                active_stage = None;
-                                rendered_lines = 0;
-                            } else {
-                                eprintln!("  ✓ [{}/8] {}", n, label);
+                    }
+                    StageStatus::Skipped => {
+                        let step = tracker.on_stage_skipped(event.stage);
+                        if !is_term {
+                            if let Some(n) = step {
+                                eprintln!("– [{n}/8] {} (skipped)", event.stage.label());
                             }
                         }
-                        StageStatus::Skipped => {
-                            if is_term {
-                                use std::io::Write;
-                                let mut out = std::io::stderr().lock();
-                                for _ in 0..rendered_lines {
-                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
-                                }
-                                let _ = writeln!(out, "  \x1b[33m– [{}/8] {} (skipped)\x1b[0m", n, label);
-                                let _ = out.flush();
-                                log_window.clear();
-                                active_stage = None;
-                                rendered_lines = 0;
-                            } else {
-                                eprintln!("  – [{}/8] {} (skipped)", n, label);
-                            }
-                        }
-                        StageStatus::Failed => {
+                    }
+                    StageStatus::Failed => {
+                        let step = tracker.on_stage_failed(event.stage, event.message.clone());
+                        if !is_term {
                             let detail = if event.message.is_empty() {
                                 String::new()
                             } else {
                                 format!(": {}", event.message)
                             };
-                            if is_term {
-                                use std::io::Write;
-                                let mut out = std::io::stderr().lock();
-                                for _ in 0..rendered_lines {
-                                    let _ = write!(out, "\x1b[1A\x1b[2K\r");
-                                }
-                                let _ = writeln!(out, "  \x1b[31m✗ [{}/8] {}{}\x1b[0m", n, label, detail);
-                                let _ = out.flush();
-                                log_window.clear();
-                                active_stage = None;
-                                rendered_lines = 0;
-                            } else {
-                                eprintln!("  ✗ [{}/8] {}{}", n, label, detail);
+                            if let Some(n) = step {
+                                eprintln!("✗ [{n}/8] {}{detail}", event.stage.label());
                             }
                         }
-                        _ => {}
                     }
+                }
+
+                if is_term {
+                    use std::io::Write;
+                    let mut out = std::io::stderr().lock();
+                    for _ in 0..rendered_lines {
+                        let _ = write!(out, "\x1b[1A\x1b[2K\r");
+                    }
+                    let lines = tracker.render_full(true);
+                    for l in &lines {
+                        let _ = writeln!(out, "{l}");
+                    }
+                    let _ = out.flush();
+                    rendered_lines = lines.len();
                 }
 
                 if event.stage == DeployStage::Done {
@@ -349,23 +453,61 @@ pub async fn stream_events_and_render(
 
     if let Some(resp) = final_response {
         let dur = start_time.elapsed().as_secs_f64();
-        for url in &resp.urls {
+        if resp.urls.is_empty() {
             if is_term {
-                println!("\x1b[1;32m✓ Live:\x1b[0m {}", url);
+                eprintln!("\x1b[1;33m⚠ No public address:\x1b[0m container is running but unreachable");
             } else {
-                println!("✓ Live: {}", url);
+                eprintln!("⚠ No public address: container is running but unreachable");
             }
+            eprintln!(
+                "  Add a domain you own to skoci.yaml, or run: skoci default-app {}",
+                resp.app
+            );
         }
-        println!("Version: {}  Duration: {:.1}s", resp.version, dur);
-        println!("\nHints:");
-        println!("  skoci logs {}", resp.app);
-        println!("  skoci status {}", resp.app);
-        0
+        if resp.status == "degraded" {
+            for url in &resp.urls {
+                if is_term {
+                    eprintln!("\x1b[1;33m⚠ Live but failing:\x1b[0m {url}");
+                } else {
+                    eprintln!("⚠ Live but failing: {url}");
+                }
+            }
+            if let Some(code) = resp.evidence.smoke_test_status {
+                eprintln!("Smoke test returned HTTP {code} (expected 2xx/3xx/401)");
+            } else {
+                eprintln!("Smoke test did not pass");
+            }
+            eprintln!("Version: {}  Duration: {:.1}s", resp.version, dur);
+            eprintln!("\nHints:");
+            eprintln!("  skoci logs {}", resp.app);
+            eprintln!("  skoci status {}", resp.app);
+            1
+        } else if resp.status == "failed" {
+            if is_term {
+                eprintln!("\n\x1b[1;31m✗ Deployment failed\x1b[0m");
+            } else {
+                eprintln!("\n✗ Deployment failed");
+            }
+            1
+        } else {
+            for url in &resp.urls {
+                if is_term {
+                    println!("\x1b[1;32m✓ Live:\x1b[0m {url}");
+                } else {
+                    println!("✓ Live: {url}");
+                }
+            }
+            println!("Version: {}  Duration: {:.1}s", resp.version, dur);
+            println!("\nHints:");
+            println!("  skoci logs {}", resp.app);
+            println!("  skoci status {}", resp.app);
+            0
+        }
     } else if let Some(err) = final_error {
         if !accumulated_logs.is_empty() {
             eprintln!("\nLast log summary:");
             for line in accumulated_logs.iter().rev().take(30).rev() {
-                eprintln!("  │ {}", line);
+                eprintln!("  │ {line}");
             }
         }
         if is_term {
@@ -374,7 +516,7 @@ pub async fn stream_events_and_render(
             eprintln!("\n✗ Deployment failed: {}", err.message);
         }
         eprintln!("Fix: {}", err.fix);
-        eprintln!("Deployment ID: {}  (skoci watch {})", deployment_id, deployment_id);
+        eprintln!("Deployment ID: {deployment_id}  (skoci watch {deployment_id})");
         error_exit_code(&err)
     } else {
         eprintln!("\n✗ Stream completed without final deployment status");
@@ -383,23 +525,56 @@ pub async fn stream_events_and_render(
     }
 }
 
-pub async fn run_command(
-    cmd: Commands,
-    server_url: &str,
-    token: Option<String>,
-    json: bool,
-) -> i32 {
-    let client = SkociClient::new(server_url, token);
+pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
+    let client = if !matches!(
+        cmd,
+        Commands::Connect { .. } | Commands::Init { .. } | Commands::AgentGuide
+    ) {
+        let target = match resolve_global(&global) {
+            Ok(t) => t,
+            Err(err) => {
+                output::print_error(&err, json);
+                return error_exit_code(&err);
+            }
+        };
+        match SkociClient::new(&target.url, target.token, target.pin) {
+            Ok(c) => c,
+            Err(err) => {
+                output::print_error(&err, json);
+                return error_exit_code(&err);
+            }
+        }
+    } else {
+        match SkociClient::new("http://127.0.0.1:8787", None, None) {
+            Ok(c) => c,
+            Err(_) => return 1,
+        }
+    };
 
     match cmd {
-        Commands::Connect { server, token: conn_token, insecure } => {
-            if server.to_lowercase().starts_with("http://")
-                && !crate::env::is_local_url(&server)
+        Commands::Connect {
+            server,
+            token: conn_token,
+            insecure,
+            pin,
+            name,
+            no_profile,
+        } => {
+            let normalized_server = match normalize_server_url(&server) {
+                Ok(s) => s,
+                Err(e) => {
+                    output::print_error(&e, json);
+                    return 1;
+                }
+            };
+
+            if normalized_server.to_lowercase().starts_with("http://")
+                && !crate::env::is_local_url(&normalized_server)
                 && !insecure
             {
                 let err = SkociError::bad_request(
                     format!(
-                        "Server URL uses unencrypted HTTP protocol ('{server}'). Token will be sent in plaintext."
+                        "Server URL uses unencrypted HTTP protocol ('{normalized_server}'). Token will be sent in plaintext."
                     ),
                     "Use HTTPS ('https://...'), an SSH tunnel (localhost), or add the --insecure flag if you understand the risks.",
                 );
@@ -433,6 +608,48 @@ pub async fn run_command(
                 },
             };
 
+            let test_client = match SkociClient::new(
+                &normalized_server,
+                Some(resolved_token.clone()),
+                pin.clone(),
+            ) {
+                Ok(c) => c,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+
+            let doc_resp = match test_client.doctor().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
+
+            if !doc_resp.success {
+                if let Some(err) = &doc_resp.error {
+                    output::print_error(err, json);
+                    return error_exit_code(err);
+                }
+            }
+
+            if let Some(doc) = &doc_resp.data {
+                match check_version_compatibility(env!("CARGO_PKG_VERSION"), &doc.version) {
+                    Ok(Some(warning)) => {
+                        if !json {
+                            eprintln!("{warning}");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        return error_exit_code(&err);
+                    }
+                }
+            }
+
             let target_path = Path::new(".env.skoci");
             if target_path.exists() || target_path.is_symlink() {
                 if let Ok(meta) = std::fs::symlink_metadata(target_path) {
@@ -447,7 +664,14 @@ pub async fn run_command(
                 }
             }
 
-            let env_content = format!("SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n", server, resolved_token);
+            let mut env_content = format!(
+                "SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n",
+                normalized_server, resolved_token
+            );
+            if let Some(p) = &pin {
+                env_content.push_str(&format!("SKOCI_SERVER_PIN={}\n", p));
+            }
+
             let tmp_path = format!(".env.skoci.tmp.{}", uuid::Uuid::new_v4().simple());
             let mut opts = std::fs::OpenOptions::new();
             opts.write(true).create_new(true);
@@ -493,7 +717,11 @@ pub async fn run_command(
 
             if needs_entry {
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(gitignore_path) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(gitignore_path)
+                {
                     if add_newline {
                         let _ = writeln!(f);
                     }
@@ -501,30 +729,31 @@ pub async fn run_command(
                 }
             }
 
-            let test_client = SkociClient::new(&server, Some(resolved_token));
-            match test_client.doctor().await {
-                Ok(resp) => {
-                    if !resp.success {
-                        if let Some(err) = &resp.error {
-                            output::print_error(err, json);
-                            return error_exit_code(err);
-                        }
+            if !no_profile {
+                if let Err(err) = skoci_client::profile::save_server(
+                    &name,
+                    &normalized_server,
+                    &resolved_token,
+                    pin.as_deref(),
+                    true,
+                ) {
+                    if !json {
+                        eprintln!("Warning: Failed to save server to profile store: {err}");
                     }
-                    if json {
-                        output::print_json(&resp);
-                    } else {
-                        println!("✓ Successfully connected and saved configuration to .env.skoci (mode 0600)\n");
-                        if let Some(doc) = &resp.data {
-                            output::render_doctor(doc);
-                        }
-                    }
-                    0
-                }
-                Err(err) => {
-                    output::print_error(&err, json);
-                    error_exit_code(&err)
+                } else if !json {
+                    println!("Saved profile '{name}' to ~/.config/skoci/servers.json (set as current)");
                 }
             }
+
+            if json {
+                output::print_json(&doc_resp);
+            } else {
+                println!("✓ Successfully connected and saved configuration to .env.skoci (mode 0600)\n");
+                if let Some(doc) = &doc_resp.data {
+                    output::render_doctor(doc);
+                }
+            }
+            0
         }
 
         Commands::Init { app, path } => {
@@ -560,6 +789,9 @@ pub async fn run_command(
         }
 
         Commands::Deploy { env, path, detach, commit } => {
+            if let Err(code) = verify_version_compatibility(&client, json).await {
+                return code;
+            }
             let config_path = path.join("skoci.yaml");
             let cfg = match ConfigLoader::load_config(&config_path) {
                 Ok(c) => c,
@@ -664,6 +896,7 @@ pub async fn run_command(
                             &app,
                             &env,
                             Some(&accepted.version),
+                            accepted.estimated_secs,
                             json,
                         )
                         .await
@@ -677,7 +910,7 @@ pub async fn run_command(
         }
 
         Commands::Watch { deployment_id } => {
-            stream_events_and_render(&client, &deployment_id, "app", "env", None, json).await
+            stream_events_and_render(&client, &deployment_id, "app", "env", None, None, json).await
         }
 
         Commands::Status { app } => {
@@ -864,6 +1097,9 @@ pub async fn run_command(
         }
 
         Commands::Promote { reason, version, detach } => {
+            if let Err(code) = verify_version_compatibility(&client, json).await {
+                return code;
+            }
             let app_name = match resolve_app(None) {
                 Ok(a) => a,
                 Err(err) => {
@@ -914,6 +1150,7 @@ pub async fn run_command(
                                     &dep.app,
                                     "production",
                                     Some(&dep.version),
+                                    dep.estimated_secs,
                                     json,
                                 )
                                 .await
@@ -992,6 +1229,7 @@ pub async fn run_command(
                                     &dep.app,
                                     &dep.env,
                                     Some(&dep.version),
+                                    dep.estimated_secs,
                                     json,
                                 )
                                 .await
@@ -1040,6 +1278,9 @@ pub async fn run_command(
         }
 
         Commands::Rollback { env, to, detach } => {
+            if let Err(code) = verify_version_compatibility(&client, json).await {
+                return code;
+            }
             let app_name = match resolve_app(None) {
                 Ok(a) => a,
                 Err(err) => {
@@ -1081,6 +1322,7 @@ pub async fn run_command(
                                 &data.app,
                                 &data.env,
                                 Some(&data.version),
+                                data.estimated_secs,
                                 json,
                             )
                             .await
@@ -1384,6 +1626,71 @@ pub async fn run_command(
                 }
             }
         }
+        Commands::Domain { cmd } => match cmd {
+            DomainCommands::Check { host } => match client.domain_check(&host).await {
+                Ok(resp) => {
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(check) = &resp.data {
+                        output::render_domain_check(check);
+                    } else if let Some(err) = &resp.error {
+                        output::print_error(err, json);
+                        return error_exit_code(err);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            },
+            DomainCommands::Add { host } => match client.domain_check(&host).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if let Some(check) = &resp.data {
+                        if !check.points_here {
+                            let err = SkociError::dns_mismatch(
+                                &check.host,
+                                &check.expected_ips,
+                                &check.resolved_ips,
+                            );
+                            output::print_error(&err, json);
+                            return error_exit_code(&err);
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else {
+                            println!(
+                                "✓ Domain '{host}' is verified and correctly points to this server.\n"
+                            );
+                            println!("Add the domain to your `skoci.yaml` under `domains:`:\n");
+                            println!("domains:");
+                            println!("  - {host}\n");
+                        }
+                        0
+                    } else if let Some(err) = &resp.error {
+                        output::print_error(err, json);
+                        error_exit_code(err)
+                    } else {
+                        let err = SkociError::internal(
+                            "Missing domain check response data",
+                            "Retry the check",
+                        );
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
+                    }
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            },
+        },
 
         Commands::AgentGuide => {
             println!(
@@ -1440,5 +1747,76 @@ mod tests {
     fn test_resolve_app_explicit() {
         assert_eq!(resolve_app(Some("my-app".to_string())).unwrap(), "my-app");
         assert_eq!(resolve_app(Some("  custom-app  ".to_string())).unwrap(), "custom-app");
+    }
+    #[test]
+    fn test_server_input_normalization_table() {
+        // bare v4
+        assert_eq!(
+            normalize_server_url("43.173.34.155").unwrap(),
+            "https://43.173.34.155:8443"
+        );
+        // bare v6
+        assert_eq!(
+            normalize_server_url("::1").unwrap(),
+            "https://[::1]:8443"
+        );
+        assert_eq!(
+            normalize_server_url("2001:db8::1").unwrap(),
+            "https://[2001:db8::1]:8443"
+        );
+        // host:port
+        assert_eq!(
+            normalize_server_url("43.173.34.155:8443").unwrap(),
+            "https://43.173.34.155:8443"
+        );
+        assert_eq!(
+            normalize_server_url("example.com:8443").unwrap(),
+            "https://example.com:8443"
+        );
+        assert_eq!(
+            normalize_server_url("[2001:db8::1]:8443").unwrap(),
+            "https://[2001:db8::1]:8443"
+        );
+        // full URL
+        assert_eq!(
+            normalize_server_url("https://host").unwrap(),
+            "https://host"
+        );
+        assert_eq!(
+            normalize_server_url("http://127.0.0.1:8787").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_server_url("https://example.com:9443").unwrap(),
+            "https://example.com:9443"
+        );
+        // hostname
+        assert_eq!(
+            normalize_server_url("host").unwrap(),
+            "https://host"
+        );
+        assert_eq!(
+            normalize_server_url("example.com").unwrap(),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_version_compatibility_matrix() {
+        // 0.4.0 vs 0.4.0 ok
+        assert_eq!(check_version_compatibility("0.4.0", "0.4.0").unwrap(), None);
+
+        // 0.4.0 vs 0.4.1 warn
+        let warn = check_version_compatibility("0.4.0", "0.4.1").unwrap();
+        assert!(warn.is_some());
+        assert!(warn.unwrap().contains("Warning"));
+
+        // 0.4.0 vs 0.5.0 abort
+        let err_minor = check_version_compatibility("0.4.0", "0.5.0").unwrap_err();
+        assert_eq!(err_minor.code, "version_mismatch");
+
+        // 1.0.0 vs 2.0.0 abort
+        let err_major = check_version_compatibility("1.0.0", "2.0.0").unwrap_err();
+        assert_eq!(err_major.code, "version_mismatch");
     }
 }

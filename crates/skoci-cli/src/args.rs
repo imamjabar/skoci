@@ -11,6 +11,12 @@ pub enum Commands {
         token: Option<String>,
         #[arg(long, help = "Allow unencrypted HTTP connection to non-localhost hosts")]
         insecure: bool,
+        #[arg(long, help = "Pinned server TLS key, sha256:<hex>")]
+        pin: Option<String>,
+        #[arg(long, default_value = "default", help = "Profile name in the global profile store")]
+        name: String,
+        #[arg(long, help = "Skip saving to the global profile store")]
+        no_profile: bool,
     },
 
     #[command(about = "Detect framework and initialize project configuration")]
@@ -124,6 +130,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: TokenCommands,
     },
+    #[command(about = "Manage and verify custom domains")]
+    Domain {
+        #[command(subcommand)]
+        cmd: DomainCommands,
+    },
+
 
     #[command(name = "agent-guide", about = "Skoci operational guide for AI agents")]
     AgentGuide,
@@ -185,5 +197,17 @@ pub enum TokenCommands {
         app: String,
         #[arg(long)]
         name: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum DomainCommands {
+    #[command(about = "Check DNS resolution for a custom domain")]
+    Check {
+        host: String,
+    },
+    #[command(about = "Verify and prepare adding a custom domain")]
+    Add {
+        host: String,
     },
 }

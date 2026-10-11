@@ -22,6 +22,9 @@ pub struct DeployAccepted {
     pub version: String,
     /// Relative URL of the Server-Sent Events stream, e.g. `/api/deployments/<id>/events`.
     pub events_url: String,
+    /// Mean duration of the last successful jobs of this app+env, for progress ETA. `None` without history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +107,7 @@ pub struct DeployResponse {
     pub env: String,
     pub version: String,
     pub urls: Vec<String>,
-    /// `live` or `failed`.
+    /// `live`, `degraded` (live but smoke test `GET /` did not answer 2xx/3xx/401), or `failed`.
     pub status: String,
     pub evidence: crate::models::SkociEvidence,
 }
@@ -223,6 +226,40 @@ pub struct DoctorResponse {
     pub version: String,
     pub idle_ram_mb: f32,
     pub checks: Vec<DoctorCheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_tls: Option<ControlTlsInfo>,
+}
+
+/// TLS identity of the control plane endpoint (`https://<public-ip>:8443`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlTlsInfo {
+    /// `sha256:<64 lowercase hex>` of the DER SubjectPublicKeyInfo. Stable across certificate renewals.
+    pub spki_pin: String,
+    /// `acme-ip` (Let's Encrypt IP certificate, `shortlived` profile) or `self-signed`.
+    pub mode: String,
+    pub not_after: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
+/// Output of `skoci server fingerprint` (run on the VPS); consumed by `skoci server setup`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerFingerprint {
+    pub spki_pin: String,
+    /// e.g. `https://203.0.113.10:8443`; empty when the public IP is unknown.
+    pub control_urls: Vec<String>,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainCheckResponse {
+    pub host: String,
+    /// Public IP(s) the server expects the record to point to. Empty when unknown.
+    pub expected_ips: Vec<String>,
+    pub resolved_ips: Vec<String>,
+    pub points_here: bool,
+    pub magic_dns: bool,
+    /// Exact DNS record to create, e.g. `A app.example.com -> 203.0.113.10`.
+    pub record_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

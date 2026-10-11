@@ -140,7 +140,13 @@ pub async fn handle_deploy(
         existing_image: None,
     };
 
-    tokio::spawn(run_deploy_pipeline(state, opts, buffer));
+    tokio::spawn(run_deploy_pipeline(state.clone(), opts, buffer));
+
+    let estimated_secs = state
+        .db
+        .get_estimated_deploy_duration(&query.app, &query.env)
+        .ok()
+        .flatten();
 
     let accepted = DeployAccepted {
         deployment_id: deployment_id.clone(),
@@ -148,6 +154,7 @@ pub async fn handle_deploy(
         env: query.env,
         version,
         events_url: format!("/api/deployments/{deployment_id}/events"),
+        estimated_secs,
     };
 
     api_accepted(accepted, "Deployment accepted and queued for processing")

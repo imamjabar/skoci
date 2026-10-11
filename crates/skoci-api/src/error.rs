@@ -22,7 +22,8 @@ impl SkociError {
     /// HTTP status the control plane answers with for this error code.
     pub fn http_status(&self) -> u16 {
         match self.code.as_str() {
-            "bad_request" | "config_invalid" | "secret_missing" => 400,
+            "bad_request" | "config_invalid" | "secret_missing" | "production_requires_domain" | "dns_mismatch"
+            | "pin_required" => 400,
             "unauthorized" => 401,
             "forbidden" | "scope_violation" | "policy_violation" | "approval_required" => 403,
             "not_found" | "app_not_found" => 404,
@@ -152,6 +153,58 @@ impl SkociError {
             "docker_error",
             message,
             "Ensure Docker is running: 'sudo systemctl status docker' or 'skoci doctor'",
+        )
+    }
+
+    /// Production hostnames must be owned by the operator; magic-DNS zones (sslip.io, nip.io, ...) are third-party.
+    pub fn production_requires_domain(app: &str, rejected: &[String]) -> Self {
+        let detail = if rejected.is_empty() {
+            String::new()
+        } else {
+            format!(" (magic-DNS hosts rejected: {})", rejected.join(", "))
+        };
+        Self::new(
+            "production_requires_domain",
+            format!("Production for '{app}' needs a domain you own{detail}"),
+            "Point an A record at the server, add it under 'domains' in skoci.yaml (skoci domain add <host>), then deploy again",
+        )
+    }
+
+    pub fn dns_mismatch(host: &str, expected: &[String], resolved: &[String]) -> Self {
+        let got = if resolved.is_empty() { "nothing".to_string() } else { resolved.join(", ") };
+        let fix = match expected.first() {
+            Some(ip) if ip.contains(':') => format!("Create DNS record: AAAA {host} -> {ip} (DNS-only, no CDN proxy), wait for propagation, retry"),
+            Some(ip) => format!("Create DNS record: A {host} -> {ip} (DNS-only, no CDN proxy), wait for propagation, retry"),
+            None => "Point the domain at this server's public IP, then retry".to_string(),
+        };
+        Self::new(
+            "dns_mismatch",
+            format!("{host} resolves to {got}, not to this server ({})", expected.join(", ")),
+            fix,
+        )
+    }
+
+    pub fn pin_required(server: &str) -> Self {
+        Self::new(
+            "pin_required",
+            format!("Server {server} is addressed by IP and has no pinned TLS key"),
+            "Run 'skoci server setup --host <ip> --user <user>' or pass '--pin sha256:...' from 'sudo skoci server fingerprint' on the VPS",
+        )
+    }
+
+    pub fn pin_mismatch(server: &str, expected: &str, got: &str) -> Self {
+        Self::new(
+            "pin_mismatch",
+            format!("TLS key of {server} does not match the pinned key (expected {expected}, got {got})"),
+            "Possible interception: do not continue. If the server key was rotated on purpose, re-run 'skoci server setup' or reconnect with the new '--pin'",
+        )
+    }
+
+    pub fn version_mismatch(cli: &str, server: &str) -> Self {
+        Self::new(
+            "version_mismatch",
+            format!("CLI {cli} is incompatible with server {server}"),
+            format!("Install the matching CLI: curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/v{server}/install.sh | bash -s -- --client-only --version v{server}"),
         )
     }
 }

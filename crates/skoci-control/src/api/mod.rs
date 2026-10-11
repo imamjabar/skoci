@@ -4,6 +4,7 @@ pub mod audits;
 pub mod dashboard;
 pub mod db;
 pub mod default_app;
+pub mod domains;
 pub mod deploy;
 pub mod doctor;
 pub mod health;
@@ -71,6 +72,8 @@ pub fn build_router(state: AppState) -> Router {
         // Apps
         .route("/api/apps", get(apps::handle_list_apps))
         .route("/api/apps/:app", delete(apps::handle_delete_app))
+        // Domains
+        .route("/api/domains/check", post(domains::handle_domain_check))
         // Status & Logs
         .route("/api/status/:app", get(status::handle_status))
         .route("/api/logs/:app", get(logs::handle_logs))

@@ -17,6 +17,14 @@ pub async fn handle_rollback(
     if let Err(err) = subject.require_app(&body.app) {
         return api_reply::<()>(Err(err));
     }
+    if body.env == skoci_api::models::ENV_PRODUCTION {
+        if let Ok(Some(cfg)) = state.db.get_app_config(&body.app) {
+            if let Err(e) = crate::deploy::check_production_domain_policy(&state, &body.app, &body.env, &cfg) {
+                return api_reply::<()>(Err(e));
+            }
+        }
+    }
+
 
     // Resolve target version
     let target_version = match body.target_version {
@@ -80,7 +88,13 @@ pub async fn handle_rollback(
         existing_image: Some(image_tag),
     };
 
-    tokio::spawn(run_deploy_pipeline(state, opts, buffer));
+    tokio::spawn(run_deploy_pipeline(state.clone(), opts, buffer));
+
+    let estimated_secs = state
+        .db
+        .get_estimated_deploy_duration(&body.app, &body.env)
+        .ok()
+        .flatten();
 
     let accepted = DeployAccepted {
         deployment_id: deployment_id.clone(),
@@ -88,6 +102,7 @@ pub async fn handle_rollback(
         env: body.env,
         version: target_version,
         events_url: format!("/api/deployments/{deployment_id}/events"),
+        estimated_secs,
     };
 
     api_accepted(accepted, "Rollback accepted and queued for processing")

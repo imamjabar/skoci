@@ -18,3 +18,6 @@ rustls = { workspace = true }
 rustls-acme = { workspace = true }
 tokio-rustls = { workspace = true }
 parking_lot = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }

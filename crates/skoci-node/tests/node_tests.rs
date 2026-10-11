@@ -173,3 +173,80 @@ async fn test_docker_daemon_integration() {
     };
     let _ = client.remove_container(&cfg.name).await;
 }
+
+#[cfg(unix)]
+#[cfg(target_os = "macos")]
+type ModeT = u16;
+#[cfg(unix)]
+#[cfg(not(target_os = "macos"))]
+type ModeT = u32;
+
+#[cfg(unix)]
+extern "C" {
+    fn umask(mask: ModeT) -> ModeT;
+}
+
+#[cfg(unix)]
+#[test]
+fn test_umask_regression_extract_file_permissions() {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use skoci_node::archive::extract_tar_gz;
+    use std::os::unix::fs::PermissionsExt;
+    use tar::{Builder, EntryType, Header};
+
+    let temp_dir = std::env::temp_dir().join(format!("skoci_umask_test_{:x}", rand::random::<u64>()));
+    let dest = temp_dir.join("dest");
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    let tar_gz_path = temp_dir.join("test.tar.gz");
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    {
+        let mut tar = Builder::new(&mut gz);
+
+        let mut h1 = Header::new_gnu();
+        let d1 = b"normal file content";
+        h1.set_size(d1.len() as u64);
+        h1.set_mode(0o644);
+        h1.set_entry_type(EntryType::Regular);
+        let path1 = b"normal.txt";
+        h1.as_mut_bytes()[..path1.len()].copy_from_slice(path1);
+        h1.set_cksum();
+        tar.append(&h1, &d1[..]).unwrap();
+
+        let mut h2 = Header::new_gnu();
+        let d2 = b"#!/bin/sh\necho hi";
+        h2.set_size(d2.len() as u64);
+        h2.set_mode(0o755);
+        h2.set_entry_type(EntryType::Regular);
+        let path2 = b"script.sh";
+        h2.as_mut_bytes()[..path2.len()].copy_from_slice(path2);
+        h2.set_cksum();
+        tar.append(&h2, &d2[..]).unwrap();
+
+        tar.finish().unwrap();
+    }
+    fs::write(&tar_gz_path, gz.finish().unwrap()).unwrap();
+
+    let old_umask = unsafe { umask(0o077 as ModeT) };
+    let res = extract_tar_gz(&tar_gz_path, &dest, 1024 * 1024);
+    unsafe { umask(old_umask) };
+
+    assert!(res.is_ok(), "Extraction failed: {:?}", res.err());
+
+    let norm_mode = fs::metadata(dest.join("normal.txt"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    let exec_mode = fs::metadata(dest.join("script.sh"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+
+    assert_eq!(norm_mode, 0o644, "Expected 0644 for regular file under umask 0077");
+    assert_eq!(exec_mode, 0o755, "Expected 0755 for executable file under umask 0077");
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}

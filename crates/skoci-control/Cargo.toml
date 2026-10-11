@@ -25,7 +25,14 @@ rand = { workspace = true }
 anyhow = { workspace = true }
 libc = { workspace = true }
 futures-util = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rcgen = { workspace = true }
+instant-acme = { workspace = true }
+x509-parser = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
 
 [dev-dependencies]
-tower = { workspace = true }
 http-body-util = { workspace = true }

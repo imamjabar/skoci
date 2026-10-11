@@ -18,3 +18,11 @@ futures-util = { workspace = true }
 uuid = { workspace = true }
 parking_lot = { workspace = true }
 tokio-util = { workspace = true }
+rustls = { workspace = true }
+x509-parser = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }

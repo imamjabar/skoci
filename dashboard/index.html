@@ -334,6 +334,12 @@
       border-color: var(--border);
     }
 
+    .status-badge.warning {
+      background: var(--warning-bg);
+      color: var(--warning);
+      border-color: rgba(245, 158, 11, 0.3);
+    }
+
     /* Buttons */
     button, .btn {
       background: var(--accent);
@@ -618,8 +624,13 @@
       border-radius: var(--radius);
       font-size: 12px;
     }
+    .stage-step-item.status-pending {
+      color: var(--text-dim);
+      border-color: var(--border);
+    }
 
-    .stage-step-item.status-ok {
+    .stage-step-item.status-ok,
+    .stage-step-item.status-done {
       border-color: rgba(16, 185, 129, 0.3);
       background: var(--success-bg);
       color: var(--success);
@@ -642,8 +653,24 @@
     .stage-step-item.status-skipped {
       color: var(--text-dim);
       opacity: 0.6;
+      border-style: dashed;
     }
 
+    .stage-duration {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-right: 8px;
+    }
+
+    .stage-state-tag {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
     .collapsible-log {
       margin-top: 14px;
     }
@@ -971,8 +998,11 @@
             </div>
 
             <!-- Progress Bar -->
-            <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 600; color: var(--text-dim);">
-              <span>Progress</span>
+            <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; font-weight: 600; color: var(--text-dim);">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span>Progress</span>
+                <span id="detail-progress-timing" style="font-weight: normal; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px;"></span>
+              </div>
               <span id="detail-progress-percent">0%</span>
             </div>
             <div class="progress-bar-wrap">
@@ -1103,6 +1133,17 @@
         </div>
         <div id="doctor-checks-container">
           <div class="empty-state">Checking server health...</div>
+        </div>
+      </div>
+
+      <!-- Control Plane TLS Panel -->
+      <div class="card" id="control-tls-card" style="margin-top: 16px;">
+        <div class="card-header">
+          <h2>Control Plane TLS Identity</h2>
+          <span class="status-badge neutral" id="control-tls-mode-badge">-</span>
+        </div>
+        <div id="control-tls-body">
+          <div class="empty-state">Checking TLS identity...</div>
         </div>
       </div>
     </section>
@@ -1456,9 +1497,46 @@
 
     // SECTION 2: DEPLOYMENTS
     let stageStateMap = {};
+    let stageStartTimes = {};
+    let stageDurations = {};
+    let deploymentStartTime = null;
+    let deploymentFinishTime = null;
+    let deploymentEstimatedSecs = null;
+    let deploymentTimer = null;
+
+    function formatDuration(totalSeconds) {
+      const m = Math.floor(totalSeconds / 60);
+      const s = Math.floor(totalSeconds % 60);
+      return `${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+
+    function formatStageDuration(secs) {
+      if (secs == null) return '';
+      return secs < 10 ? secs.toFixed(1) + 's' : Math.round(secs) + 's';
+    }
+
+    function updateProgressTiming(isDone = false) {
+      const timingEl = document.getElementById('detail-progress-timing');
+      if (!timingEl || !deploymentStartTime) return;
+
+      const now = (isDone && deploymentFinishTime) ? deploymentFinishTime : Date.now();
+      const elapsedSecs = Math.max(0, Math.floor((now - deploymentStartTime) / 1000));
+      const elapsedStr = formatDuration(elapsedSecs) + ' elapsed';
+
+      if (!isDone && deploymentEstimatedSecs && deploymentEstimatedSecs > 0) {
+        const leftSecs = Math.max(0, Math.round(deploymentEstimatedSecs - elapsedSecs));
+        timingEl.textContent = `(${elapsedStr}, ~${formatDuration(leftSecs)} left)`;
+      } else if (isDone) {
+        timingEl.textContent = `(${formatDuration(elapsedSecs)} total)`;
+      } else {
+        timingEl.textContent = `(${elapsedStr})`;
+      }
+    }
 
     function initStageSteps() {
       stageStateMap = {};
+      stageStartTimes = {};
+      stageDurations = {};
       DEPLOY_STAGES.forEach(s => {
         stageStateMap[s.id] = 'pending';
       });
@@ -1467,29 +1545,41 @@
 
     function renderStageSteps() {
       const listContainer = document.getElementById('detail-steps-list');
+      if (!listContainer) return;
       listContainer.innerHTML = DEPLOY_STAGES.map(s => {
         const st = stageStateMap[s.id] || 'pending';
-        let statusClass = '';
+        let statusClass = 'status-pending';
         let icon = '○';
+        let stateLabel = 'Pending';
 
-        if (st === 'ok') {
-          statusClass = 'status-ok';
+        if (st === 'ok' || st === 'done') {
+          statusClass = 'status-done';
           icon = '✓';
+          stateLabel = 'Done';
         } else if (st === 'skipped') {
           statusClass = 'status-skipped';
           icon = '↷';
+          stateLabel = 'Skipped';
         } else if (st === 'running') {
           statusClass = 'status-running';
           icon = '●';
+          stateLabel = 'Running';
         } else if (st === 'failed') {
           statusClass = 'status-failed';
           icon = '✗';
+          stateLabel = 'Failed';
         }
+
+        const durationStr = stageDurations[s.id] != null ? formatStageDuration(stageDurations[s.id]) : '';
+        const durationHtml = durationStr ? `<span class="stage-duration">${escapeHtml(durationStr)}</span>` : '';
 
         return `
           <div class="stage-step-item ${statusClass}">
-            <span>${escapeHtml(s.label)}</span>
-            <span style="font-family: var(--font-mono); font-size: 11px;">${icon}</span>
+            <span style="font-weight: 500;">${escapeHtml(s.label)}</span>
+            <span style="display: flex; align-items: center;">
+              ${durationHtml}
+              <span class="stage-state-tag">${icon} ${escapeHtml(stateLabel)}</span>
+            </span>
           </div>
         `;
       }).join('');
@@ -1509,6 +1599,7 @@
         tbody.innerHTML = list.map(item => {
           let badgeClass = 'neutral';
           if (item.status === 'live') badgeClass = 'healthy';
+          else if (item.status === 'degraded') badgeClass = 'warning';
           else if (item.status === 'running') badgeClass = 'running';
           else if (item.status === 'failed') badgeClass = 'unhealthy';
 
@@ -1544,20 +1635,42 @@
       document.getElementById('detail-version').textContent = info.version || '-';
       document.getElementById('detail-triggered-by').textContent = info.triggered_by || '-';
 
+      if (info.created_at) {
+        deploymentStartTime = new Date(info.created_at).getTime();
+      }
+      if (info.finished_at) {
+        deploymentFinishTime = new Date(info.finished_at).getTime();
+      }
+      if (info.estimated_secs) {
+        deploymentEstimatedSecs = info.estimated_secs;
+      }
+
       const badge = document.getElementById('detail-status-badge');
       badge.textContent = info.status;
       badge.className = 'status-badge ' + (
         info.status === 'live' ? 'healthy' : 
+        (info.status === 'degraded' ? 'warning' :
         (info.status === 'running' ? 'running' : 
-        (info.status === 'failed' ? 'unhealthy' : 'neutral'))
+        (info.status === 'failed' ? 'unhealthy' : 'neutral')))
       );
 
       if (info.status === 'live') {
+        if (deploymentTimer) { clearInterval(deploymentTimer); deploymentTimer = null; }
+        updateProgressTiming(true);
         document.getElementById('detail-progress-bar').style.width = '100%';
         document.getElementById('detail-progress-percent').textContent = '100%';
-        const urls = (info.evidence && info.evidence.urls) ? info.evidence.urls : [];
+        const urls = (info.evidence && info.evidence.urls) ? info.evidence.urls : (info.urls || []);
         showDeploymentResult(urls);
+      } else if (info.status === 'degraded') {
+        if (deploymentTimer) { clearInterval(deploymentTimer); deploymentTimer = null; }
+        updateProgressTiming(true);
+        document.getElementById('detail-progress-bar').style.width = '100%';
+        document.getElementById('detail-progress-percent').textContent = '100%';
+        const urls = (info.evidence && info.evidence.urls) ? info.evidence.urls : (info.urls || []);
+        showDeploymentDegraded(urls, info.evidence);
       } else if (info.status === 'failed') {
+        if (deploymentTimer) { clearInterval(deploymentTimer); deploymentTimer = null; }
+        updateProgressTiming(true);
         document.getElementById('detail-progress-bar').style.width = '100%';
         document.getElementById('detail-progress-percent').textContent = '100%';
         const err = info.error || { code: 'failed', message: 'Deployment failed', fix: '' };
@@ -1568,6 +1681,11 @@
           }
         });
         renderStageSteps();
+      } else if (info.status === 'running') {
+        if (!deploymentTimer) {
+          deploymentTimer = setInterval(() => updateProgressTiming(false), 1000);
+        }
+        updateProgressTiming(false);
       }
     }
 
@@ -1578,18 +1696,30 @@
       document.getElementById('detail-content-empty').style.display = 'none';
       document.getElementById('detail-content-active').style.display = 'block';
 
-      // Clean existing event source
+      // Clean existing event source & timing timer
       if (activeEventSource) {
         activeEventSource.close();
         activeEventSource = null;
       }
+      if (deploymentTimer) {
+        clearInterval(deploymentTimer);
+        deploymentTimer = null;
+      }
+
+      deploymentStartTime = Date.now();
+      deploymentFinishTime = null;
+      deploymentEstimatedSecs = null;
 
       // Initialize stage step placeholders
       initStageSteps();
       document.getElementById('detail-progress-bar').style.width = '0%';
       document.getElementById('detail-progress-percent').textContent = '0%';
+      document.getElementById('detail-progress-timing').textContent = '';
       document.getElementById('detail-log-output').textContent = 'Connecting to stream...\n';
       document.getElementById('detail-result-box').style.display = 'none';
+
+      // Start live timing timer
+      deploymentTimer = setInterval(() => updateProgressTiming(false), 1000);
 
       // Start EventSource immediately
       const sseUrl = `/api/deployments/${encodeURIComponent(id)}/events`;
@@ -1615,7 +1745,6 @@
           activeEventSource = null;
         }
         if (selectedDeploymentId === id && !receivedDoneEvent) {
-          // Stream closed before done event - refetch GET /api/deployments/:id once (Requirement 5)
           try {
             const res = await apiFetch(`/api/deployments/${encodeURIComponent(id)}`);
             if (res.data && selectedDeploymentId === id) {
@@ -1627,7 +1756,7 @@
         }
       };
 
-      // In parallel, fetch deployment details to show header info / already finished state (Requirement 4)
+      // In parallel, fetch deployment details to show header info / already finished state
       try {
         const res = await apiFetch(`/api/deployments/${encodeURIComponent(id)}`);
         if (selectedDeploymentId === id && res.data) {
@@ -1639,10 +1768,19 @@
     function handleDeployEvent(event, id) {
       if (selectedDeploymentId !== id) return;
 
+      const eventTs = event.ts ? new Date(event.ts).getTime() : Date.now();
+      if (!deploymentStartTime) {
+        deploymentStartTime = eventTs;
+      }
+      if (event.estimated_secs && !deploymentEstimatedSecs) {
+        deploymentEstimatedSecs = event.estimated_secs;
+      }
+
       // Update progress
       const p = Math.min(100, Math.max(0, event.progress || 0));
       document.getElementById('detail-progress-bar').style.width = `${p}%`;
       document.getElementById('detail-progress-percent').textContent = `${p}%`;
+      updateProgressTiming(false);
 
       // Append log or stage message to terminal
       if (event.message) {
@@ -1661,42 +1799,73 @@
       // Update step status if not queued and not done
       if (event.stage && event.stage !== 'queued' && event.stage !== 'done') {
         if (event.status !== 'log') {
-          stageStateMap[event.stage] = event.status;
+          const st = event.status; // 'running', 'ok', 'skipped', 'failed'
+          if (st === 'running') {
+            stageStateMap[event.stage] = 'running';
+            stageStartTimes[event.stage] = eventTs;
+          } else if (st === 'ok') {
+            stageStateMap[event.stage] = 'done';
+            const start = stageStartTimes[event.stage] || deploymentStartTime;
+            stageDurations[event.stage] = Math.max(0.1, (eventTs - start) / 1000);
+          } else if (st === 'skipped') {
+            stageStateMap[event.stage] = 'skipped';
+          } else if (st === 'failed') {
+            stageStateMap[event.stage] = 'failed';
+            const start = stageStartTimes[event.stage] || deploymentStartTime;
+            stageDurations[event.stage] = Math.max(0.1, (eventTs - start) / 1000);
+          }
           renderStageSteps();
         }
       }
 
       // Final stage
       if (event.stage === 'done') {
+        deploymentFinishTime = eventTs;
+        if (deploymentTimer) {
+          clearInterval(deploymentTimer);
+          deploymentTimer = null;
+        }
+        updateProgressTiming(true);
+
         if (event.status === 'failed' || event.error) {
-          // Requirement 3: if status === 'failed' or error present -> show error + fix, never call renderAllStepsPassed
           const err = event.error || { code: 'failed', message: event.message || 'Deployment failed', fix: '' };
           showDeploymentError(err);
           const badge = document.getElementById('detail-status-badge');
           badge.textContent = 'failed';
           badge.className = 'status-badge unhealthy';
           DEPLOY_STAGES.forEach(s => {
-            if (stageStateMap[s.id] === 'running') stageStateMap[s.id] = 'failed';
+            if (stageStateMap[s.id] === 'running') {
+              stageStateMap[s.id] = 'failed';
+              const start = stageStartTimes[s.id] || deploymentStartTime;
+              stageDurations[s.id] = Math.max(0.1, (eventTs - start) / 1000);
+            }
           });
           renderStageSteps();
         } else if (event.status === 'ok') {
-          // Requirement 3: Only status === 'ok' -> success with event.result.urls
           document.getElementById('detail-progress-bar').style.width = '100%';
           document.getElementById('detail-progress-percent').textContent = '100%';
-          const badge = document.getElementById('detail-status-badge');
-          badge.textContent = 'live';
-          badge.className = 'status-badge healthy';
-          const anyStepReported = DEPLOY_STAGES.some(s => stageStateMap[s.id] && stageStateMap[s.id] !== 'pending');
+
           DEPLOY_STAGES.forEach(s => {
-            if (stageStateMap[s.id] === 'running') stageStateMap[s.id] = 'ok';
+            if (stageStateMap[s.id] === 'running') {
+              stageStateMap[s.id] = 'done';
+              const start = stageStartTimes[s.id] || deploymentStartTime;
+              stageDurations[s.id] = Math.max(0.1, (eventTs - start) / 1000);
+            }
           });
           renderStageSteps();
-          if (!anyStepReported) {
-            const logPre = document.getElementById('detail-log-output');
-            logPre.textContent += 'Step-by-step details are kept for 10 minutes after a deployment finishes.\n';
-          }
-          if (event.result && event.result.urls) {
-            showDeploymentResult(event.result.urls);
+
+          const result = event.result;
+          const badge = document.getElementById('detail-status-badge');
+          if (result && result.status === 'degraded') {
+            badge.textContent = 'degraded';
+            badge.className = 'status-badge warning';
+            showDeploymentDegraded(result.urls, result.evidence);
+          } else {
+            badge.textContent = 'live';
+            badge.className = 'status-badge healthy';
+            if (result && result.urls) {
+              showDeploymentResult(result.urls);
+            }
           }
         }
 
@@ -1705,7 +1874,6 @@
           activeEventSource = null;
         }
 
-        // Requirement 6: refresh deployments and apps after job finishes
         loadDeployments();
         loadApps();
       }
@@ -1722,6 +1890,34 @@
       box.innerHTML = `
         <div style="background: var(--success-bg); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 4px; padding: 12px; color: var(--text);">
           <div style="color: var(--success); font-weight: 700; margin-bottom: 6px;">✓ Deployment Successful!</div>
+          <div style="font-size: 12.5px;">${linksHtml}</div>
+        </div>
+      `;
+    }
+
+    function showDeploymentDegraded(urls, evidence) {
+      const box = document.getElementById('detail-result-box');
+      box.style.display = 'block';
+      const urlList = Array.isArray(urls) ? urls : [];
+      const linksHtml = urlList.length > 0 
+        ? urlList.map(u => `<div><a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer" style="font-weight: 600;">🔗 ${escapeHtml(u)}</a></div>`).join('')
+        : '<div>Container running without public domains.</div>';
+
+      const smokeStatusText = evidence && evidence.smoke_test_status 
+        ? `HTTP ${evidence.smoke_test_status}` 
+        : (evidence && evidence.smoke_test_passed === false ? 'Probe failed' : 'Non-2xx/3xx/401 response');
+
+      box.innerHTML = `
+        <div style="background: var(--warning-bg); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 4px; padding: 12px; color: var(--text);">
+          <div style="color: var(--warning); font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+            ⚠️ Deployment Degraded
+          </div>
+          <div style="font-size: 12px; margin-bottom: 6px;">
+            Container started and health check passed, but the smoke test (<code>GET /</code>) returned <strong>${escapeHtml(smokeStatusText)}</strong>.
+          </div>
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 8px;">
+            💡 <strong>Hint:</strong> Check application and container logs below to inspect why the root route failed.
+          </div>
           <div style="font-size: 12.5px;">${linksHtml}</div>
         </div>
       `;
@@ -2002,6 +2198,81 @@
             </div>
           `;
         }).join('');
+
+        // Control Plane TLS Panel
+        const tlsBadge = document.getElementById('control-tls-mode-badge');
+        const tlsBody = document.getElementById('control-tls-body');
+        if (tlsBadge && tlsBody) {
+          if (!doc.control_tls) {
+            tlsBadge.textContent = 'disabled';
+            tlsBadge.className = 'status-badge neutral';
+            tlsBody.innerHTML = `<div class="empty-state" style="padding: 12px;">Control TLS is not enabled or not configured on this endpoint.</div>`;
+          } else {
+            const tls = doc.control_tls;
+            const isAcme = tls.mode === 'acme-ip';
+            tlsBadge.textContent = tls.mode;
+            tlsBadge.className = 'status-badge ' + (isAcme ? 'healthy' : 'neutral');
+
+            let expiryStr = 'None';
+            let isExpiringSoon = false;
+            if (tls.not_after) {
+              const expiryDate = new Date(tls.not_after);
+              const now = Date.now();
+              const msUntilExpiry = expiryDate.getTime() - now;
+              const hoursUntilExpiry = msUntilExpiry / (1000 * 60 * 60);
+              isExpiringSoon = hoursUntilExpiry < 48;
+              expiryStr = formatDateTime(tls.not_after) + (msUntilExpiry < 0 ? ' (Expired)' : ` (~${Math.max(0, Math.round(hoursUntilExpiry))}h left)`);
+            }
+
+            const hasError = !!tls.last_error;
+            let warningHtml = '';
+            if (isExpiringSoon || hasError) {
+              warningHtml = `
+                <div style="background: var(--warning-bg); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 4px; padding: 10px 12px; margin-bottom: 12px; color: var(--text);">
+                  <div style="color: var(--warning); font-weight: 700; margin-bottom: 2px;">⚠️ TLS Warning</div>
+                  ${isExpiringSoon ? `<div style="font-size: 12px;">Certificate expires in under 48 hours (${escapeHtml(expiryStr)}).</div>` : ''}
+                  ${hasError ? `<div style="font-size: 12px; margin-top: 4px;">Last TLS error: <code>${escapeHtml(tls.last_error)}</code></div>` : ''}
+                </div>
+              `;
+            }
+
+            tlsBody.innerHTML = `
+              ${warningHtml}
+              <div style="display: flex; flex-direction: column; gap: 12px; font-size: 12.5px;">
+                <div>
+                  <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px; text-transform: uppercase; font-weight: 600;">SPKI Public Key Pin (SHA-256):</div>
+                  <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <code id="control-tls-pin-val" style="background: var(--surface-subtle); padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; word-break: break-all; color: var(--accent);">${escapeHtml(tls.spki_pin || '-')}</code>
+                    <button type="button" class="secondary" id="btn-copy-tls-pin" style="font-size: 11px; padding: 5px 10px;">Copy Pin</button>
+                  </div>
+                </div>
+                <div style="display: flex; gap: 24px; flex-wrap: wrap; margin-top: 4px;">
+                  <div>
+                    <span style="color: var(--text-dim); font-size: 11px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 2px;">Mode</span>
+                    <span style="font-family: var(--font-mono);">${escapeHtml(tls.mode)}</span>
+                  </div>
+                  <div>
+                    <span style="color: var(--text-dim); font-size: 11px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 2px;">Certificate Expiry</span>
+                    <span>${escapeHtml(expiryStr)}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+
+            const copyBtn = document.getElementById('btn-copy-tls-pin');
+            if (copyBtn) {
+              copyBtn.addEventListener('click', async () => {
+                try {
+                  await navigator.clipboard.writeText(tls.spki_pin || '');
+                  copyBtn.textContent = 'Copied!';
+                  setTimeout(() => { copyBtn.textContent = 'Copy Pin'; }, 2000);
+                } catch (err) {
+                  showToast('Failed to copy pin to clipboard');
+                }
+              });
+            }
+          }
+        }
       } catch (err) {}
     }
 
