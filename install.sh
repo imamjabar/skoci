@@ -228,12 +228,12 @@ if [ "$CLIENT_ONLY" = "1" ]; then
   if [ "$OS_NAME" = "darwin" ] && [ ! -w "/usr/local/bin" ] && [ -z "$SUDO" ]; then
     INSTALL_DIR="$HOME/.local/bin"
     mkdir -p "$INSTALL_DIR"
-    cp "${TMP_DIR}/${ASSET_NAME}" "${INSTALL_DIR}/skoci"
-    chmod 0755 "${INSTALL_DIR}/skoci"
+    install -m 0755 "${TMP_DIR}/${ASSET_NAME}" "${INSTALL_DIR}/skoci.new"
+    mv -f "${INSTALL_DIR}/skoci.new" "${INSTALL_DIR}/skoci"
   else
     $SUDO mkdir -p "$INSTALL_DIR"
-    $SUDO cp "${TMP_DIR}/${ASSET_NAME}" "${INSTALL_DIR}/skoci"
-    $SUDO chmod 0755 "${INSTALL_DIR}/skoci"
+    $SUDO install -m 0755 "${TMP_DIR}/${ASSET_NAME}" "${INSTALL_DIR}/skoci.new"
+    $SUDO mv -f "${INSTALL_DIR}/skoci.new" "${INSTALL_DIR}/skoci"
   fi
 
   echo -e "\n${GREEN}${BOLD}==============================================================================${NC}"
@@ -253,8 +253,9 @@ fi
 # 5. Linux Server Installation
 INSTALL_DIR="/usr/local/bin"
 BIN_TARGET="${INSTALL_DIR}/skoci"
-$SUDO cp "${TMP_DIR}/${ASSET_NAME}" "${BIN_TARGET}"
-$SUDO chmod 0755 "${BIN_TARGET}"
+# Write next to the target and rename: overwriting a running executable fails with "Text file busy".
+$SUDO install -m 0755 "${TMP_DIR}/${ASSET_NAME}" "${BIN_TARGET}.new"
+$SUDO mv -f "${BIN_TARGET}.new" "${BIN_TARGET}"
 echo -e "${GREEN}✓ Binary installed at ${BIN_TARGET}${NC}"
 
 # Check / Install Docker Engine
