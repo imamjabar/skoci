@@ -44,8 +44,8 @@ Skoci ships with a built-in MCP server that communicates over JSON-RPC 2.0 via s
 }
 ```
 
-### C. Zero-Config Mode (Auto-Detect via Profile & `.env.skoci`)
-If you have run `skoci connect` or `skoci server setup`, credentials and pins stored in `~/.config/skoci/servers.json` or project-local `.env.skoci` are loaded automatically by `skoci mcp` without requiring manual environment variables.
+### C. Zero-Config Mode (Auto-Detect via Profile & `.skoci/env`)
+If you have run `skoci connect` or `skoci server setup` (Skoci >= 0.4.0), credentials and pins stored in `~/.config/skoci/servers.json` or project-local `.skoci/env` (or legacy `.env.skoci`) are loaded automatically by `skoci mcp` without requiring manual environment variables.
 ---
 
 ## 2. Available MCP Tools
@@ -54,7 +54,7 @@ All tools are derived from a single API source of truth (`skoci-api`), guarantee
 
 | Tool Name | Purpose | Parameters |
 | :--- | :--- | :--- |
-| `skoci_init` | Detect framework & create `skoci.yaml` | `app`, `path` |
+| `skoci_init` | Detect framework & create `.skoci/skoci.yaml` | `app`, `path` |
 | `skoci_deploy` | Upload, compile image, & cutover | `app`, `env` (`preview`/`production`), `commit` |
 | `skoci_status` | Inspect container health & status | `app` |
 | `skoci_logs` | Retrieve recent logs (secrets redacted) | `app`, `tail` |

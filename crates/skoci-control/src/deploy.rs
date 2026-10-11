@@ -10,11 +10,12 @@ use skoci_node::services::{ServiceManager, ServiceSpec};
 use skoci_proxy::health::HealthChecker;
 use skoci_proxy::router::Route;
 use std::collections::HashSet;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::config::TlsMode;
@@ -199,38 +200,23 @@ async fn execute_pipeline(
             let max_unpacked = state.config.max_upload_mb * 1024 * 1024 * 4;
             extract_tar_gz(tar_path, &build_dir, max_unpacked)?;
 
-            let config_path = build_dir.join("skoci.yaml");
-            if !config_path.exists() {
-                return Err(SkociError::config_invalid(
-                    "skoci.yaml file not found in project root",
-                    "Run 'skoci init' to create skoci.yaml",
-                ));
-            }
+            let config_path = resolve_project_config(&build_dir)?;
 
             let config_content = fs::read_to_string(&config_path).await.map_err(|e| {
                 SkociError::config_invalid(
-                    format!("Failed to read skoci.yaml: {e}"),
-                    "Check skoci.yaml syntax",
+                    format!("Failed to read {}: {e}", config_path.display()),
+                    "Check configuration syntax",
                 )
             })?;
-
-            if let Ok(meta) = std::fs::symlink_metadata(&config_path) {
-                if meta.file_type().is_symlink() || !meta.is_file() {
-                    return Err(SkociError::config_invalid(
-                        "skoci.yaml must be a regular file, not a symlink",
-                        "Replace the symlink with a regular skoci.yaml file",
-                    ));
-                }
-            }
 
             let cfg = ConfigLoader::parse_config(&config_content)?;
             if cfg.app != opts.app {
                 return Err(SkociError::config_invalid(
                     format!(
-                        "App name in skoci.yaml ('{}') does not match parameter ('{}')",
+                        "App name in configuration ('{}') does not match parameter ('{}')",
                         cfg.app, opts.app
                     ),
-                    "Adjust 'app' in skoci.yaml or deploy target",
+                    "Adjust 'app' in configuration or deploy target",
                 ));
             }
 
@@ -770,6 +756,42 @@ async fn execute_pipeline(
         ),
     }
 
+    let urls = compute_urls(state, &opts.app, &opts.env, &hosts);
+    let mut unready_urls = Vec::new();
+
+    if smoke_passed && !urls.is_empty() {
+        buffer.emit(
+            DeployStage::Smoke,
+            StageStatus::Log,
+            "Probing public URL readiness...",
+            95,
+            None,
+            None,
+        );
+        for url in &urls {
+            if probe_public_url(state, url).await {
+                buffer.emit(
+                    DeployStage::Smoke,
+                    StageStatus::Log,
+                    format!("URL {url} is serving"),
+                    95,
+                    None,
+                    None,
+                );
+            } else {
+                buffer.emit(
+                    DeployStage::Smoke,
+                    StageStatus::Log,
+                    format!("URL {url} is not serving yet (TLS certificate or DNS pending)"),
+                    95,
+                    None,
+                    None,
+                );
+                unready_urls.push(url.clone());
+            }
+        }
+    }
+
     // Stage 8: Cleanup (95 -> 99)
     buffer.emit(
         DeployStage::Cleanup,
@@ -802,7 +824,6 @@ async fn execute_pipeline(
     );
 
     // Stage 9: Done (100)
-    let urls = compute_urls(state, &opts.app, &opts.env, &hosts);
     if urls.is_empty() {
         buffer.emit(
             DeployStage::Cleanup,
@@ -828,6 +849,7 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
         commit: opts.commit.clone().unwrap_or_else(|| "none".to_string()),
         timestamp: Utc::now(),
         urls: urls.clone(),
+        unready_urls: unready_urls.clone(),
         image: image_tag,
         container: container_name,
         health_check_url: format!("http://127.0.0.1:{host_port}{}", cfg.run.health),
@@ -849,6 +871,7 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
         env: opts.env.clone(),
         version: opts.version.clone(),
         urls,
+        unready_urls,
         status: status_str.to_string(),
         evidence: evidence.clone(),
     };
@@ -874,6 +897,30 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
     );
 
     Ok((deploy_response, evidence))
+}
+
+/// Accepts `.skoci/skoci.yaml` first, then a pre-0.4.1 `skoci.yaml` at the archive root.
+pub fn resolve_project_config(build_dir: &Path) -> SkociResult<PathBuf> {
+    let config_path = ConfigLoader::locate_config(build_dir).ok_or_else(|| {
+        SkociError::config_invalid(
+            "No project configuration in the upload (looked for .skoci/skoci.yaml, then skoci.yaml)",
+            "Run 'skoci init' to generate .skoci/skoci.yaml, then deploy again",
+        )
+    })?;
+
+    if let Ok(meta) = std::fs::symlink_metadata(&config_path) {
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(SkociError::config_invalid(
+                format!(
+                    "{} must be a regular file, not a symlink",
+                    config_path.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                "Replace the symlink with a regular configuration file",
+            ));
+        }
+    }
+
+    Ok(config_path)
 }
 
 pub fn compute_hosts(base_domain: &Option<String>, cfg: &SkociConfig, env: &str) -> Vec<String> {
@@ -916,12 +963,14 @@ pub fn compute_urls(state: &AppState, app: &str, env: &str, hosts: &[String]) ->
         TlsMode::Off => "http",
     };
     let mut urls: Vec<String> = hosts.iter().map(|h| format!("{proto}://{h}")).collect();
-    if let Some(ip) = state.config.public_ip {
-        if serves_raw_ip(state, app, env) {
-            urls.push(match ip {
-                std::net::IpAddr::V4(v4) => format!("http://{v4}"),
-                std::net::IpAddr::V6(v6) => format!("http://[{v6}]"),
-            });
+    if hosts.is_empty() {
+        if let Some(ip) = state.config.public_ip {
+            if serves_raw_ip(state, app, env) {
+                urls.push(match ip {
+                    std::net::IpAddr::V4(v4) => format!("http://{v4}"),
+                    std::net::IpAddr::V6(v6) => format!("http://[{v6}]"),
+                });
+            }
         }
     }
     urls
@@ -1066,6 +1115,181 @@ pub async fn check_production_dns_records(
     Ok(())
 }
 
+#[derive(Debug)]
+struct ProbeServerCertVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for ProbeServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+static PROBE_TLS_CONFIG: LazyLock<Arc<rustls::ClientConfig>> = LazyLock::new(|| {
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("safe TLS versions")
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(ProbeServerCertVerifier))
+    .with_no_client_auth();
+    Arc::new(config)
+});
+
+pub fn parse_probe_target(url: &str) -> Option<(&str, String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() {
+        return None;
+    }
+    let host_header = authority.to_string();
+    let host_clean = if authority.starts_with('[') {
+        if let Some(end) = authority.find(']') {
+            authority[1..end].to_string()
+        } else {
+            authority.to_string()
+        }
+    } else {
+        authority.split(':').next().unwrap_or(authority).to_string()
+    };
+    Some((scheme, host_header, host_clean))
+}
+
+pub fn parse_http_status(resp: &str) -> Option<u16> {
+    let mut parts = resp.split_whitespace();
+    let version = parts.next()?;
+    if !version.starts_with("HTTP/") {
+        return None;
+    }
+    parts.next()?.parse::<u16>().ok()
+}
+
+pub async fn probe_http(addr: SocketAddr, host_header: &str, timeout: Duration) -> bool {
+    let connect_fut = tokio::net::TcpStream::connect(addr);
+    let mut stream = match tokio::time::timeout(timeout, connect_fut).await {
+        Ok(Ok(s)) => s,
+        _ => return false,
+    };
+
+    let req = format!(
+        "GET / HTTP/1.1\r\nHost: {host_header}\r\nUser-Agent: skoci-probe\r\nConnection: close\r\n\r\n"
+    );
+    let write_fut = stream.write_all(req.as_bytes());
+    if tokio::time::timeout(timeout, write_fut).await.map(|r| r.is_ok()) != Ok(true) {
+        return false;
+    }
+
+    let mut buf = [0u8; 1024];
+    let read_fut = stream.read(&mut buf);
+    match tokio::time::timeout(timeout, read_fut).await {
+        Ok(Ok(n)) if n > 0 => {
+            let resp = String::from_utf8_lossy(&buf[..n]);
+            parse_http_status(&resp).map(is_smoke_status_passed).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+pub async fn probe_https(
+    addr: SocketAddr,
+    host_header: &str,
+    host_clean: &str,
+    timeout: Duration,
+) -> bool {
+    let connect_fut = tokio::net::TcpStream::connect(addr);
+    let stream = match tokio::time::timeout(timeout, connect_fut).await {
+        Ok(Ok(s)) => s,
+        _ => return false,
+    };
+
+    let server_name = match rustls::pki_types::ServerName::try_from(host_clean.to_string()) {
+        Ok(name) => name,
+        Err(_) => return false,
+    };
+
+    let tls_connector = tokio_rustls::TlsConnector::from(PROBE_TLS_CONFIG.clone());
+    let handshake_fut = tls_connector.connect(server_name, stream);
+    let mut tls_stream = match tokio::time::timeout(timeout, handshake_fut).await {
+        Ok(Ok(s)) => s,
+        _ => return false,
+    };
+
+    let req = format!(
+        "GET / HTTP/1.1\r\nHost: {host_header}\r\nUser-Agent: skoci-probe\r\nConnection: close\r\n\r\n"
+    );
+    let write_fut = tls_stream.write_all(req.as_bytes());
+    if tokio::time::timeout(timeout, write_fut).await.map(|r| r.is_ok()) != Ok(true) {
+        return false;
+    }
+
+    let mut buf = [0u8; 1024];
+    let read_fut = tls_stream.read(&mut buf);
+    match tokio::time::timeout(timeout, read_fut).await {
+        Ok(Ok(n)) if n > 0 => {
+            let resp = String::from_utf8_lossy(&buf[..n]);
+            parse_http_status(&resp).map(is_smoke_status_passed).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+pub async fn probe_public_url(state: &AppState, url: &str) -> bool {
+    let timeout = Duration::from_secs(2);
+    let (scheme, host_header, host_clean) = match parse_probe_target(url) {
+        Some(t) => t,
+        None => return false,
+    };
+
+    match scheme {
+        "http" => {
+            let addr = SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                state.config.http_bind.port(),
+            );
+            probe_http(addr, &host_header, timeout).await
+        }
+        "https" => {
+            let addr = SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                state.config.https_bind.port(),
+            );
+            probe_https(addr, &host_header, &host_clean, timeout).await
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,5 +1313,35 @@ mod tests {
                 status
             );
         }
+    }
+
+    #[test]
+    fn test_parse_probe_target() {
+        assert_eq!(
+            parse_probe_target("http://198.51.100.1"),
+            Some(("http", "198.51.100.1".to_string(), "198.51.100.1".to_string()))
+        );
+        assert_eq!(
+            parse_probe_target("https://myapp.example.com"),
+            Some(("https", "myapp.example.com".to_string(), "myapp.example.com".to_string()))
+        );
+        assert_eq!(
+            parse_probe_target("http://[2001:db8::1]"),
+            Some(("http", "[2001:db8::1]".to_string(), "2001:db8::1".to_string()))
+        );
+        assert_eq!(
+            parse_probe_target("https://myapp.example.com:8443"),
+            Some(("https", "myapp.example.com:8443".to_string(), "myapp.example.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_http_status() {
+        assert_eq!(parse_http_status("HTTP/1.1 200 OK\r\n"), Some(200));
+        assert_eq!(parse_http_status("HTTP/1.1 301 Moved\r\n"), Some(301));
+        assert_eq!(parse_http_status("HTTP/1.1 401 Unauthorized\r\n"), Some(401));
+        assert_eq!(parse_http_status("HTTP/1.1 404 Not Found\r\n"), Some(404));
+        assert_eq!(parse_http_status("HTTP/2 200\r\n"), Some(200));
+        assert_eq!(parse_http_status("invalid"), None);
     }
 }

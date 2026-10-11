@@ -63,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 ## Panduan Cepat
 
 ### 1. Pasang atau Setup VPS
-Konfigurasi VPS jarak jauh langsung dari laptop Anda melalui SSH:
+Konfigurasi VPS jarak jauh langsung dari laptop Anda melalui SSH (Skoci >= 0.4.0):
 ```bash
 skoci server setup --host <server-public-ip> --user root
 ```
@@ -84,7 +84,7 @@ Di komputer kerja Anda, pasang client dan hubungkan workspace Anda menggunakan I
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only
 skoci connect --server <server-public-ip> --token <token> --pin sha256:<spki-pin>
 ```
-Profil disimpan di `~/.config/skoci/servers.json` (0600) dan `.env.skoci` (0600, masuk `.gitignore`).
+Profil disimpan di `~/.config/skoci/servers.json` (0600) dan `.skoci/env` (0600, masuk `.gitignore`). Berkas legacy `.env.skoci` tetap dibaca untuk proyek sebelum 0.4.1.
 
 ### 4. Inisialisasi & Deploy ke Preview
 Masuk ke repositori proyek Anda:
@@ -126,8 +126,8 @@ Operational Rules:
 * **Bebas Injeksi Shell:** Perintah Docker dan sistem dijalankan sebagai vektor argumen terstruktur (`tokio::process::Command`); input dari user atau agen tidak pernah disisipkan ke string shell.
 * **Scoped Token Terisolasi & Input via Stdin:** Token agen (`sk_agent_<app>_*`) disimpan sebagai hash SHA-256; batasan aplikasi ditegakkan di SQLite. Token dan secret dapat dialirkan via stdin untuk mencegah kebocoran pada daftar proses (`ps`, `/proc`) atau riwayat shell.
 * **Kebijakan Tanpa SSH & SPKI Pinning:** Tidak ada private key SSH yang disimpan pada workstation pengembang atau lingkungan agen. Semua komunikasi diarahkan via `https://<server-ip>:8443` yang dipin ke kunci SPKI permanen server (`sha256:...`).
-* **Enkripsi Secret & Sanitasi Environment:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600` yang langsung dihapus, dan disamarkan sebagai `[REDACTED]` di log. Berkas `.env.skoci` pada client dibatasi pada allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), dan subprocess dijalankan dengan environment yang bersih.
-* **Deny List Pengemasan:** Perintah deploy secara otomatis mengecualikan berkas sensitif (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`), dan kompresi arsip menggunakan izin privat `0600`.
+* **Enkripsi Secret & Sanitasi Environment:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600` yang langsung dihapus, dan disamarkan sebagai `[REDACTED]` di log. Kredensial client di `.skoci/env` (atau legacy `.env.skoci`) dibatasi pada allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), dan subprocess dijalankan dengan environment yang bersih.
+* **Deny List Pengemasan:** Perintah deploy secara otomatis mengecualikan berkas sensitif (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`) dan mematuhi `.skoci/ignore` (atau `.dockerignore`), serta kompresi arsip menggunakan izin privat `0600`.
 * **Isolasi Kontrol Lokal & Pinned TLS Bind:** API hanya mengikat `127.0.0.1:8787` secara lokal dan `0.0.0.0:8443` dengan TLS ter-pinning SPKI. Pada listener HTTPS publik (port 443), header `:authority`/`Host` wajib cocok dengan TLS SNI (mencegah domain fronting dengan HTTP `421 Misdirected Request`).
 * **Proteksi Kepemilikan Host:** Domain kustom dan auto-host dipartisi secara ketat; klaim silang atau pembajakan host antar-aplikasi ditolak.
 * **Gerbang Persetujuan Manusia & Pinning ID Image:** Rilis produksi, pemulihan database, dan operasi destruktif mewajibkan persetujuan manusia yang dikunci pada image ID Docker yang tidak dapat diubah (mencegah manipulasi TOCTOU).
@@ -138,7 +138,7 @@ Operational Rules:
 
 * **Grup Docker ≈ Root:** Akses ke `/var/run/docker.sock` setara dengan hak akses root di Linux; Skoci memperketat proses server, namun akses soket Docker tetap berprivilese setara root.
 * **Jaringan Outbound Kontainer Terbuka:** Kontainer mengeksekusi kode user/agen di dalam sandbox Docker standar dengan koneksi keluar internet yang tidak dibatasi.
-* **Trust-on-First-Use (TOFU) via SSH:** Setup awal server (`skoci server setup`) mem-bootstrap VPS dan menetapkan pin SPKI melalui SSH. Jika koneksi SSH pertama disadap tanpa verifikasi host key SSH, trust awal bisa terganggu. Koneksi berikutnya dipin secara permanen di `~/.config/skoci/servers.json`.
+* **Trust-on-First-Use (TOFU) via SSH:** Setup awal server (`skoci server setup`, Skoci >= 0.4.0) mem-bootstrap VPS dan menetapkan pin SPKI melalui SSH. Jika koneksi SSH pertama disadap tanpa verifikasi host key SSH, trust awal bisa terganggu. Koneksi berikutnya dipin secara permanen di `~/.config/skoci/servers.json`.
 * **Isolasi Docker Server Tunggal:** Isolasi mengandalkan namespace dan cgroup kernel Linux bawaan Docker tanpa virtualisasi microVM perangkat keras.
 * **Klaim Domain Kustom First-Come:** Agen dapat mendaftarkan domain kustom apa pun yang belum digunakan oleh aplikasi lain pada server tersebut.
 * **Checksum Rilis dari Asal yang Sama:** Berkas checksum rilis berada pada rilis GitHub yang sama dengan binary; verifikasi keaslian dan integritas menggunakan `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
@@ -160,7 +160,7 @@ Bagi pengguna yang telah memasang Skoci versi 0.1:
    ```bash
    sudo skoci token create --app <app> --name laptop
    ```
-4. **Hubungkan Ulang & Perbarui Konfigurasi:** Hubungkan kembali workstation (`skoci connect`) dan set ulang secret (`skoci secret set`). Perbarui `skoci.yaml`: `env.public` kini berupa map (`KEY: value`), bidang `build.mode` dan `server` telah dihapus, dan `skoci.policy.yaml` dapat dihapus.
+4. **Hubungkan Ulang & Perbarui Konfigurasi:** Hubungkan kembali workstation (`skoci connect`) dan set ulang secret (`skoci secret set`). Perbarui `.skoci/skoci.yaml` (atau legacy `skoci.yaml`): `env.public` kini berupa map (`KEY: value`), bidang `build.mode` dan `server` telah dihapus, dan `skoci.policy.yaml` dapat dihapus.
 
 ---
 

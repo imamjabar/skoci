@@ -13,7 +13,7 @@
    The CLI and MCP (Model Context Protocol) share a single API source of truth (`skoci-api`) with 100% parity. Every output supports structured JSON (`--json`), errors include actionable remediation `{code, message, fix}`, and built-in skills are provided for various harnesses (OMP, Claude Code, Pi, Codex, OpenClaw).
 
 3. **Dashboard for Validation, Not Configuration:**
-   All application configurations live in your Git repository (`skoci.yaml`). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions, and trigger 1-click rollbacks.
+   All application configurations live in your Git repository (`.skoci/skoci.yaml` or legacy `skoci.yaml`). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions, and trigger 1-click rollbacks.
 
 4. **Secure by Design:**
    - **Zero Shell Concatenation:** Docker commands use structured argument vectors (`tokio::process::Command`), immune to prompt injection.
@@ -41,7 +41,7 @@
 ## Quickstart (3 Minutes)
 
 ### 1. Install Skoci on VPS / 64-bit Raspberry Pi
-Run remote setup from your workstation:
+Run remote setup from your workstation (requires Skoci >= 0.4.0):
 ```bash
 skoci server setup --host <server-ip> --user root
 ```
@@ -62,7 +62,7 @@ On your local developer workstation, link your workspace to the pinned control p
 ```bash
 skoci connect --server <server-ip> --token sk_agent_toko_xxxx --pin sha256:<spki-pin>
 ```
-Credentials and pins are saved in `~/.config/skoci/servers.json` and `.env.skoci`.
+Credentials and pins are saved in `~/.config/skoci/servers.json` and `.skoci/env` (legacy `.env.skoci` is also supported).
 
 ### 4. Deploy from Project Repository
 Navigate to your application repository directory:

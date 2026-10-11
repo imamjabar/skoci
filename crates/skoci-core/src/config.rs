@@ -1,7 +1,7 @@
 use skoci_api::error::{SkociError, SkociResult};
-use skoci_api::models::{SkociConfig, MAX_APP_NAME_LEN};
+use skoci_api::models::{SkociConfig, LEGACY_CONFIG_PATH, MAX_APP_NAME_LEN, PROJECT_CONFIG_PATH};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const MAX_DOMAINS_PER_ENV: usize = 5;
 pub const RESERVED_APP_NAMES: &[&str] = &["skoci", "api", "www", "admin", "dashboard"];
@@ -9,6 +9,19 @@ pub const RESERVED_APP_NAMES: &[&str] = &["skoci", "api", "www", "admin", "dashb
 pub struct ConfigLoader;
 
 impl ConfigLoader {
+    /// `.skoci/skoci.yaml`, else `skoci.yaml`, else None. `root` is the project/build root.
+    pub fn locate_config(root: &Path) -> Option<PathBuf> {
+        let modern = root.join(PROJECT_CONFIG_PATH);
+        if modern.is_file() {
+            return Some(modern);
+        }
+        let legacy = root.join(LEGACY_CONFIG_PATH);
+        if legacy.is_file() {
+            return Some(legacy);
+        }
+        None
+    }
+
     pub fn parse_config(content: &str) -> SkociResult<SkociConfig> {
         let config: SkociConfig = serde_yaml::from_str(content).map_err(|e| {
             let msg = e.to_string();

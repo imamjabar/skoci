@@ -338,7 +338,7 @@ if $SUDO test -f /etc/skoci/master_token; then
   MASTER_TOKEN="$($SUDO cat /etc/skoci/master_token | tr -d '\r\n ')"
 fi
 if [ -z "$MASTER_TOKEN" ] && $SUDO test -f /etc/skoci/skoci.env; then
-  OLD_TOKEN="$($SUDO grep -E '^SKOCI_TOKEN=' /etc/skoci/skoci.env | cut -d= -f2- | tr -d '\r\n ' || true)"
+  OLD_TOKEN="$($SUDO grep -E '^SKOCI_MASTER_TOKEN=' /etc/skoci/skoci.env | cut -d= -f2- | tr -d '\r\n ' || true)"
   if [ -n "$OLD_TOKEN" ]; then
     MASTER_TOKEN="$OLD_TOKEN"
   fi

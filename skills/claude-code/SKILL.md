@@ -31,7 +31,7 @@ skoci connect --server <server-ip> --token sk_agent_<app>_<hex> --pin sha256:<sp
 # Verify custom domain DNS record before deploying
 skoci domain check <host> --json
 
-# Initialize project configuration (skoci.yaml, Dockerfile)
+# Initialize project configuration (.skoci/skoci.yaml, .skoci/Dockerfile, .skoci/ignore)
 skoci init --json
 
 # Set secret environment variables (encrypted at rest on server)

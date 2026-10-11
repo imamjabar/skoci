@@ -284,6 +284,7 @@ pub async fn handle_get_deployment_events(
                     env: rec.env.clone(),
                     version: rec.version.clone(),
                     urls: ev.urls.clone(),
+                    unready_urls: ev.unready_urls.clone(),
                     status: rec.status.clone(),
                     evidence: ev,
                 })

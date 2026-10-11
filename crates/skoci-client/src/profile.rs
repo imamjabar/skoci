@@ -93,6 +93,7 @@ pub enum TargetSource {
     Flag,
     ProjectEnv,
     Profile(String),
+    LocalMaster,
 }
 
 impl std::fmt::Display for TargetSource {
@@ -101,6 +102,7 @@ impl std::fmt::Display for TargetSource {
             TargetSource::Flag => write!(f, "flag"),
             TargetSource::ProjectEnv => write!(f, "project"),
             TargetSource::Profile(name) => write!(f, "profile:{name}"),
+            TargetSource::LocalMaster => write!(f, "local-master"),
         }
     }
 }
@@ -320,6 +322,26 @@ pub fn resolve_target_with_profiles(
     project_env: Option<(String, String, Option<String>)>,
     profiles: &ProfileConfig,
 ) -> SkociResult<ResolvedTarget> {
+    resolve_target_with_profiles_at(
+        explicit_url,
+        explicit_token,
+        explicit_pin,
+        profile_name,
+        project_env,
+        profiles,
+        Path::new("/etc/skoci/skoci.env"),
+    )
+}
+
+pub fn resolve_target_with_profiles_at(
+    explicit_url: Option<&str>,
+    explicit_token: Option<String>,
+    explicit_pin: Option<&str>,
+    profile_name: Option<&str>,
+    project_env: Option<(String, String, Option<String>)>,
+    profiles: &ProfileConfig,
+    master_env_path: &Path,
+) -> SkociResult<ResolvedTarget> {
     // 1. Explicit flags: explicit_url wins
     if let Some(url) = explicit_url {
         let pin = explicit_pin.map(|s| s.to_string());
@@ -331,7 +353,7 @@ pub fn resolve_target_with_profiles(
         });
     }
 
-    // 2. Project environment (.env.skoci)
+    // 2. Project environment (.skoci/env or .env.skoci)
     if let Some((env_url, env_token, env_pin)) = project_env {
         let token = explicit_token.or(Some(env_token));
         let pin = explicit_pin.map(|s| s.to_string()).or(env_pin);
@@ -375,9 +397,19 @@ pub fn resolve_target_with_profiles(
         }
     }
 
+    // 5. Server host fallback: master env file exists and is readable
+    if master_env_path.is_file() && std::fs::File::open(master_env_path).is_ok() {
+        return Ok(ResolvedTarget {
+            url: "http://127.0.0.1:8787".to_string(),
+            token: None,
+            pin: None,
+            source: TargetSource::LocalMaster,
+        });
+    }
+
     Err(SkociError::bad_request(
         "No target Skoci server configured",
-        "Pass --server <url>, configure .env.skoci, or select a profile with 'skoci profile switch <name>'",
+        "Pass --server <url>, configure .skoci/env, or select a profile with 'skoci profile switch <name>'",
     ))
 }
 
@@ -506,5 +538,61 @@ mod tests {
         let empty_cfg = ProfileConfig::default();
         let res = resolve_target_with_profiles(None, None, None, None, None, &empty_cfg);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_resolve_target_master_env_fallback() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let master_env = temp_dir.join(format!("test_master_env_{unique_id}.env"));
+        std::fs::write(&master_env, "SKOCI_MASTER_TOKEN=secret_master_token\n").unwrap();
+
+        let empty_cfg = ProfileConfig::default();
+
+        // Fallback kicks in when no other target is configured
+        let res = resolve_target_with_profiles_at(
+            None,
+            None,
+            None,
+            None,
+            None,
+            &empty_cfg,
+            &master_env,
+        )
+        .unwrap();
+        assert_eq!(res.url, "http://127.0.0.1:8787");
+        assert_eq!(res.source, TargetSource::LocalMaster);
+        assert_eq!(res.source.to_string(), "local-master");
+        assert_eq!(res.token, None);
+        assert_eq!(res.pin, None);
+
+        // Precedence: explicit flag beats master fallback
+        let flag_res = resolve_target_with_profiles_at(
+            Some("https://remote.skoci.com"),
+            None,
+            None,
+            None,
+            None,
+            &empty_cfg,
+            &master_env,
+        )
+        .unwrap();
+        assert_eq!(flag_res.source, TargetSource::Flag);
+        assert_eq!(flag_res.url, "https://remote.skoci.com");
+
+        // When master env does not exist, errors as before
+        let non_existent = temp_dir.join(format!("non_existent_{unique_id}.env"));
+        let err_res = resolve_target_with_profiles_at(
+            None,
+            None,
+            None,
+            None,
+            None,
+            &empty_cfg,
+            &non_existent,
+        );
+        assert!(err_res.is_err());
+
+        let _ = std::fs::remove_file(master_env);
     }
 }

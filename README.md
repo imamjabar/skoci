@@ -63,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 ## Quickstart
 
 ### 1. Install or Setup VPS
-Configure your remote VPS directly from your laptop over SSH:
+Configure your remote VPS directly from your laptop over SSH (Skoci >= 0.4.0):
 ```bash
 skoci server setup --host <server-public-ip> --user root
 ```
@@ -84,7 +84,7 @@ On your workstation, install the client and link your workspace using the server
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only
 skoci connect --server <server-public-ip> --token <token> --pin sha256:<spki-pin>
 ```
-Profiles are saved in `~/.config/skoci/servers.json` (0600) and `.env.skoci` (0600, added to `.gitignore`).
+Profiles are saved in `~/.config/skoci/servers.json` (0600) and `.skoci/env` (0600, added to `.gitignore`). Legacy `.env.skoci` is still read for projects created before 0.4.1.
 
 ### 4. Initialize & Deploy to Preview
 Inside your project repository:
@@ -126,8 +126,8 @@ Operational Rules:
 * **No Shell Injection:** Docker and system commands run as structured argument vectors (`tokio::process::Command`); user or agent input is never interpolated into a shell string.
 * **Isolated Scoped Tokens & Stdin Entry:** Agent tokens (`sk_agent_<app>_*`) are hashed with SHA-256; app boundaries are enforced in SQLite. Tokens and secrets can be piped via stdin to prevent leaking into process listings (`ps`, `/proc`) or shell history.
 * **Zero-SSH Policy & SPKI Pinning:** No private SSH keys stored in developer environments or agent contexts. All communication routes through `https://<server-ip>:8443` pinned to the server's immutable SPKI key (`sha256:...`).
-* **Encrypted Secrets & Cleaned Envs:** Secrets are encrypted with ChaCha20-Poly1305 on the node, injected via ephemeral `0600` env files unlinked immediately, and masked as `[REDACTED]` in logs. Client `.env.skoci` is restricted to an allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), and spawned subprocesses run with sanitized environments.
-* **Packaging Deny List:** `skoci deploy` excludes sensitive files (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`) by default, and uploads use private `0600` temporary archives.
+* **Encrypted Secrets & Cleaned Envs:** Secrets are encrypted with ChaCha20-Poly1305 on the node, injected via ephemeral `0600` env files unlinked immediately, and masked as `[REDACTED]` in logs. Client `.skoci/env` (or legacy `.env.skoci`) is restricted to an allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), and spawned subprocesses run with sanitized environments.
+* **Packaging Deny List:** `skoci deploy` excludes sensitive files (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`) and honours `.skoci/ignore` (or `.dockerignore`), and uploads use private `0600` temporary archives.
 * **Local Control Plane & Pinned TLS Bind:** API binds to `127.0.0.1:8787` locally and `0.0.0.0:8443` with SPKI-pinned TLS. On public HTTPS (port 443), requests enforce strict TLS SNI matching against `:authority`/`Host` headers (rejecting mismatches with `421 Misdirected Request`).
 * **Host Ownership Protection:** Custom domains and auto hosts are strictly partitioned; cross-app host collisions or hijacking are rejected.
 * **Human Approval Gates & Image ID Pinning:** Production releases, database restorations, and destructive operations enforce human sign-off pinned to immutable Docker image IDs (preventing TOCTOU tampering).
@@ -138,7 +138,7 @@ Operational Rules:
 
 * **Docker Group ≈ Root:** Access to `/var/run/docker.sock` is root-equivalent on Linux; Skoci hardens process execution, but Docker socket privileges remain root-level.
 * **Unrestricted Container Outbound Network:** Containers execute user/agent code inside standard Docker sandboxes with unrestricted outbound internet connectivity.
-* **First-Use Trust Established Over SSH (TOFU):** Initial server setup (`skoci server setup`) provisions the VPS and establishes the SPKI pin over SSH. If the initial SSH connection is intercepted without verifying SSH host keys, the initial pin trust could be compromised. Future connections are pinned in `~/.config/skoci/servers.json`.
+* **First-Use Trust Established Over SSH (TOFU):** Initial server setup (`skoci server setup`, Skoci >= 0.4.0) provisions the VPS and establishes the SPKI pin over SSH. If the initial SSH connection is intercepted without verifying SSH host keys, the initial pin trust could be compromised. Future connections are pinned in `~/.config/skoci/servers.json`.
 * **Single-Server Docker Isolation:** Isolation relies on Linux kernel namespaces and cgroups (Docker defaults) without hardware microVM isolation.
 * **First-Come Custom Domains:** An agent can claim any custom domain not yet registered by another application on the instance.
 * **Same-Origin Release Checksums:** Release checksums are hosted alongside binary assets; verify provenance with `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
@@ -160,7 +160,7 @@ If you are running an existing Skoci 0.1 installation:
    ```bash
    sudo skoci token create --app <app> --name laptop
    ```
-4. **Reconnect & Update Config:** Reconnect your workstation (`skoci connect`) and re-set secrets (`skoci secret set`). Update `skoci.yaml`: `env.public` is now a map (`KEY: value`), `build.mode` and `server` are obsolete, and `skoci.policy.yaml` can be deleted.
+4. **Reconnect & Update Config:** Reconnect your workstation (`skoci connect`) and re-set secrets (`skoci secret set`). Update `.skoci/skoci.yaml` (or legacy `skoci.yaml`): `env.public` is now a map (`KEY: value`), `build.mode` and `server` are obsolete, and `skoci.policy.yaml` can be deleted.
 
 ---
 

@@ -11,6 +11,36 @@ pub const MAX_APP_NAME_LEN: usize = 40;
 /// Default TCP port of the TLS control endpoint (`https://<public-ip>:8443`).
 pub const CONTROL_TLS_PORT: u16 = 8443;
 
+/// Directory holding every file Skoci generates inside a user project.
+pub const PROJECT_DIR: &str = ".skoci";
+/// Project config, relative to the project root.
+pub const PROJECT_CONFIG_PATH: &str = ".skoci/skoci.yaml";
+/// Pre-0.4.1 project config location, still read so existing projects keep deploying.
+pub const LEGACY_CONFIG_PATH: &str = "skoci.yaml";
+/// Generated container recipe, relative to the project root.
+pub const PROJECT_DOCKERFILE_PATH: &str = ".skoci/Dockerfile";
+/// Upload filter for `skoci deploy`; separate from `.dockerignore`, which belongs to the user.
+pub const PROJECT_IGNORE_PATH: &str = ".skoci/ignore";
+/// Per-project server credentials, mode 0600, never uploaded.
+pub const PROJECT_ENV_PATH: &str = ".skoci/env";
+/// Pre-0.4.1 credential file, still read.
+pub const LEGACY_ENV_PATH: &str = ".env.skoci";
+
+/// Paths that an ignore rule must never remove from a deployment archive.
+pub fn is_protected_upload_path(rel_path: &str, dockerfile: &str) -> bool {
+    let p = rel_path.trim_start_matches("./");
+    p == PROJECT_CONFIG_PATH
+        || p == LEGACY_CONFIG_PATH
+        || p == PROJECT_DIR
+        || p == dockerfile.trim_start_matches("./")
+}
+
+/// Paths that must never enter a deployment archive, even when an ignore rule allows them.
+pub fn is_forbidden_upload_path(rel_path: &str) -> bool {
+    let p = rel_path.trim_start_matches("./");
+    p == PROJECT_ENV_PATH || p == LEGACY_ENV_PATH
+}
+
 /// Third-party wildcard DNS zones that map `<ip>.<zone>` to an IP. Whoever controls the zone controls the name.
 pub const MAGIC_DNS_ZONES: &[&str] = &[
     "sslip.io",
@@ -159,6 +189,8 @@ pub struct SkociEvidence {
     pub commit: String,
     pub timestamp: DateTime<Utc>,
     pub urls: Vec<String>,
+    #[serde(default)]
+    pub unready_urls: Vec<String>,
     pub image: String,
     pub container: String,
     pub health_check_url: String,

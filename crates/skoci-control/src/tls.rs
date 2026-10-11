@@ -3,7 +3,10 @@ use instant_acme::{
     Account, AccountCredentials, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
     OrderStatus, RetryPolicy,
 };
-use rcgen::{CertificateParams, Ia5String, KeyPair, SanType, PKCS_ECDSA_P256_SHA256};
+use rcgen::{
+    CertificateParams, DistinguishedName, DnType, Ia5String, KeyPair, SanType,
+    PKCS_ECDSA_P256_SHA256,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -143,7 +146,20 @@ impl ControlTls {
                 Ok(content) => match parse_pem_certs(&content) {
                     Ok(certs) => match parse_cert_validity(certs[0].as_ref()) {
                         Ok((_, not_after)) if not_after > Utc::now() + Duration::days(30) => {
-                            (content, not_after)
+                            let has_old_default_cn = parse_x509_certificate(certs[0].as_ref())
+                                .map(|(_, c)| {
+                                    c.subject().iter_common_name().any(|cn| {
+                                        cn.as_str().map(|s| s == "rcgen self signed cert").unwrap_or(false)
+                                    })
+                                })
+                                .unwrap_or(false);
+                            if has_old_default_cn {
+                                let (pem, na) = generate_self_signed(&key, public_ip, api_domain)?;
+                                write_file_0644(&self_signed_path, &pem)?;
+                                (pem, na)
+                            } else {
+                                (content, not_after)
+                            }
                         }
                         _ => {
                             let (pem, na) = generate_self_signed(&key, public_ip, api_domain)?;
@@ -424,6 +440,14 @@ fn generate_self_signed(
     let next_year = now + Duration::days(365);
 
     let mut params = CertificateParams::default();
+    let mut dn = DistinguishedName::new();
+    let cn = match (public_ip, api_domain) {
+        (Some(ip), _) => ip.to_string(),
+        (None, Some(domain)) => domain.to_string(),
+        (None, None) => "127.0.0.1".to_string(),
+    };
+    dn.push(DnType::CommonName, cn);
+    params.distinguished_name = dn;
     params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
     params.not_after = rcgen::date_time_ymd(
         next_year.year(),
@@ -462,6 +486,21 @@ async fn create_new_account(
         .create(&new_acc, directory_url.to_string(), None)
         .await?;
     Ok((account, Some(creds)))
+}
+
+pub fn create_acme_ip_csr(
+    public_ip: IpAddr,
+    key: &KeyPair,
+) -> SkociResult<rcgen::CertificateSigningRequest> {
+    let mut params = CertificateParams::default();
+    params.distinguished_name = DistinguishedName::new();
+    params.subject_alt_names = vec![SanType::IpAddress(public_ip)];
+    params.serialize_request(key).map_err(|e| {
+        SkociError::internal(
+            format!("Failed to serialize CSR: {e}"),
+            "Check key and CSR parameters",
+        )
+    })
 }
 
 async fn issue_acme_ip_cert(
@@ -517,6 +556,9 @@ async fn issue_acme_ip_cert(
                     break;
                 }
             };
+            if authz.status == instant_acme::AuthorizationStatus::Valid {
+                continue;
+            }
             if let Some(mut chall) = authz.challenge(ChallengeType::Http01) {
                 let token = chall.token.to_string();
                 let key_auth = chall.key_authorization().as_str().to_string();
@@ -526,6 +568,11 @@ async fn issue_acme_ip_cert(
                     authz_err = Some(anyhow::anyhow!("Failed to set challenge ready: {e}"));
                     break;
                 }
+            } else {
+                authz_err = Some(anyhow::anyhow!(
+                    "ACME authorization for {public_ip} has no http-01 challenge"
+                ));
+                break;
             }
         }
     }
@@ -548,11 +595,7 @@ async fn issue_acme_ip_cert(
         anyhow::bail!("ACME order status is not ready: {:?}", status);
     }
 
-    let mut params = CertificateParams::default();
-    params.subject_alt_names = vec![SanType::IpAddress(public_ip)];
-    let csr = params
-        .serialize_request(key)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize CSR: {e}"))?;
+    let csr = create_acme_ip_csr(public_ip, key)?;
     order.finalize_csr(csr.der()).await?;
 
     let cert_chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
@@ -630,10 +673,11 @@ pub fn start_acme_renewal(
 
                         if !is_still_valid {
                             control_tls.cert_slot.set(control_tls.self_signed_cert.clone());
-                            let na = {
-                                let st = control_tls.status.read();
-                                st.as_ref().and_then(|i| i.not_after)
-                            };
+                            let na = control_tls
+                                .self_signed_cert
+                                .cert
+                                .first()
+                                .and_then(|c| parse_cert_validity(c.as_ref()).map(|(_, na)| na).ok());
                             *control_tls.status.write() = Some(ControlTlsInfo {
                                 spki_pin: control_tls.spki_pin.clone(),
                                 mode: "self-signed".to_string(),
@@ -894,7 +938,101 @@ mod tests {
         assert!(found_localhost, "localhost SAN not found");
         assert!(found_domain, "domain SAN for control.example.com not found");
 
+        let cns: Vec<_> = cert
+            .subject()
+            .iter_common_name()
+            .filter_map(|attr| attr.as_str().ok())
+            .collect();
+        assert_eq!(cns, vec!["203.0.113.10"]);
+        for cn in &cns {
+            assert_ne!(*cn, "rcgen self signed cert");
+        }
+
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_acme_ip_csr_has_no_common_name_and_carries_ip_san() {
+        use x509_parser::prelude::*;
+
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let public_ip: IpAddr = "203.0.113.10".parse().unwrap();
+
+        let csr = create_acme_ip_csr(public_ip, &key).expect("CSR creation succeeds");
+
+        let (rem, parsed_csr) =
+            X509CertificationRequest::from_der(csr.der()).expect("CSR DER should parse");
+        assert!(rem.is_empty(), "CSR DER should have no trailing bytes");
+
+        let cri = &parsed_csr.certification_request_info;
+
+        let cns: Vec<_> = cri
+            .subject
+            .iter_common_name()
+            .filter_map(|attr| attr.as_str().ok())
+            .collect();
+        assert!(
+            cns.is_empty(),
+            "CSR subject must contain no common name, but found: {:?}",
+            cns
+        );
+        assert_eq!(
+            cri.subject.iter().count(),
+            0,
+            "CSR subject sequence must be completely empty"
+        );
+
+        let mut found_ip_san = false;
+        let extensions = parsed_csr
+            .requested_extensions()
+            .expect("CSR must have requested extensions");
+        for ext in extensions {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext {
+                for name in &san.general_names {
+                    if let GeneralName::IPAddress(bytes) = name {
+                        if *bytes == [203, 0, 113, 10] {
+                            found_ip_san = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_ip_san, "Expected IP SAN 203.0.113.10 in CSR");
+    }
+
+    #[test]
+    fn test_acme_ip_csr_ipv6() {
+        use x509_parser::prelude::*;
+
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let ipv6: IpAddr = "2001:db8::1".parse().unwrap();
+
+        let csr = create_acme_ip_csr(ipv6, &key).expect("IPv6 CSR creation succeeds");
+
+        let (rem, parsed_csr) =
+            X509CertificationRequest::from_der(csr.der()).expect("IPv6 CSR DER should parse");
+        assert!(rem.is_empty());
+
+        let cri = &parsed_csr.certification_request_info;
+        assert_eq!(cri.subject.iter().count(), 0);
+        assert!(cri.subject.iter_common_name().next().is_none());
+
+        let mut found_v6_san = false;
+        let extensions = parsed_csr.requested_extensions().expect("extensions present");
+        for ext in extensions {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext {
+                for name in &san.general_names {
+                    if let GeneralName::IPAddress(bytes) = name {
+                        if let IpAddr::V6(v6) = ipv6 {
+                            if *bytes == v6.octets() {
+                                found_v6_san = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_v6_san, "Expected IPv6 SAN in CSR");
     }
 
     #[test]

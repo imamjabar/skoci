@@ -27,8 +27,8 @@
 8. The project build always executes on the server inside Docker. The local machine does not require Docker.
 ## Agent Workflow
 1. Connect: `skoci connect --server <server-ip> --token sk_agent_<app>_<hex> --pin sha256:<spki-pin>`
-2. Initialize: `skoci init` (generates `skoci.yaml`, `Dockerfile`, `.dockerignore` if missing)
-3. Configure: Adjust `skoci.yaml` (`app`, `run.port`, `domains`, `services`).
+2. Initialize: `skoci init` (generates `.skoci/skoci.yaml`, `.skoci/Dockerfile`, `.skoci/ignore` if missing)
+3. Configure: Adjust `.skoci/skoci.yaml` (`app`, `run.port`, `domains`, `services`).
 4. Verify Domain: `skoci domain check <host>` (ensures A/AAAA points to server before cert issuance)
 5. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
 6. Deploy to Preview: `skoci deploy --env preview --json` (verify status is `live`, not `degraded`)
@@ -36,7 +36,7 @@
 8. Promote to Production: `skoci promote "<reason>" --json` (returns request ID for human approval)
 9. Monitor: `skoci status --json` and `skoci logs --json`
 ## CLI Commands Reference
-- `skoci server setup --host <ip> --user <u>` (one-time setup of remote VPS from laptop)
+- `skoci server setup --host <ip> --user <u>` (one-time setup of remote VPS from laptop, Skoci >= 0.4.0)
 - `skoci connect --server <ip> --token <token> [--pin <spki-pin>] [--profile <name>]`
 - `skoci domain check <host>` / `skoci domain add <host>`
 - `skoci deploy [--env preview|production] [--detach] [--commit <sha>]`

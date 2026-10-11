@@ -49,7 +49,7 @@ pub fn list_tools() -> Vec<McpTool> {
     vec![
         McpTool {
             name: "skoci_init".to_string(),
-            description: "Detect project framework and generate skoci.yaml, Dockerfile, and .dockerignore".to_string(),
+            description: "Detect project framework and generate .skoci/skoci.yaml, .skoci/Dockerfile, and .skoci/ignore".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -86,8 +86,8 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -97,10 +97,10 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
                     "env": { "type": "string", "description": "Application environment (optional)" },
                     "tail": { "type": "number", "description": "Number of recent log lines (default: 100)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -112,7 +112,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "properties": {
                     "app": { "type": "string", "description": "Optional application name" },
                     "limit": { "type": "number", "description": "Maximum history entries (default: 20)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -122,10 +122,10 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
                     "key": { "type": "string", "description": "Secret key name (uppercase and underscores)" },
                     "value": { "type": "string", "description": "Secret value" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 },
                 "required": ["key", "value"]
             }),
@@ -136,8 +136,8 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -147,10 +147,10 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
                     "reason": { "type": "string", "description": "Promotion reason" },
                     "version": { "type": "string", "description": "Version to promote (optional)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 },
                 "required": ["reason"]
             }),
@@ -161,10 +161,10 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
                     "env": { "type": "string", "description": "Target environment (default: preview)" },
                     "target_version": { "type": "string", "description": "Optional target rollback version" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -190,9 +190,9 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
                     "service": { "type": "string", "description": "Database service name (default: db)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -202,8 +202,8 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 }
             }),
         },
@@ -213,10 +213,10 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "app": { "type": "string", "description": "Application name (optional if .skoci/skoci.yaml or skoci.yaml exists)" },
                     "backup_id": { "type": "string", "description": "Database backup ID" },
                     "service": { "type": "string", "description": "Database service name (default: db)" },
-                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
+                    "path": { "type": "string", "description": "Directory containing .skoci/skoci.yaml or skoci.yaml (default: .)" }
                 },
                 "required": ["backup_id"]
             }),

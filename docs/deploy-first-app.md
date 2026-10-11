@@ -15,7 +15,7 @@ skoci connect --server <server-public-ip> --token sk_agent_toko_xxxxxxxxxxxx --p
 The control plane is reachable at `https://<public-ip>:8443` over TLS pinned to the server's SPKI public key (`sha256:...`). Connections do not depend on third-party wildcard DNS.
 
 * **Global Server Profiles:** Connection profiles are saved securely in `~/.config/skoci/servers.json` (permissions `0600`).
-* **Project Override:** A local `.env.skoci` file (permissions `0600`) is created in your repository and automatically added to `.gitignore`.
+* **Project Override:** A local `.skoci/env` file (permissions `0600`) is created in your repository and automatically added to `.gitignore`. Legacy `.env.skoci` is still read for projects created before 0.4.1.
 ---
 
 ## 2. Initialize the Project (`skoci init`)
@@ -39,25 +39,25 @@ Skoci automatically detects your application framework:
 
 Databases are only added to `services` when matching dependencies are detected (e.g. `pg`, `psycopg`, `mysql2`, `redis`). `skoci init` prints recommendations (such as chosen health check endpoints) — review them before deploying.
 
-Initialization creates:
-1. `skoci.yaml`: Declarative contract for your application.
-2. `Dockerfile`: Container image recipe (if not already present).
-3. `.dockerignore`: Prevents sensitive directories (`.git`, `.env.skoci`) from being uploaded.
+Initialization creates everything inside the `.skoci/` directory:
+1. `.skoci/skoci.yaml`: Declarative contract for your application (lookup falls back to root `skoci.yaml` for older projects).
+2. `.skoci/Dockerfile`: Container image recipe (if not already present; configured via `build.dockerfile: .skoci/Dockerfile`).
+3. `.skoci/ignore`: Upload filter for `skoci deploy` preventing sensitive or unnecessary files from being uploaded (a user's own `.dockerignore` is still honoured when `.skoci/ignore` is absent).
 
 ### Why Your Laptop Does Not Need Docker
-The Dockerfile is just a build recipe. Container compilation runs entirely on your remote VPS. Your local machine or AI agent sandbox only archives the project files and uploads them over HTTPS.
+The generated `.skoci/Dockerfile` is just a build recipe. Container compilation runs entirely on your remote VPS. Your local machine or AI agent sandbox only archives the project files and uploads them over HTTPS.
 
 ---
 
-## 3. Customizing `skoci.yaml`
+## 3. Customizing `.skoci/skoci.yaml`
 
-The `skoci.yaml` file uses a structured schema:
+The `.skoci/skoci.yaml` file (or legacy `skoci.yaml`) uses a structured schema:
 
 ```yaml
 version: 1
 app: toko
 build:
-  dockerfile: Dockerfile
+  dockerfile: .skoci/Dockerfile
   context: .
 run:
   port: 3000                  # Internal port your app listens on
@@ -80,7 +80,7 @@ env:
 ## 4. Storing Encrypted Secrets (`skoci secret set`)
 
 Skoci separates configuration key declarations from sensitive secret values:
-* In `skoci.yaml`: declare key names (`API_KEY`).
+* In `.skoci/skoci.yaml`: declare key names (`API_KEY`).
 * Secret values are sent directly to the Skoci server and stored encrypted:
 
 ```bash
@@ -100,8 +100,8 @@ skoci deploy --env preview
 ```
 
 ### Skoci Deployment Pipeline Stages:
-1. **Packaging & Upload:** Project files are packed respecting `.gitignore` and uploaded over HTTPS.
-2. **Extract:** Server extracts the archive (preserving executable bits for non-root containers) and validates `skoci.yaml`.
+1. **Packaging & Upload:** Project files are packed respecting `.skoci/ignore` (or `.dockerignore`) and uploaded over HTTPS.
+2. **Extract:** Server extracts the archive (preserving executable bits for non-root containers) and validates configuration (`.skoci/skoci.yaml`, falling back to `skoci.yaml`).
 3. **Build:** Server builds the Docker image `skoci/<app>:<version>` with live streaming logs.
 4. **Services:** Server ensures database containers (if declared) are healthy and ready.
 5. **Start:** The new container starts with secrets injected via a secure temporary env-file.
@@ -140,11 +140,11 @@ Status: Points to this server (A -> 203.0.113.10)
 If the record does not point to your server yet, `skoci domain check` prints the exact record hint to create at your DNS provider (e.g. `A toko.sumopod.id -> 203.0.113.10`).
 
 ### B. Associate Domain with Application
-You can register custom domains via CLI or in `skoci.yaml`:
+You can register custom domains via CLI or in `.skoci/skoci.yaml`:
 ```bash
 skoci domain add toko.sumopod.id
 ```
-Or declare them in `skoci.yaml`:
+Or declare them in `.skoci/skoci.yaml`:
 ```yaml
 domains:
   - toko.sumopod.id           # Production custom domain

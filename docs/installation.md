@@ -23,8 +23,8 @@ You need a 64-bit Linux server with internet connectivity and Docker support.
 
 ## 2. Server Installation
 
-### Option A: Automated Setup from Your Laptop (Recommended)
-If you have client installed on your laptop, configure the entire remote VPS over SSH without typing commands manually on the server:
+### Option A: Automated Setup from Your Laptop (Recommended, Skoci >= 0.4.0)
+If you have the client installed on your laptop (Skoci >= 0.4.0), configure the entire remote VPS over SSH without typing commands manually on the server:
 ```bash
 skoci server setup --host <server-public-ip> --user root
 ```
@@ -65,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
    - `/var/lib/skoci` (permissions `0750`, owned by `skoci:skoci`) for SQLite database `skoci.db`, node encryption key, and backups.
    - `/var/lib/skoci/tls/control.key` (permissions `0600`) and `/var/lib/skoci/tls/control.pin` (permissions `0644`) for the stable SPKI-pinned TLS control identity.
 4. **Master Admin Token:** Stored securely at `/etc/skoci/master_token` (permissions `0640`). Never printed casually to standard output.
-5. **Client Configuration Profiles:** Client credentials and server profiles live in `~/.config/skoci/servers.json` (permissions `0600`). Project-local settings use `.env.skoci` (permissions `0600`, auto-added to `.gitignore`).
+5. **Client Configuration Profiles:** Client credentials and server profiles live in `~/.config/skoci/servers.json` (permissions `0600`). Project-local settings use `.skoci/env` (permissions `0600`, auto-added to `.gitignore`). Legacy `.env.skoci` is still read for projects created before 0.4.1.
 6. **Reverse Proxy & TLS:** Directly binds ports 80 and 443 for public app web traffic, and port 8443 for pinned control plane traffic.
 7. **Systemd Background Service:** Enables `/etc/systemd/system/skoci.service` with modern sandboxing hardening (`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `CAP_NET_BIND_SERVICE`, `UMask=0077`).
 

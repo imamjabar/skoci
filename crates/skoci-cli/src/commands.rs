@@ -1,6 +1,9 @@
 use futures_util::StreamExt;
 use skoci_api::error::{SkociError, SkociResult};
-use skoci_api::models::ApiResponse;
+use skoci_api::models::{
+    ApiResponse, LEGACY_CONFIG_PATH, PROJECT_CONFIG_PATH, PROJECT_DIR,
+    PROJECT_DOCKERFILE_PATH, PROJECT_IGNORE_PATH,
+};
 use skoci_api::requests::{
     ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
     DeploymentsQuery, LogsQuery, PromoteRequest, RollbackRequest, SecretSetRequest,
@@ -37,8 +40,7 @@ pub fn resolve_app_in(path: &Path, provided: Option<&str>) -> SkociResult<String
         }
     }
 
-    let config_path = path.join("skoci.yaml");
-    if config_path.exists() {
+    if let Some(config_path) = ConfigLoader::locate_config(path) {
         if let Ok(cfg) = ConfigLoader::load_config(&config_path) {
             let trimmed = cfg.app.trim();
             if !trimmed.is_empty() {
@@ -49,7 +51,7 @@ pub fn resolve_app_in(path: &Path, provided: Option<&str>) -> SkociResult<String
 
     Err(SkociError::config_invalid(
         "Application name not found",
-        "Specify the application name via arguments or run `skoci init` to create skoci.yaml",
+        "Specify the application name via arguments or run `skoci init` to create .skoci/skoci.yaml",
     ))
 }
 
@@ -65,17 +67,28 @@ pub struct GlobalOpts {
 }
 
 pub fn resolve_global(global: &GlobalOpts) -> SkociResult<skoci_client::profile::ResolvedTarget> {
-    let project_env = crate::env::read_project_env();
-    let mut target = skoci_client::profile::resolve_target(
+    resolve_global_at(global, Path::new("/etc/skoci/skoci.env"), Path::new("."))
+}
+
+pub fn resolve_global_at(
+    global: &GlobalOpts,
+    master_env_path: &Path,
+    project_root: &Path,
+) -> SkociResult<skoci_client::profile::ResolvedTarget> {
+    let project_env = crate::env::read_project_env_at(project_root);
+    let profiles = skoci_client::profile::load_profiles().unwrap_or_default();
+    let mut target = skoci_client::profile::resolve_target_with_profiles_at(
         global.server_url.as_deref(),
         global.token.clone(),
         global.pin.as_deref(),
         global.profile.as_deref(),
         project_env,
+        &profiles,
+        master_env_path,
     )?;
 
     if target.token.is_none() && crate::env::is_local_url(&target.url) {
-        if let Some(master) = crate::env::local_master_token() {
+        if let Some(master) = crate::env::local_master_token_from_path(master_env_path) {
             target.token = Some(master);
         }
     }
@@ -216,79 +229,77 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
     };
 
     let detection = ProjectDetector::detect(path);
+
+    let legacy_yaml = path.join(LEGACY_CONFIG_PATH);
+    if legacy_yaml.exists() {
+        let mut notes = detection.notes;
+        notes.push("Project already configured via legacy skoci.yaml; this file is still honoured.".to_string());
+        return Ok(InitResponse {
+            detected_framework: detection.framework.name().to_string(),
+            created_files: Vec::new(),
+            app_name,
+            skipped_files: vec![LEGACY_CONFIG_PATH.to_string()],
+            notes,
+        });
+    }
+
+    let skoci_dir = path.join(PROJECT_DIR);
+    if !skoci_dir.exists() {
+        std::fs::create_dir_all(&skoci_dir).map_err(|e| {
+            SkociError::internal(
+                format!("Failed to create directory {}: {e}", skoci_dir.display()),
+                "Ensure the directory can be created and permissions are sufficient",
+            )
+        })?;
+    }
+
     let mut created_files = Vec::new();
     let mut skipped_files = Vec::new();
 
-    let yaml_file = path.join("skoci.yaml");
+    let yaml_file = path.join(PROJECT_CONFIG_PATH);
     if !yaml_file.exists() {
         let content = ProjectDetector::generate_skoci_yaml(&app_name, &detection);
         std::fs::write(&yaml_file, content).map_err(|e| {
             SkociError::internal(
-                format!("Failed to write skoci.yaml: {e}"),
+                format!("Failed to write {}: {e}", PROJECT_CONFIG_PATH),
                 "Check directory write permissions",
             )
         })?;
-        created_files.push("skoci.yaml".to_string());
+        created_files.push(PROJECT_CONFIG_PATH.to_string());
     } else {
-        skipped_files.push("skoci.yaml".to_string());
+        skipped_files.push(PROJECT_CONFIG_PATH.to_string());
     }
 
     if let Some(df_content) = ProjectDetector::dockerfile(&detection) {
-        let df_file = path.join("Dockerfile");
+        let df_file = path.join(PROJECT_DOCKERFILE_PATH);
         if !df_file.exists() {
             std::fs::write(&df_file, df_content).map_err(|e| {
                 SkociError::internal(
-                    format!("Failed to write Dockerfile: {e}"),
+                    format!("Failed to write {}: {e}", PROJECT_DOCKERFILE_PATH),
                     "Check directory write permissions",
                 )
             })?;
-            created_files.push("Dockerfile".to_string());
+            created_files.push(PROJECT_DOCKERFILE_PATH.to_string());
         } else {
-            skipped_files.push("Dockerfile".to_string());
+            skipped_files.push(PROJECT_DOCKERFILE_PATH.to_string());
         }
     }
 
-    let di_file = path.join(".dockerignore");
-    if !di_file.exists() {
-        let di_content = ProjectDetector::dockerignore();
-        std::fs::write(&di_file, di_content).map_err(|e| {
+    let ignore_file = path.join(PROJECT_IGNORE_PATH);
+    if !ignore_file.exists() {
+        let ignore_content = ProjectDetector::upload_ignore();
+        std::fs::write(&ignore_file, ignore_content).map_err(|e| {
             SkociError::internal(
-                format!("Failed to write .dockerignore: {e}"),
+                format!("Failed to write {}: {e}", PROJECT_IGNORE_PATH),
                 "Check directory write permissions",
             )
         })?;
-        created_files.push(".dockerignore".to_string());
+        created_files.push(PROJECT_IGNORE_PATH.to_string());
     } else {
-        skipped_files.push(".dockerignore".to_string());
+        skipped_files.push(PROJECT_IGNORE_PATH.to_string());
     }
 
-    let gitignore_file = path.join(".gitignore");
-    let (needs_env_skoci, add_newline) = if gitignore_file.exists() {
-        let content = std::fs::read_to_string(&gitignore_file).unwrap_or_default();
-        let needs = !content.lines().any(|l| l.trim() == ".env.skoci");
-        let newline = !content.is_empty() && !content.ends_with('\n');
-        (needs, newline)
-    } else {
-        (true, false)
-    };
-
-    if needs_env_skoci {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&gitignore_file)
-            .map_err(|e| {
-                SkociError::internal(
-                    format!("Failed to update .gitignore: {e}"),
-                    "Check write permissions for .gitignore",
-                )
-            })?;
-        if add_newline {
-            let _ = writeln!(f);
-        }
-        let _ = writeln!(f, ".env.skoci");
-    }
+    crate::env::ensure_gitignore_ignores_env(path)?;
 
     Ok(InitResponse {
         detected_framework: detection.framework.name().to_string(),
@@ -460,7 +471,7 @@ pub async fn stream_events_and_render(
                 eprintln!("⚠ No public address: container is running but unreachable");
             }
             eprintln!(
-                "  Add a domain you own to skoci.yaml, or run: skoci default-app {}",
+                "  Add a domain you own to .skoci/skoci.yaml, or run: skoci default-app {}",
                 resp.app
             );
         }
@@ -491,11 +502,21 @@ pub async fn stream_events_and_render(
             1
         } else {
             for url in &resp.urls {
-                if is_term {
-                    println!("\x1b[1;32m✓ Live:\x1b[0m {url}");
-                } else {
-                    println!("✓ Live: {url}");
+                let pending = resp.unready_urls.iter().any(|u| u == url);
+                match (is_term, pending) {
+                    (true, false) => println!("\x1b[1;32m✓ Live:\x1b[0m {url}"),
+                    (true, true) => {
+                        println!("\x1b[1;33m◷ Not serving yet:\x1b[0m {url}")
+                    }
+                    (false, false) => println!("✓ Live: {url}"),
+                    (false, true) => println!("◷ Not serving yet: {url}"),
                 }
+            }
+            if !resp.unready_urls.is_empty() {
+                println!(
+                    "  The container is healthy; the address above did not answer through the proxy yet."
+                );
+                println!("  A new certificate usually needs under a minute. Re-check with: skoci status {}", resp.app);
             }
             println!("Version: {}  Duration: {:.1}s", resp.version, dur);
             println!("\nHints:");
@@ -650,83 +671,18 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                 }
             }
 
-            let target_path = Path::new(".env.skoci");
-            if target_path.exists() || target_path.is_symlink() {
-                if let Ok(meta) = std::fs::symlink_metadata(target_path) {
-                    if meta.file_type().is_symlink() || !meta.is_file() {
-                        let err = SkociError::bad_request(
-                            ".env.skoci is a symlink or special file",
-                            "Remove the symlink before connecting: rm .env.skoci",
-                        );
-                        output::print_error(&err, json);
-                        return 1;
-                    }
-                }
-            }
-
-            let mut env_content = format!(
-                "SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n",
-                normalized_server, resolved_token
-            );
-            if let Some(p) = &pin {
-                env_content.push_str(&format!("SKOCI_SERVER_PIN={}\n", p));
-            }
-
-            let tmp_path = format!(".env.skoci.tmp.{}", uuid::Uuid::new_v4().simple());
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let mut tmp_file = match opts.open(&tmp_path) {
-                Ok(f) => f,
-                Err(e) => {
-                    let err = SkociError::internal(
-                        format!("Failed to create temporary config file: {e}"),
-                        "Check write permissions in current directory",
-                    );
-                    output::print_error(&err, json);
-                    return 1;
-                }
-            };
-            use std::io::Write;
-            if let Err(e) = tmp_file.write_all(env_content.as_bytes()) {
-                let _ = std::fs::remove_file(&tmp_path);
-                let err = SkociError::internal(format!("Failed to write config: {e}"), "Retry");
+            if let Err(err) = crate::env::write_project_env(
+                &normalized_server,
+                &resolved_token,
+                pin.as_deref(),
+            ) {
                 output::print_error(&err, json);
                 return 1;
             }
-            drop(tmp_file);
-            if let Err(e) = std::fs::rename(&tmp_path, target_path) {
-                let _ = std::fs::remove_file(&tmp_path);
-                let err = SkociError::internal(format!("Failed to save .env.skoci: {e}"), "Retry");
+
+            if let Err(err) = crate::env::ensure_gitignore_ignores_env(Path::new(".")) {
                 output::print_error(&err, json);
                 return 1;
-            }
-            let gitignore_path = Path::new(".gitignore");
-            let (needs_entry, add_newline) = if gitignore_path.exists() {
-                let content = std::fs::read_to_string(gitignore_path).unwrap_or_default();
-                let needs = !content.lines().any(|l| l.trim() == ".env.skoci");
-                let newline = !content.is_empty() && !content.ends_with('\n');
-                (needs, newline)
-            } else {
-                (true, false)
-            };
-
-            if needs_entry {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(gitignore_path)
-                {
-                    if add_newline {
-                        let _ = writeln!(f);
-                    }
-                    let _ = writeln!(f, ".env.skoci");
-                }
             }
 
             if !no_profile {
@@ -748,7 +704,7 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             if json {
                 output::print_json(&doc_resp);
             } else {
-                println!("✓ Successfully connected and saved configuration to .env.skoci (mode 0600)\n");
+                println!("✓ Successfully connected and saved configuration to .skoci/env (mode 0600)\n");
                 if let Some(doc) = &doc_resp.data {
                     output::render_doctor(doc);
                 }
@@ -774,10 +730,44 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                                 println!("  • {}", note);
                             }
                         }
+
+                        let config_file = if path.join(LEGACY_CONFIG_PATH).exists() {
+                            LEGACY_CONFIG_PATH
+                        } else {
+                            PROJECT_CONFIG_PATH
+                        };
+
+                        let resolved_server_url = (|| {
+                            let project_env = crate::env::read_project_env_at(&path);
+                            if let Ok(profiles) = skoci_client::profile::load_profiles() {
+                                if let Ok(target) = skoci_client::profile::resolve_target_with_profiles(
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    project_env.clone(),
+                                    &profiles,
+                                ) {
+                                    if matches!(
+                                        target.source,
+                                        skoci_client::profile::TargetSource::ProjectEnv
+                                            | skoci_client::profile::TargetSource::Profile(_)
+                                    ) {
+                                        return Some(target.url);
+                                    }
+                                }
+                            }
+                            project_env.map(|(url, _, _)| url)
+                        })();
+
                         println!("\nNext steps:");
-                        println!("  1. Review skoci.yaml (port, health path, domains)");
-                        println!("  2. Connect once: skoci connect --server <url> --token <token>");
-                        println!("  3. Deploy: skoci deploy");
+                        println!("  1. Review {config_file} (port, health path, domains)");
+                        if let Some(target_url) = resolved_server_url {
+                            println!("  2. Deploy to {target_url}: skoci deploy");
+                        } else {
+                            println!("  2. Connect once: skoci connect --server <url> --token <token>");
+                            println!("  3. Deploy: skoci deploy");
+                        }
                     }
                     0
                 }
@@ -792,7 +782,19 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             if let Err(code) = verify_version_compatibility(&client, json).await {
                 return code;
             }
-            let config_path = path.join("skoci.yaml");
+            let config_path = ConfigLoader::locate_config(&path).ok_or_else(|| {
+                SkociError::config_invalid(
+                    "skoci.yaml file not found",
+                    "Run 'skoci init' in your project root or pass --path <dir>",
+                )
+            });
+            let config_path = match config_path {
+                Ok(p) => p,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+            };
             let cfg = match ConfigLoader::load_config(&config_path) {
                 Ok(c) => c,
                 Err(err) => {
@@ -1701,12 +1703,12 @@ Skoci is a secure, deterministic agent-native deployment platform.
 ## Standard Workflow:
 1. **Connect to Server**:
    `skoci connect --server <url> --token <token>`
-   Configuration is stored in `.env.skoci` (permissions 0600) and added to `.gitignore`.
+   Configuration is stored in `.skoci/env` (permissions 0600) and added to `.gitignore`.
    NEVER print tokens to logs or commit them to public files.
 
 2. **Initialize Project**:
    `skoci init`
-   Skoci automatically detects the framework and generates `skoci.yaml`, `Dockerfile`, and `.dockerignore`.
+   Skoci automatically detects the framework and generates `.skoci/skoci.yaml`, `.skoci/Dockerfile`, and `.skoci/ignore`.
 
 3. **Deploy Application**:
    `skoci deploy --json`
@@ -1818,5 +1820,107 @@ mod tests {
         // 1.0.0 vs 2.0.0 abort
         let err_major = check_version_compatibility("1.0.0", "2.0.0").unwrap_err();
         assert_eq!(err_major.code, "version_mismatch");
+    }
+
+    #[test]
+    fn test_init_project_layout() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_init_layout_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("index.html"), "<h1>hi</h1>").unwrap();
+
+        let res = init_project(&root, Some("my-cool-app")).unwrap();
+        assert_eq!(res.app_name, "my-cool-app");
+
+        assert!(!root.join("skoci.yaml").exists());
+        assert!(!root.join("Dockerfile").exists());
+        assert!(!root.join(".dockerignore").exists());
+
+        assert!(root.join(PROJECT_DIR).is_dir());
+        assert!(root.join(PROJECT_CONFIG_PATH).is_file());
+        assert!(root.join(PROJECT_IGNORE_PATH).is_file());
+        assert!(root.join(PROJECT_DOCKERFILE_PATH).is_file());
+
+        let gitignore = root.join(".gitignore");
+        assert!(gitignore.is_file());
+        let gitignore_content = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(gitignore_content.lines().any(|l| l.trim() == ".skoci/env"));
+
+        for file in &res.created_files {
+            assert!(file.starts_with(".skoci/") || file == ".gitignore");
+        }
+
+        let cfg_content = std::fs::read_to_string(root.join(PROJECT_CONFIG_PATH)).unwrap();
+        assert!(cfg_content.contains("dockerfile: .skoci/Dockerfile"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_init_keeps_user_dockerfile_at_root() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_init_userdf_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let user_df = "FROM alpine\nEXPOSE 9000\nCMD [\"sleep\", \"1\"]\n";
+        std::fs::write(root.join("Dockerfile"), user_df).unwrap();
+
+        init_project(&root, Some("own-recipe")).unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("Dockerfile")).unwrap(), user_df);
+        assert!(!root.join(PROJECT_DOCKERFILE_PATH).exists());
+        let cfg_content = std::fs::read_to_string(root.join(PROJECT_CONFIG_PATH)).unwrap();
+        assert!(cfg_content.contains("dockerfile: Dockerfile"));
+        assert!(!cfg_content.contains(".skoci/Dockerfile"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_init_project_legacy_skoci_yaml_preserved() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_init_legacy_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let legacy_file = root.join(LEGACY_CONFIG_PATH);
+        let legacy_content = "version: 1\napp: legacy-custom-app\n";
+        std::fs::write(&legacy_file, legacy_content).unwrap();
+
+        let res = init_project(&root, None).unwrap();
+        assert_eq!(res.created_files.len(), 0);
+        assert!(res.skipped_files.contains(&LEGACY_CONFIG_PATH.to_string()));
+        assert!(res.notes.iter().any(|n| n.contains("legacy skoci.yaml")));
+
+        // Legacy file must be completely untouched
+        let read_back = std::fs::read_to_string(&legacy_file).unwrap();
+        assert_eq!(read_back, legacy_content);
+
+        // No .skoci/ directory should have been created
+        assert!(!root.join(PROJECT_DIR).exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_resolve_global_with_local_master_env() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let master_file = temp_dir.join(format!("test_master_{unique_id}.env"));
+        let project_root = temp_dir.join(format!("test_empty_proj_{unique_id}"));
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        std::fs::write(&master_file, "SKOCI_MASTER_TOKEN=master_token_secret_12345\n").unwrap();
+
+        let global = GlobalOpts::default();
+        let target = resolve_global_at(&global, &master_file, &project_root).unwrap();
+
+        assert_eq!(target.url, "http://127.0.0.1:8787");
+        assert_eq!(target.token.as_deref(), Some("master_token_secret_12345"));
+        assert_eq!(target.source, skoci_client::profile::TargetSource::LocalMaster);
+
+        let _ = std::fs::remove_file(master_file);
+        let _ = std::fs::remove_dir_all(project_root);
     }
 }

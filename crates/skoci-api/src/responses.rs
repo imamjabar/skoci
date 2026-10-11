@@ -107,6 +107,8 @@ pub struct DeployResponse {
     pub env: String,
     pub version: String,
     pub urls: Vec<String>,
+    #[serde(default)]
+    pub unready_urls: Vec<String>,
     /// `live`, `degraded` (live but smoke test `GET /` did not answer 2xx/3xx/401), or `failed`.
     pub status: String,
     pub evidence: crate::models::SkociEvidence,

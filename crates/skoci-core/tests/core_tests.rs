@@ -215,18 +215,50 @@ fn test_validation_rejects_skoci_public_key() {
 }
 
 #[test]
-fn test_dockerignore() {
-    let ignore = ProjectDetector::dockerignore();
+fn test_upload_ignore() {
+    let ignore = ProjectDetector::upload_ignore();
     assert!(ignore.contains(".git\n"));
     assert!(ignore.contains(".env*"));
-    assert!(ignore.contains(".skoci"));
+    assert!(ignore.contains("*.pem"));
+    assert!(ignore.contains("*.key"));
+    assert!(ignore.contains("id_rsa*"));
+    assert!(ignore.contains("id_ed25519*"));
+    assert!(ignore.contains(".npmrc"));
+    assert!(ignore.contains(".pypirc"));
+    assert!(ignore.contains(".netrc"));
+    assert!(ignore.contains(".aws"));
+    assert!(ignore.contains(".ssh"));
     assert!(ignore.contains("node_modules"));
     assert!(ignore.contains("target"));
     assert!(ignore.contains("__pycache__"));
     assert!(ignore.contains("*.log"));
     assert!(ignore.contains(".DS_Store"));
-    assert!(ignore.contains("skoci.yaml"));
-    assert!(ignore.contains("*.key"));
+
+    // Dropped patterns that previously broke deployments (D1)
+    assert!(!ignore.contains(".skoci"));
+    assert!(!ignore.contains("skoci.yaml"));
+    assert!(!ignore.contains("Dockerfile"));
+    assert!(!ignore.contains(".dockerignore"));
+}
+
+#[test]
+fn test_locate_config_resolution_order() {
+    let td = TestDir::new();
+    assert_eq!(ConfigLoader::locate_config(td.path()), None);
+
+    // Legacy config only
+    td.write_file("skoci.yaml", "version: 1\napp: legacy\nrun:\n  port: 8080\n");
+    assert_eq!(
+        ConfigLoader::locate_config(td.path()),
+        Some(td.path().join("skoci.yaml"))
+    );
+
+    // Both present: modern .skoci/skoci.yaml must take precedence
+    td.write_file(".skoci/skoci.yaml", "version: 1\napp: modern\nrun:\n  port: 8080\n");
+    assert_eq!(
+        ConfigLoader::locate_config(td.path()),
+        Some(td.path().join(".skoci/skoci.yaml"))
+    );
 }
 
 #[test]

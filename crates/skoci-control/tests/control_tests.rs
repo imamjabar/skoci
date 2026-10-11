@@ -787,3 +787,89 @@ fn test_estimated_deploy_duration_mean_calculation() {
     assert_eq!(db.get_estimated_deploy_duration("myapp", "preview").unwrap(), None);
     assert_eq!(db.get_estimated_deploy_duration("otherapp", "production").unwrap(), None);
 }
+
+#[tokio::test]
+async fn test_compute_urls_hostname_precedence_d5() {
+    let (mut state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("myapp").unwrap();
+    state.db.set_setting("default_app", "myapp").unwrap();
+
+    let mut cfg = (*state.config).clone();
+    cfg.public_ip = Some("198.51.100.1".parse().unwrap());
+    cfg.tls = TlsMode::Acme;
+    state.config = Arc::new(cfg);
+
+    // 1. With hostname: only hostname URL, NO raw IP URL (D5 bug fixed)
+    let hosts = vec!["myapp.example.com".to_string()];
+    let urls = skoci_control::deploy::compute_urls(&state, "myapp", "production", &hosts);
+    assert_eq!(urls, vec!["https://myapp.example.com".to_string()]);
+    assert!(!urls.contains(&"http://198.51.100.1".to_string()));
+
+    // 2. Without hostname: raw IP URL is advertised for default app
+    let urls_empty = skoci_control::deploy::compute_urls(&state, "myapp", "production", &[]);
+    assert_eq!(urls_empty, vec!["http://198.51.100.1".to_string()]);
+
+    // 3. Without hostname, but for a non-default app: empty URLs
+    state.db.ensure_app("otherapp").unwrap();
+    let urls_other = skoci_control::deploy::compute_urls(&state, "otherapp", "production", &[]);
+    assert!(urls_other.is_empty());
+
+    // 4. Multiple hostnames: all hostnames advertised, NO raw IP URL
+    let multi_hosts = vec!["app1.example.com".to_string(), "app2.example.com".to_string()];
+    let urls_multi = skoci_control::deploy::compute_urls(&state, "myapp", "production", &multi_hosts);
+    assert_eq!(
+        urls_multi,
+        vec![
+            "https://app1.example.com".to_string(),
+            "https://app2.example.com".to_string()
+        ]
+    );
+    assert!(!urls_multi.contains(&"http://198.51.100.1".to_string()));
+}
+
+#[test]
+fn test_resolve_project_config_prefers_dot_skoci_d1() {
+    let temp = TestDir::new();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".skoci")).unwrap();
+    std::fs::write(root.join(".skoci/skoci.yaml"), "version: 1\napp: my-app\n").unwrap();
+    std::fs::write(root.join("skoci.yaml"), "version: 1\napp: legacy\n").unwrap();
+
+    let resolved = skoci_control::deploy::resolve_project_config(root).unwrap();
+    assert_eq!(resolved, root.join(".skoci/skoci.yaml"));
+}
+
+#[test]
+fn test_resolve_project_config_accepts_legacy_root_config() {
+    let temp = TestDir::new();
+    let root = temp.path();
+    std::fs::write(root.join("skoci.yaml"), "version: 1\napp: legacy\n").unwrap();
+
+    let resolved = skoci_control::deploy::resolve_project_config(root).unwrap();
+    assert_eq!(resolved, root.join("skoci.yaml"));
+}
+
+#[test]
+fn test_resolve_project_config_missing_names_both_locations() {
+    let temp = TestDir::new();
+    std::fs::write(temp.path().join("index.html"), "hello").unwrap();
+
+    let err = skoci_control::deploy::resolve_project_config(temp.path()).unwrap_err();
+    assert_eq!(err.code, "config_invalid");
+    assert!(err.message.contains(".skoci/skoci.yaml"), "{}", err.message);
+    assert!(err.message.contains("skoci.yaml"), "{}", err.message);
+    assert!(err.fix.contains(".skoci/skoci.yaml"), "{}", err.fix);
+}
+
+#[test]
+fn test_resolve_project_config_rejects_symlinked_config() {
+    let temp = TestDir::new();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".skoci")).unwrap();
+    std::fs::write(root.join("outside.yaml"), "version: 1\napp: my-app\n").unwrap();
+    std::os::unix::fs::symlink(root.join("outside.yaml"), root.join(".skoci/skoci.yaml")).unwrap();
+
+    let err = skoci_control::deploy::resolve_project_config(root).unwrap_err();
+    assert_eq!(err.code, "config_invalid");
+    assert!(err.message.contains("symlink"), "{}", err.message);
+}

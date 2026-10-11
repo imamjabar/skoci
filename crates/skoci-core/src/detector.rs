@@ -283,7 +283,12 @@ impl ProjectDetector {
         out.push_str("version: 1\n");
         out.push_str(&format!("app: {app}\n"));
         out.push_str("build:\n");
-        out.push_str("  dockerfile: Dockerfile\n");
+        let df_path = if Self::dockerfile(d).is_some() {
+            skoci_api::models::PROJECT_DOCKERFILE_PATH
+        } else {
+            "Dockerfile"
+        };
+        out.push_str(&format!("  dockerfile: {df_path}\n"));
         out.push_str("  context: .\n");
         out.push_str("run:\n");
         out.push_str(&format!("  port: {}\n", d.port));
@@ -476,8 +481,13 @@ EXPOSE 80
         }
     }
 
+    pub fn upload_ignore() -> &'static str {
+        ".git\n.env*\n*.pem\n*.key\nid_rsa*\nid_ed25519*\n.npmrc\n.pypirc\n.netrc\n.aws\n.ssh\nnode_modules\ntarget\n__pycache__\n*.log\n.DS_Store\n"
+    }
+
+    #[deprecated(note = "use upload_ignore instead")]
     pub fn dockerignore() -> &'static str {
-        ".git\n.env*\n.skoci\nskoci.yaml\nDockerfile\n.dockerignore\n*.pem\n*.key\nid_rsa*\nid_ed25519*\n.npmrc\n.pypirc\n.netrc\n.aws\n.ssh\nnode_modules\ntarget\n__pycache__\n*.log\n.DS_Store\n"
+        Self::upload_ignore()
     }
 }
 
