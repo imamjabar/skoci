@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 └──────┬───────┘          └───────────────────────┬───────────────────────┘
        │                                          │
        │ 1. skoci deploy                          │
-       │    (packs repo, honours .gitignore)      │
+       │    (packs repo, honours .skoci/ignore)   │
        ├─────────────────────────────────────────►│
        │    HTTPS upload with scoped token        │ 2. Server builds Docker image
        │                                          │ 3. Starts container & polls health check
@@ -72,11 +72,13 @@ Or install directly on your 64-bit Linux server terminal (ensure ports **80**, *
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
 
-### 2. Create Scoped Token (on VPS)
-If installing manually on the server, generate an agent token scoped strictly to your application:
+### 2. Create Scoped Token and Read the Pin (on VPS)
+If installing manually on the server, generate an agent token scoped strictly to your application and read the server's key pin:
 ```bash
 sudo skoci token create --app my-app --name laptop
+sudo skoci server fingerprint
 ```
+Both commands work without extra flags on the server: the CLI reads `/etc/skoci/skoci.env` and targets the local control plane. `skoci server setup` does this for you and never prints the token.
 
 ### 3. Connect Laptop to Server
 On your workstation, install the client and link your workspace using the server IP, token, and SPKI certificate pin:
@@ -92,16 +94,30 @@ Inside your project repository:
 skoci init
 skoci deploy --env preview
 ```
+`skoci init` keeps your project root clean — everything it generates lives in `.skoci/`:
+```
+your-project/
+├── .gitignore        # gains one line: .skoci/env
+├── your files …      # untouched
+└── .skoci/
+    ├── skoci.yaml    # app config
+    ├── Dockerfile    # generated recipe (skipped if you already have your own)
+    ├── ignore        # upload filter; your .dockerignore is used when this is absent
+    └── env           # server URL, token, pin (0600, never uploaded)
+```
+A `skoci.yaml` or `Dockerfile` written by an earlier version, or by you, is still read from the project root.
 
 ### 5. Promote to Production & Approve
-Request a production promotion:
+Production needs a domain you own. Point an A record at the server, add it to `.skoci/skoci.yaml` under `domains:`, verify it, then request the promotion:
 ```bash
+skoci domain check app.yourdomain.com
 skoci promote "All preview tests passed, ready for production"
 ```
-The command outputs exit code 2 and a `request_id`. Approve it via the web dashboard at `https://<server-public-ip>:8443` or on the server:
+Run from a scoped agent token, the command stops at exit code 2 and prints a `request_id`; the promotion waits for a human. Approve it via the web dashboard at `https://<server-public-ip>:8443` or on the server:
 ```bash
 sudo skoci approve <request_id>
 ```
+The master token on the server is the human: it promotes directly, without an approval request.
 
 ---
 
@@ -113,7 +129,7 @@ Copy and paste this prompt snippet into your AI coding assistant (Claude Code, O
 Operational Rules:
 1. Always run commands with `--json` for structured output (e.g. `skoci deploy --json`).
 2. If a command fails, inspect `error.code` and execute the command provided in `error.fix`.
-3. Exit code 2 means human approval is required (production deploy, db restore, app delete). Report the `request_id` to the user so they can approve via dashboard at https://<server-ip>:8443 or `skoci approve`.
+3. Exit code 2 means human approval is required (production deploy, db restore, app delete). Report the `request_id` to the user so they can approve via dashboard at https://<server-ip>:8443 or `skoci approve <request_id>`.
 4. Never attempt or request SSH access. All operations use pinned HTTPS via the configured scoped token.
 5. Production deployments require genuine custom domains (magic DNS *.sslip.io is rejected). Verify DNS before deploying with `skoci domain check <host>`.
 6. Treat `degraded` deployments as a failure to investigate: check logs with `skoci logs --tail 100 --json` and never promote a degraded version.
@@ -142,9 +158,19 @@ Operational Rules:
 * **Single-Server Docker Isolation:** Isolation relies on Linux kernel namespaces and cgroups (Docker defaults) without hardware microVM isolation.
 * **First-Come Custom Domains:** An agent can claim any custom domain not yet registered by another application on the instance.
 * **Same-Origin Release Checksums:** Release checksums are hosted alongside binary assets; verify provenance with `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
+
 ---
 
-## Upgrading from 0.1
+## Upgrading
+
+### To 0.4.1 and later
+Upgrade the server and every workstation together; the client refuses to talk to a server on a different minor version.
+```bash
+curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
+```
+Existing projects keep working untouched: a root `skoci.yaml`, `Dockerfile` and `.env.skoci` are still read. To adopt the `.skoci/` layout in a project, delete the generated root files and run `skoci init` again — keep a `Dockerfile` you wrote yourself, it stays at the root either way.
+
+### From 0.1
 
 If you are running an existing Skoci 0.1 installation:
 1. **Clear Port 80/443 Conflicts:** Remove any older manual containers binding web ports:

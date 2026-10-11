@@ -226,7 +226,7 @@ async fn execute_pipeline(
                     if h.eq_ignore_ascii_case(api_d) {
                         return Err(SkociError::forbidden(
                             format!("Hostname '{h}' is reserved for the Skoci control API"),
-                            "Remove this domain from skoci.yaml domains/preview_domains",
+                            "Remove this domain from .skoci/skoci.yaml domains/preview_domains",
                         ));
                     }
                 }
@@ -246,7 +246,7 @@ async fn execute_pipeline(
                     if r.app != opts.app && r.hosts.iter().any(|existing| existing.eq_ignore_ascii_case(h)) {
                         return Err(SkociError::conflict(
                             format!("Hostname '{h}' is already owned by app '{}'", r.app),
-                            "Choose a different domain name in skoci.yaml",
+                            "Choose a different domain name in .skoci/skoci.yaml",
                         ));
                     }
                 }
@@ -296,7 +296,7 @@ async fn execute_pipeline(
             let canonical_context = raw_context.canonicalize().map_err(|e| {
                 SkociError::bad_request(
                     format!("Context path '{}' is invalid: {e}", cfg.build.context),
-                    "Check build.context in skoci.yaml",
+                    "Check build.context in .skoci/skoci.yaml",
                 )
             })?;
 
@@ -311,7 +311,7 @@ async fn execute_pipeline(
             let canonical_dockerfile = raw_dockerfile.canonicalize().map_err(|e| {
                 SkociError::bad_request(
                     format!("Dockerfile '{}' not found: {e}", cfg.build.dockerfile),
-                    "Check build.dockerfile in skoci.yaml",
+                    "Check build.dockerfile in .skoci/skoci.yaml",
                 )
             })?;
 
@@ -830,7 +830,7 @@ async fn execute_pipeline(
             StageStatus::Log,
             format!(
                 "Container is running but has no public address: no domain is configured for '{}' and it is not the default app. \
-Fix: point a domain at this server and add it under 'domains'/'preview_domains' in skoci.yaml, or run 'skoci default-app {}' to serve it on the raw server IP.",
+Fix: point a domain at this server and add it under 'domains'/'preview_domains' in .skoci/skoci.yaml, or run 'skoci default-app {}' to serve it on the raw server IP.",
                 opts.app, opts.app
             ),
             99,

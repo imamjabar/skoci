@@ -75,7 +75,7 @@ impl ProjectDetector {
             }
             notes.push("Using existing Dockerfile found in the project.".to_string());
             notes.push(
-                "Ensure the container provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
+                "Ensure the container provides a '/healthz' endpoint or change 'run.health' in .skoci/skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -191,7 +191,7 @@ impl ProjectDetector {
             notes.push("Detected Rust project.".to_string());
             notes.push(format!("Rust binary: '{bin_name}'"));
             notes.push(
-                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
+                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in .skoci/skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -207,7 +207,7 @@ impl ProjectDetector {
         if dir.join("go.mod").is_file() {
             notes.push("Detected Go project.".to_string());
             notes.push(
-                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
+                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in .skoci/skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -226,7 +226,7 @@ impl ProjectDetector {
                 notes.push("Apache document root: public/".to_string());
             }
             notes.push(
-                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
+                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in .skoci/skoci.yaml."
                     .to_string(),
             );
             return Detection {

@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 | `--domain <domain>` | *(empty)* | Base domain for routing apps (`*.domain`) and the dashboard (`skoci.domain`). |
 | `--email <email>` | *(empty)* | Contact email for Let's Encrypt ACME certificate registration. |
 | `--no-tls` | *(ACME TLS enabled)* | Disable automatic HTTPS (serve plain HTTP only). |
-| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.4.0`). |
+| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.4.2`). |
 | `--client-only` | *(false on Linux)* | Install client binary only without server daemon (default on macOS). |
 
 > **Why is Magic DNS (`sslip.io`) opt-in only?**  
@@ -118,7 +118,7 @@ Example output:
 ```json
 {
   "healthy": true,
-  "version": "0.4.0",
+  "version": "0.4.2",
   "idle_ram_mb": 11.4,
   "checks": [
     { "name": "docker_daemon", "passed": true, "message": "Docker Engine is active" },

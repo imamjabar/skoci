@@ -28,7 +28,7 @@ impl ConfigLoader {
             let fix = if msg.starts_with("env.public") {
                 "env.public is now a map of NAME: value, for example:\n  env:\n    public:\n      NODE_ENV: production\nRemove legacy lists like '- PORT' (PORT is set automatically from run.port)"
             } else {
-                "Check YAML syntax in skoci.yaml (see 'skoci init' in an empty directory for examples)"
+                "Check YAML syntax in .skoci/skoci.yaml (see 'skoci init' in an empty directory for examples)"
             };
             SkociError::config_invalid(format!("Failed to read skoci.yaml: {msg}"), fix)
         })?;
@@ -51,7 +51,7 @@ impl ConfigLoader {
         if cfg.version != 1 {
             return Err(SkociError::config_invalid(
                 format!("skoci.yaml version '{}' is not supported (must be 1)", cfg.version),
-                "Change to 'version: 1' in skoci.yaml",
+                "Change to 'version: 1' in .skoci/skoci.yaml",
             ));
         }
 
@@ -59,7 +59,7 @@ impl ConfigLoader {
             if cfg.app.trim().is_empty() {
                 return Err(SkociError::config_invalid(
                     "App name 'app' cannot be empty",
-                    "Specify an app name in skoci.yaml (e.g. 'belajar-paper')",
+                    "Specify an app name in .skoci/skoci.yaml (e.g. 'belajar-paper')",
                 ));
             }
             if RESERVED_APP_NAMES.contains(&cfg.app.as_str()) {

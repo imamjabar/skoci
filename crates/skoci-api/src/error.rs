@@ -166,7 +166,7 @@ impl SkociError {
         Self::new(
             "production_requires_domain",
             format!("Production for '{app}' needs a domain you own{detail}"),
-            "Point an A record at the server, add it under 'domains' in skoci.yaml (skoci domain add <host>), then deploy again",
+            "Point an A record at the server, add it under 'domains' in .skoci/skoci.yaml (skoci domain add <host>), then deploy again",
         )
     }
 

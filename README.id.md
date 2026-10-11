@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 └──────┬───────┘          └───────────────────────┬───────────────────────┘
        │                                          │
        │ 1. skoci deploy                          │
-       │    (kemas repo, patuhi .gitignore)       │
+       │    (kemas repo, patuhi .skoci/ignore)    │
        ├─────────────────────────────────────────►│
        │    Unggah HTTPS dengan scoped token      │ 2. Server kompilasi image Docker
        │                                          │ 3. Jalankan container & health check
@@ -72,11 +72,13 @@ Atau pasang langsung di terminal server Linux 64-bit Anda (pastikan port **80**,
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
 
-### 2. Buat Scoped Token (di VPS)
-Jika memasang manual di server, buat token agen yang dibatasi hak aksesnya khusus untuk aplikasi Anda:
+### 2. Buat Scoped Token dan Baca Pin (di VPS)
+Jika memasang manual di server, buat token agen yang dibatasi hak aksesnya khusus untuk aplikasi Anda, lalu baca pin kunci server:
 ```bash
 sudo skoci token create --app my-app --name laptop
+sudo skoci server fingerprint
 ```
+Kedua perintah berjalan tanpa flag tambahan di server: CLI membaca `/etc/skoci/skoci.env` dan menargetkan control plane lokal. `skoci server setup` melakukannya untuk Anda dan tidak pernah mencetak token.
 
 ### 3. Hubungkan Laptop ke Server
 Di komputer kerja Anda, pasang client dan hubungkan workspace Anda menggunakan IP server, token, dan pin sertifikat SPKI:
@@ -92,16 +94,30 @@ Masuk ke repositori proyek Anda:
 skoci init
 skoci deploy --env preview
 ```
+`skoci init` menjaga root proyek tetap bersih — semua yang dihasilkannya berada di `.skoci/`:
+```
+your-project/
+├── .gitignore        # bertambah satu baris: .skoci/env
+├── your files …      # tidak disentuh
+└── .skoci/
+    ├── skoci.yaml    # konfigurasi aplikasi
+    ├── Dockerfile    # resep hasil generate (dilewati jika Anda sudah punya sendiri)
+    ├── ignore        # filter unggahan; .dockerignore Anda dipakai jika berkas ini tidak ada
+    └── env           # URL server, token, pin (0600, tidak pernah diunggah)
+```
+`skoci.yaml` atau `Dockerfile` yang ditulis oleh versi lama, atau oleh Anda sendiri, tetap dibaca dari root proyek.
 
 ### 5. Promosikan ke Production & Setujui
-Ajukan promosi ke production:
+Production membutuhkan domain milik Anda. Arahkan A record ke server, tambahkan ke `.skoci/skoci.yaml` pada bagian `domains:`, verifikasi, lalu ajukan promosi:
 ```bash
+skoci domain check app.yourdomain.com
 skoci promote "Semua pengujian preview lolos, siap rilis produksi"
 ```
-Perintah mengembalikan kode keluar 2 dan `request_id`. Setujui melalui web dashboard di `https://<server-public-ip>:8443` atau lewat terminal server:
+Dijalankan dengan scoped agent token, perintah berhenti di kode keluar 2 dan mencetak `request_id`; promosi menunggu persetujuan manusia. Setujui melalui web dashboard di `https://<server-public-ip>:8443` atau lewat terminal server:
 ```bash
 sudo skoci approve <request_id>
 ```
+Master token di server berperan sebagai manusia: promosi langsung berjalan tanpa permintaan persetujuan.
 
 ---
 
@@ -113,7 +129,7 @@ Salin dan tempelkan instruksi prompt ini ke asisten coding AI Anda (Claude Code,
 Operational Rules:
 1. Selalu jalankan perintah dengan `--json` untuk output terstruktur (contoh: `skoci deploy --json`).
 2. Jika perintah gagal, periksa `error.code` dan jalankan perintah yang disarankan pada `error.fix`.
-3. Kode keluar 2 berarti membutuhkan persetujuan manusia (deploy produksi, restore db, hapus app). Laporkan `request_id` kepada pengguna agar dapat disetujui di dashboard pada https://<server-ip>:8443 atau via `skoci approve`.
+3. Kode keluar 2 berarti membutuhkan persetujuan manusia (deploy produksi, restore db, hapus app). Laporkan `request_id` kepada pengguna agar dapat disetujui di dashboard pada https://<server-ip>:8443 atau via `skoci approve <request_id>`.
 4. Jangan pernah mencoba atau meminta akses SSH. Semua interaksi berjalan via HTTPS ter-pinning menggunakan scoped token.
 5. Deployment produksi wajib menggunakan domain kustom asli (magic DNS *.sslip.io ditolak). Verifikasi DNS sebelum deploy dengan `skoci domain check <host>`.
 6. Perlakukan deployment `degraded` sebagai kegagalan yang perlu diselidiki: periksa log dengan `skoci logs --tail 100 --json` dan jangan promosikan ke produksi.
@@ -142,9 +158,19 @@ Operational Rules:
 * **Isolasi Docker Server Tunggal:** Isolasi mengandalkan namespace dan cgroup kernel Linux bawaan Docker tanpa virtualisasi microVM perangkat keras.
 * **Klaim Domain Kustom First-Come:** Agen dapat mendaftarkan domain kustom apa pun yang belum digunakan oleh aplikasi lain pada server tersebut.
 * **Checksum Rilis dari Asal yang Sama:** Berkas checksum rilis berada pada rilis GitHub yang sama dengan binary; verifikasi keaslian dan integritas menggunakan `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
+
 ---
 
-## Migrasi dari Versi 0.1
+## Peningkatan Versi
+
+### Ke 0.4.1 dan setelahnya
+Upgrade server dan semua workstation secara bersamaan; client menolak berkomunikasi dengan server yang berbeda versi minor.
+```bash
+curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
+```
+Proyek yang sudah ada tetap berjalan tanpa perubahan: `skoci.yaml`, `Dockerfile`, dan `.env.skoci` di root tetap dibaca. Untuk memakai tata letak `.skoci/` pada sebuah proyek, hapus berkas hasil generate di root lalu jalankan `skoci init` lagi — pertahankan `Dockerfile` yang Anda tulis sendiri, berkas itu tetap berada di root pada kedua kasus.
+
+### Dari 0.1
 
 Bagi pengguna yang telah memasang Skoci versi 0.1:
 1. **Bersihkan Konflik Port 80/443:** Hentikan kontainer manual lama yang mengikat port web:

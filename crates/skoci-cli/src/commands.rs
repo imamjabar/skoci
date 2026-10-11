@@ -41,17 +41,20 @@ pub fn resolve_app_in(path: &Path, provided: Option<&str>) -> SkociResult<String
     }
 
     if let Some(config_path) = ConfigLoader::locate_config(path) {
-        if let Ok(cfg) = ConfigLoader::load_config(&config_path) {
-            let trimmed = cfg.app.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
+        let cfg = ConfigLoader::load_config(&config_path)?;
+        let trimmed = cfg.app.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
         }
+        return Err(SkociError::config_invalid(
+            format!("No 'app' name set in {}", config_path.display()),
+            "Add a line such as 'app: my-app' to the configuration",
+        ));
     }
 
     Err(SkociError::config_invalid(
-        "Application name not found",
-        "Specify the application name via arguments or run `skoci init` to create .skoci/skoci.yaml",
+        "No Skoci project configuration found here",
+        "Run 'skoci init' to generate .skoci/skoci.yaml, or pass the app name as an argument",
     ))
 }
 
@@ -67,23 +70,29 @@ pub struct GlobalOpts {
 }
 
 pub fn resolve_global(global: &GlobalOpts) -> SkociResult<skoci_client::profile::ResolvedTarget> {
-    resolve_global_at(global, Path::new("/etc/skoci/skoci.env"), Path::new("."))
+    let profiles = skoci_client::profile::load_profiles().unwrap_or_default();
+    resolve_global_at(
+        global,
+        Path::new("/etc/skoci/skoci.env"),
+        Path::new("."),
+        &profiles,
+    )
 }
 
 pub fn resolve_global_at(
     global: &GlobalOpts,
     master_env_path: &Path,
     project_root: &Path,
+    profiles: &skoci_client::profile::ProfileConfig,
 ) -> SkociResult<skoci_client::profile::ResolvedTarget> {
     let project_env = crate::env::read_project_env_at(project_root);
-    let profiles = skoci_client::profile::load_profiles().unwrap_or_default();
     let mut target = skoci_client::profile::resolve_target_with_profiles_at(
         global.server_url.as_deref(),
         global.token.clone(),
         global.pin.as_deref(),
         global.profile.as_deref(),
         project_env,
-        &profiles,
+        profiles,
         master_env_path,
     )?;
 
@@ -1914,7 +1923,8 @@ mod tests {
         std::fs::write(&master_file, "SKOCI_MASTER_TOKEN=master_token_secret_12345\n").unwrap();
 
         let global = GlobalOpts::default();
-        let target = resolve_global_at(&global, &master_file, &project_root).unwrap();
+        let profiles = skoci_client::profile::ProfileConfig::default();
+        let target = resolve_global_at(&global, &master_file, &project_root, &profiles).unwrap();
 
         assert_eq!(target.url, "http://127.0.0.1:8787");
         assert_eq!(target.token.as_deref(), Some("master_token_secret_12345"));

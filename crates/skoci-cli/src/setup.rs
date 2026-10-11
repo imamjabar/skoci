@@ -295,7 +295,7 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
                         let trimmed = cfg.app.trim();
                         if !is_valid_app_name(trimmed) {
                             return Err(SkociError::bad_request(
-                                format!("Invalid app name '{trimmed}' in skoci.yaml"),
+                                format!("Invalid app name '{trimmed}' in .skoci/skoci.yaml"),
                                 format!(
                                     "Use lowercase alphanumeric characters and hyphens, up to {MAX_APP_NAME_LEN} characters"
                                 ),

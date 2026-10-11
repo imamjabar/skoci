@@ -37,7 +37,7 @@
 9. Monitor: `skoci status --json` and `skoci logs --json`
 ## CLI Commands Reference
 - `skoci server setup --host <ip> --user <u>` (one-time setup of remote VPS from laptop, Skoci >= 0.4.0)
-- `skoci connect --server <ip> --token <token> [--pin <spki-pin>] [--profile <name>]`
+- `skoci connect --server <ip> --token <token> [--pin <spki-pin>] [--name <profile-name>]`
 - `skoci domain check <host>` / `skoci domain add <host>`
 - `skoci deploy [--env preview|production] [--detach] [--commit <sha>]`
 - `skoci watch <deployment_id>`
