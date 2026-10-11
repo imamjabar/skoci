@@ -10,11 +10,11 @@ impl ConfigLoader {
         let config: SkociConfig = serde_yaml::from_str(content).map_err(|e| {
             let msg = e.to_string();
             let fix = if msg.starts_with("env.public") {
-                "env.public sekarang berupa pasangan NAMA: nilai, contoh:\n  env:\n    public:\n      NODE_ENV: production\nHapus daftar lama seperti '- PORT' (PORT diisi otomatis dari run.port)"
+                "env.public is now a map of NAME: value, for example:\n  env:\n    public:\n      NODE_ENV: production\nRemove legacy lists like '- PORT' (PORT is set automatically from run.port)"
             } else {
-                "Periksa sintaks YAML pada file skoci.yaml (lihat contoh di 'skoci init' pada folder kosong)"
+                "Check YAML syntax in skoci.yaml (see 'skoci init' in an empty directory for examples)"
             };
-            SkociError::config_invalid(format!("Gagal membaca skoci.yaml: {msg}"), fix)
+            SkociError::config_invalid(format!("Failed to read skoci.yaml: {msg}"), fix)
         })?;
         Self::validate_config(&config)?;
         Ok(config)
@@ -24,8 +24,8 @@ impl ConfigLoader {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path).map_err(|e| {
             SkociError::bad_request(
-                format!("File skoci.yaml tidak ditemukan di {}: {e}", path.display()),
-                "Jalankan 'skoci init' untuk membuat skoci.yaml",
+                format!("skoci.yaml file not found at {}: {e}", path.display()),
+                "Run 'skoci init' to generate skoci.yaml",
             )
         })?;
         Self::parse_config(&content)
@@ -34,66 +34,66 @@ impl ConfigLoader {
     pub fn validate_config(cfg: &SkociConfig) -> SkociResult<()> {
         if cfg.version != 1 {
             return Err(SkociError::config_invalid(
-                format!("Versi skoci.yaml '{}' tidak didukung (harus 1)", cfg.version),
-                "Ganti 'version: 1' pada skoci.yaml",
+                format!("skoci.yaml version '{}' is not supported (must be 1)", cfg.version),
+                "Change to 'version: 1' in skoci.yaml",
             ));
         }
 
         if !is_valid_app_name(&cfg.app) {
             if cfg.app.trim().is_empty() {
                 return Err(SkociError::config_invalid(
-                    "Nama aplikasi 'app' tidak boleh kosong",
-                    "Tentukan nama aplikasi pada skoci.yaml (contoh: 'belajar-paper')",
+                    "App name 'app' cannot be empty",
+                    "Specify an app name in skoci.yaml (e.g. 'belajar-paper')",
                 ));
             }
             if cfg.app.len() > MAX_APP_NAME_LEN {
                 return Err(SkociError::config_invalid(
                     format!(
-                        "Nama aplikasi '{}' terlalu panjang (maksimal {} karakter)",
+                        "App name '{}' is too long (maximum {} characters)",
                         cfg.app, MAX_APP_NAME_LEN
                     ),
-                    "Gunakan nama aplikasi yang lebih pendek (contoh: 'belajar-paper')",
+                    "Use a shorter app name (e.g. 'belajar-paper')",
                 ));
             }
             if cfg.app.contains('_') {
                 return Err(SkociError::config_invalid(
                     format!(
-                        "Nama aplikasi '{}' tidak boleh menggunakan garis bawah (_)",
+                        "App name '{}' cannot contain underscores (_)",
                         cfg.app
                     ),
-                    "Ganti '_' dengan '-' (contoh: 'belajar-paper')",
+                    "Replace '_' with '-' (e.g. 'belajar-paper')",
                 ));
             }
             return Err(SkociError::config_invalid(
                 format!(
-                    "Nama aplikasi '{}' tidak valid. Hanya boleh huruf kecil, angka, dan '-' serta diawali huruf kecil atau angka",
+                    "App name '{}' is invalid. Only lowercase letters, numbers, and '-' are allowed, starting with a letter or number",
                     cfg.app
                 ),
-                "Gunakan nama aplikasi seperti 'belajar-paper'",
+                "Use an app name like 'belajar-paper'",
             ));
         }
 
         if cfg.run.port == 0 {
             return Err(SkociError::config_invalid(
-                "Port aplikasi tidak boleh 0",
-                "Tentukan port yang valid pada 'run.port' (misal: 3000 atau 8080)",
+                "App port cannot be 0",
+                "Specify a valid port in 'run.port' (e.g. 3000 or 8080)",
             ));
         }
 
         if !cfg.run.health.starts_with('/') {
             return Err(SkociError::config_invalid(
-                format!("Path health check '{}' harus diawali dengan '/'", cfg.run.health),
-                "Ubah 'run.health' menjadi path yang diawali '/', misal '/healthz' atau '/'",
+                format!("Health check path '{}' must start with '/'", cfg.run.health),
+                "Change 'run.health' to a path starting with '/', e.g. '/healthz' or '/'",
             ));
         }
 
         if !(5..=600).contains(&cfg.run.health_timeout_secs) {
             return Err(SkociError::config_invalid(
                 format!(
-                    "Timeout health check ({} detik) harus antara 5 hingga 600 detik",
+                    "Health check timeout ({}s) must be between 5 and 600 seconds",
                     cfg.run.health_timeout_secs
                 ),
-                "Ubah 'run.health_timeout_secs' menjadi nilai antara 5 dan 600 (default: 60)",
+                "Change 'run.health_timeout_secs' to a value between 5 and 600 (default: 60)",
             ));
         }
 
@@ -101,28 +101,28 @@ impl ConfigLoader {
         for domain in &cfg.domains {
             if !is_valid_hostname(domain) {
                 return Err(SkociError::config_invalid(
-                    format!("Domain '{domain}' tidak valid"),
-                    "Gunakan nama domain valid seperti 'app.contoh.com' (huruf kecil, ada titik, bukan IP)",
+                    format!("Domain '{domain}' is invalid"),
+                    "Use a valid domain name like 'app.example.com' (lowercase, contains dot, not an IP)",
                 ));
             }
             if !seen_domains.insert(domain.as_str()) {
                 return Err(SkociError::config_invalid(
-                    format!("Domain duplikat ditemukan: '{domain}'"),
-                    "Hapus domain yang duplikat dari 'domains' atau 'preview_domains'",
+                    format!("Duplicate domain found: '{domain}'"),
+                    "Remove duplicate domain from 'domains' or 'preview_domains'",
                 ));
             }
         }
         for domain in &cfg.preview_domains {
             if !is_valid_hostname(domain) {
                 return Err(SkociError::config_invalid(
-                    format!("Preview domain '{domain}' tidak valid"),
-                    "Gunakan nama domain valid seperti 'preview.contoh.com' (huruf kecil, ada titik, bukan IP)",
+                    format!("Preview domain '{domain}' is invalid"),
+                    "Use a valid domain name like 'preview.example.com' (lowercase, contains dot, not an IP)",
                 ));
             }
             if !seen_domains.insert(domain.as_str()) {
                 return Err(SkociError::config_invalid(
-                    format!("Domain duplikat ditemukan: '{domain}'"),
-                    "Hapus domain yang duplikat dari 'domains' atau 'preview_domains'",
+                    format!("Duplicate domain found: '{domain}'"),
+                    "Remove duplicate domain from 'domains' or 'preview_domains'",
                 ));
             }
         }
@@ -130,14 +130,14 @@ impl ConfigLoader {
         for key in cfg.env.public.keys() {
             if !is_valid_env_key(key) {
                 return Err(SkociError::config_invalid(
-                    format!("Nama env publik '{key}' tidak valid"),
-                    "Gunakan format huruf kapital seperti 'API_URL' atau 'NODE_ENV'",
+                    format!("Public env name '{key}' is invalid"),
+                    "Use uppercase letters like 'API_URL' or 'NODE_ENV'",
                 ));
             }
             if key.starts_with("SKOCI_") {
                 return Err(SkociError::config_invalid(
-                    format!("Nama env publik '{key}' tidak boleh diawali dengan 'SKOCI_'"),
-                    "Nama dengan awalan 'SKOCI_' dikhususkan untuk sistem Skoci",
+                    format!("Public env name '{key}' cannot start with 'SKOCI_'"),
+                    "Names starting with 'SKOCI_' are reserved for the Skoci system",
                 ));
             }
         }
@@ -146,20 +146,20 @@ impl ConfigLoader {
         for secret in &cfg.env.secrets {
             if !is_valid_env_key(secret) {
                 return Err(SkociError::config_invalid(
-                    format!("Nama secret '{secret}' tidak valid"),
-                    "Gunakan format huruf kapital seperti 'DATABASE_PASSWORD' atau 'API_KEY'",
+                    format!("Secret name '{secret}' is invalid"),
+                    "Use uppercase letters like 'DATABASE_PASSWORD' or 'API_KEY'",
                 ));
             }
             if secret.starts_with("SKOCI_") {
                 return Err(SkociError::config_invalid(
-                    format!("Nama secret '{secret}' tidak boleh diawali dengan 'SKOCI_'"),
-                    "Nama dengan awalan 'SKOCI_' dikhususkan untuk sistem Skoci",
+                    format!("Secret name '{secret}' cannot start with 'SKOCI_'"),
+                    "Names starting with 'SKOCI_' are reserved for the Skoci system",
                 ));
             }
             if !seen_secrets.insert(secret.as_str()) {
                 return Err(SkociError::config_invalid(
-                    format!("Nama secret duplikat: '{secret}'"),
-                    "Hapus nama secret yang duplikat dari 'env.secrets'",
+                    format!("Duplicate secret name: '{secret}'"),
+                    "Remove duplicate secret name from 'env.secrets'",
                 ));
             }
         }
@@ -168,22 +168,22 @@ impl ConfigLoader {
             if !is_valid_service_name(name) {
                 return Err(SkociError::config_invalid(
                     format!(
-                        "Nama service '{name}' tidak valid (harus 1-20 karakter, diawali huruf kecil, hanya huruf kecil, angka, dan '-')",
+                        "Service name '{name}' is invalid (must be 1-20 characters, start with lowercase letter, only lowercase letters, numbers, and '-')",
                     ),
-                    "Gunakan nama service seperti 'db', 'cache', atau 'queue'",
+                    "Use a service name like 'db', 'cache', or 'queue'",
                 ));
             }
             if svc.version.trim().is_empty() {
                 return Err(SkociError::config_invalid(
-                    format!("Versi service '{name}' tidak boleh kosong"),
-                    "Tentukan versi service (misal: '16' untuk postgres atau '8' untuk valkey)",
+                    format!("Service version for '{name}' cannot be empty"),
+                    "Specify a service version (e.g. '16' for postgres or '8' for valkey)",
                 ));
             }
             if let Some(mem) = &svc.memory {
                 if !is_valid_memory_spec(mem) {
                     return Err(SkociError::config_invalid(
-                        format!("Nilai memory service '{name}' ('{mem}') tidak valid"),
-                        "Gunakan format angka diikuti satuan b, k, m, atau g (contoh: '256m' atau '1g')",
+                        format!("Memory value for service '{name}' ('{mem}') is invalid"),
+                        "Use a number followed by b, k, m, or g (e.g. '256m' or '1g')",
                     ));
                 }
             }
@@ -191,23 +191,23 @@ impl ConfigLoader {
 
         if !is_safe_relative_path(&cfg.build.dockerfile) {
             return Err(SkociError::config_invalid(
-                format!("Path Dockerfile '{}' tidak aman atau tidak valid", cfg.build.dockerfile),
-                "Gunakan path relatif tanpa '..' atau path absolut (misal: 'Dockerfile' atau 'docker/Dockerfile')",
+                format!("Dockerfile path '{}' is unsafe or invalid", cfg.build.dockerfile),
+                "Use a relative path without '..' or an absolute path (e.g. 'Dockerfile' or 'docker/Dockerfile')",
             ));
         }
 
         if !is_safe_relative_path(&cfg.build.context) {
             return Err(SkociError::config_invalid(
-                format!("Path build context '{}' tidak aman atau tidak valid", cfg.build.context),
-                "Gunakan path relatif tanpa '..' atau path absolut (misal: '.' atau 'frontend')",
+                format!("Build context path '{}' is unsafe or invalid", cfg.build.context),
+                "Use a relative path without '..' or an absolute path (e.g. '.' or 'frontend')",
             ));
         }
 
         if let Some(mem) = &cfg.run.memory {
             if !is_valid_memory_spec(mem) {
                 return Err(SkociError::config_invalid(
-                    format!("Nilai memory '{mem}' tidak valid"),
-                    "Gunakan format angka diikuti satuan b, k, m, atau g (contoh: '256m' atau '1g')",
+                    format!("Memory value '{mem}' is invalid"),
+                    "Use a number followed by b, k, m, or g (e.g. '256m' or '1g')",
                 ));
             }
         }
@@ -215,8 +215,8 @@ impl ConfigLoader {
         if let Some(cpus) = cfg.run.cpus {
             if cpus <= 0.0 || cpus > 64.0 || cpus.is_nan() {
                 return Err(SkociError::config_invalid(
-                    format!("Nilai run.cpus '{cpus}' tidak valid"),
-                    "Nilai cpus harus lebih besar dari 0 dan maksimal 64 (contoh: 0.5 atau 2)",
+                    format!("run.cpus value '{cpus}' is invalid"),
+                    "cpus value must be greater than 0 and at most 64 (e.g. 0.5 or 2)",
                 ));
             }
         }

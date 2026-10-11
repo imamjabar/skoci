@@ -32,7 +32,7 @@ pub async fn handle_create_token(
         "admin",
         "token_create",
         &format!("{}/{}", body.app, body.name),
-        &format!("Token ID {id} dibuat"),
+        &format!("Token ID {id} created"),
     );
 
     api_reply(Ok(TokenCreateResponse {
@@ -95,7 +95,7 @@ pub async fn handle_revoke_token(
                 "admin",
                 "token_revoke",
                 &format!("{app}/{name}"),
-                &format!("{revoked} token dicabut"),
+                &format!("{revoked} token(s) revoked"),
             );
             api_reply(Ok(TokenRevokeResponse { app, name, revoked }))
         }

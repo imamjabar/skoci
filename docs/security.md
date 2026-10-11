@@ -1,111 +1,111 @@
-# Model Keamanan & Arsitektur Pertahanan Skoci
+# Security Model & Defense Architecture
 
-Ancaman utama pada platform deployment agent-native berbeda dengan PaaS konvensional: **input perintah datang dari agen AI yang dapat terkena serangan Prompt Injection.**
+The threat model for an agent-native deployment platform differs fundamentally from traditional PaaS: **commands originate from AI agents susceptible to Prompt Injection attacks.**
 
-Oleh karena itu, setiap lapisan Skoci menganggap input agen sebagai data tidak tepercaya (*untrusted input*) dan menerapkan model pertahanan berlapis (*defense-in-depth*).
+Every layer of Skoci treats agent input as untrusted data and enforces defense-in-depth security boundaries.
 
 ---
 
-## 7 Pilar Pertahanan Skoci
+## The 7 Pillars of Defense
 
 ```
-[Agen AI / Prompt Eksternal]
+[AI Agent / External Prompt]
           │
           ▼
 ┌───────────────────────────────────────────────┐
-│ 1. Zero Shell String (Argv Only)              │ ◄── tokio::process::Command tanpa sh -c
+│ 1. Zero Shell String (Argv Only)              │ ◄── tokio::process::Command without sh -c
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 2. Scoped Token & SHA-256 Hash                │ ◄── DB hash lookup; isolasi antar app
+│ 2. Scoped Token & SHA-256 Hash                │ ◄── DB hash lookup; app-level isolation
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 3. Zero-SSH Key Policy                        │ ◄── Tidak ada root SSH key yang disimpan
+│ 3. Zero-SSH Key Policy                        │ ◄── No root SSH keys stored on workstations
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 4. Enkripsi Secret Node (ChaCha20-Poly1305)   │ ◄── Secret disamarkan & disuntik via file 0600
+│ 4. Node Secret Encryption (ChaCha20-Poly1305) │ ◄── Secrets masked & injected via 0600 file
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 5. Isolasi Jaringan Kontainer & Bind Lokal    │ ◄── API bind 127.0.0.1; network per app
+│ 5. Container Network Isolation & Local Bind   │ ◄── API bound to 127.0.0.1; per-app network
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 6. Gerbang Persetujuan Manusia (Human Gate)   │ ◄── Kebijakan bawaan: aksi prod butuh approval
+│ 6. Human Gate Approval Requirement           │ ◄── Built-in policy: prod actions need review
 └───────────────────────┬───────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
-│ 7. Audit Log Append-Only                      │ ◄── Pencatatan aktor; token tidak disimpan
+│ 7. Append-Only Audit Log                      │ ◄── Actor attribution; tokens never stored
 └───────────────────────────────────────────────┘
 ```
 
 ---
 
-### Pilar 1: Kebal Injeksi Shell (Zero Shell Concatenation)
-* **Kelemahan Alat Tradisional:** Banyak PaaS membangun perintah terminal dengan penggabungan string:
+### Pillar 1: Shell Injection Immunity (Zero Shell Concatenation)
+* **Vulnerability in Traditional Tools:** Many PaaS platforms construct commands by interpolating shell strings:
   `sh -c "docker run -e KEY=$input ..."`
-  Jika input mengandung karakter seperti `;`, `&`, `|`, atau `$()`, penyerang mendapatkan akses shell server.
-* **Solusi Skoci:** Skoci **TIDAK PERNAH** memanggil shell `sh` dengan string yang diinterpolasi dari input pengguna/agen. Skoci memanggil proses biner Docker langsung dengan irisan argumen terstruktur (`tokio::process::Command::new("docker").args(...)`). Karakter khusus diperlakukan murni sebagai teks harfiah. Perintah shell yang diizinkan hanyalah string literal tetap yang hanya merujuk pada environment variable kontainer itu sendiri.
+  If input contains characters such as `;`, `&`, `|`, or `$()`, an attacker gains immediate shell access on the host.
+* **Skoci's Solution:** Skoci **NEVER** invokes a shell with concatenated strings derived from user or agent input. Skoci invokes Docker binary processes directly using structured argument vectors (`tokio::process::Command::new("docker").args(...)`). Special characters are treated strictly as literal arguments. The only shell commands allowed are fixed, static literals that reference the container's own internal environment variables.
 
 ---
 
-### Pilar 2: Scoped Token Terisolasi & Verifikasi Hash SHA-256
-* Token agen berformat `sk_agent_<app>_<48 hex>` disimpan dalam database SQLite sebagai **hash SHA-256**.
-* Ruang lingkup (*scope*) aplikasi ditentukan oleh baris database hasil pencarian hash, bukan dengan mem-parsing string token.
-* Token aplikasi `toko` ditolak jika mencoba mengakses aplikasi `blog` (`scope_violation`).
-* **Pencabutan Instan:** Admin dapat mencabut token kapan saja:
+### Pillar 2: Isolated Scoped Tokens & SHA-256 Hash Verification
+* Agent tokens formatted as `sk_agent_<app>_<48 hex>` are stored in the SQLite database exclusively as **SHA-256 hashes**.
+* Application scope is determined by database query results from the hash lookup, never by parsing token strings.
+* A token for app `toko` is rejected immediately if it attempts to access app `blog` (`scope_violation`).
+* **Instant Revocation:** Administrators can revoke tokens at any time:
   ```bash
   skoci token revoke --app toko --name laptop
   ```
-* **Proteksi Brute-Force:** Gagal autentikasi dibatasi maksimal 10 kali per menit per IP peer sebelum diblokir dengan status `rate_limited`.
+* **Brute-Force Protection:** Failed authentication attempts are limited to 10 per minute per peer IP before being blocked with `rate_limited`.
 
 ---
 
-### Pilar 3: Kebijakan Zero-SSH (Tanpa Kunci SSH Root)
-* Alat seperti Kamal mewajibkan developer dan runner CI menyimpan kunci SSH root server. Jika mesin developer atau sandbox agen AI diretas, penyerang langsung menguasai seluruh server fisik.
-* **Skoci meniadakan SSH untuk operasional:** Agen hanya berkomunikasi melalui protokol HTTPS REST API dan MCP yang diotentikasi token aplikasi.
+### Pillar 3: Zero-SSH Policy (No Root SSH Keys)
+* Tools like Kamal require developers and CI runners to store root SSH private keys. If a developer workstation or AI agent sandbox is compromised, the attacker takes complete control of the host.
+* **Skoci eliminates SSH for day-to-day operations:** Agents communicate exclusively over HTTPS REST API and MCP authenticated by scoped application tokens.
 
 ---
 
-### Pilar 4: Enkripsi Secret di Node & Penyuntikan Aman
-* Secret dienkripsi saat tersimpan di database menggunakan **ChaCha20-Poly1305** dengan kunci node `/var/lib/skoci/node.key` (32 byte acak dibuat saat start pertama, izin berkas `0600`, hanya bisa dibaca user `skoci`).
-* Agen AI dapat menulis nilai (`skoci secret set KEY VAL`), tetapi **tidak pernah bisa membaca nilainya kembali** (`skoci secret list` hanya mengembalikan nama kunci). Nilai secret yang mengandung karakter newline (`\n`) ditolak.
-* **Penyuntikan Bebas Bocor:** Saat kontainer dijalankan, secret ditulis ke file environment sementara dengan izin `0600` dan dioperkan via `docker run --env-file`. File tersebut langsung dihapus dari disk seketika setelah kontainer berjalan.
-* **Sanitasi Log:** Nilai rahasia dengan panjang >= 4 karakter otomatis disaring dan disamarkan dari seluruh aliran log kontainer menjadi `[REDACTED]`.
+### Pillar 4: Secret Encryption at Rest & Secure Injection
+* Secrets are encrypted at rest using **ChaCha20-Poly1305** with the node key `/var/lib/skoci/node.key` (a 32-byte random key generated on first startup, permissions `0600`, readable only by the `skoci` user).
+* AI agents can write secrets (`skoci secret set KEY VAL`), but **can never read their values back** (`skoci secret list` returns only key names). Secret values containing newline characters (`\n`) are rejected.
+* **Leak-Free Injection:** When containers start, secrets are written to a temporary environment file with `0600` permissions and passed via `docker run --env-file`. The temporary file is deleted from disk immediately after the container starts.
+* **Log Redaction:** Any secret value of length >= 4 characters is automatically scrubbed from container logs and replaced with `[REDACTED]`.
 
 ---
 
-### Pilar 5: Isolasi Bind Lokal & Jaringan Kontainer
-* **Bind 127.0.0.1:8787:** Control API Skoci hanya mengikat interface lokal `127.0.0.1:8787` dan tidak terbuka langsung ke publik. Akses luar wajib melalui reverse proxy ber-TLS atau SSH tunnel.
-* **Session Cookie Dashboard:** Dashboard web menggunakan cookie `skoci_session` (HttpOnly, SameSite=Strict, Secure saat HTTPS) berumur 12 jam, dan mewajibkan header CSRF `X-Skoci-Dashboard: 1` untuk semua permintaan mutasi.
-* **Perbandingan Waktu Konstan:** Master token dibandingkan menggunakan algoritma waktu konstan (*constant-time comparison*) untuk mencegah serangan *timing attack*.
-* **Isolasi Jaringan Kontainer:** Setiap aplikasi dan databasenya berada di dalam Docker bridge network tersendiri (`skoci-<app>`). Kontainer aplikasi `toko` tidak dapat menjangkau atau mengganggu kontainer database `blog`.
+### Pillar 5: Local Bind Isolation & Container Networks
+* **Local Bind `127.0.0.1:8787`:** The Skoci Control API binds strictly to `127.0.0.1:8787` and is never exposed directly to public interfaces. External traffic routes through the TLS reverse proxy or an SSH tunnel.
+* **Dashboard Session Cookie:** The web dashboard uses a `skoci_session` cookie (HttpOnly, SameSite=Strict, Secure over HTTPS) with a 12-hour expiry, and enforces the CSRF header `X-Skoci-Dashboard: 1` on all mutating requests.
+* **Constant-Time Verification:** Master tokens are validated using constant-time string comparisons to prevent timing attacks.
+* **Container Network Isolation:** Each application and its accessories run inside a dedicated Docker bridge network (`skoci-<app>`). Containers for app `toko` cannot access or interfere with containers for app `blog`.
 
 ---
 
-### Pilar 6: Pengerasan Systemd & Catatan Grup Docker
-Service Skoci dijalankan dengan unit systemd berfitur pengerasan (*sandboxing*):
+### Pillar 6: Systemd Hardening & Docker Group Caveat
+The Skoci background service runs under a hardened systemd unit:
 * `User=skoci`, `Group=skoci`
 * `NoNewPrivileges=true`
 * `ProtectSystem=strict`
 * `ProtectHome=true`
 * `PrivateTmp=true`
 * `ReadWritePaths=/var/lib/skoci`
-* `AmbientCapabilities=CAP_NET_BIND_SERVICE` (agar proxy dapat mengikat port 80 dan 443 tanpa hak akses root penuh).
+* `AmbientCapabilities=CAP_NET_BIND_SERVICE` (enabling ports 80 and 443 binding without root).
 
-> **Catatan Keamanan (Docker Group Caveat):**  
-> Pengguna atau layanan yang tergabung dalam grup `docker` memiliki akses ke socket `/var/run/docker.sock`. Pada Linux, akses ke Docker socket secara fungsional setara dengan root (`docker group ≈ root`). Skoci mengisolasi pemanggilan proses dan memperketat validasi argumen untuk meminimalkan risiko ini.
+> **Security Notice (Docker Group Caveat):**  
+> Any user or service belonging to the `docker` group has access to `/var/run/docker.sock`. On Linux, access to the Docker socket is functionally equivalent to root (`docker group ≈ root`). Skoci isolates command execution and enforces strict argument validation to minimize exposure.
 
 ---
 
-### Pilar 7: Batas Upload & Audit Log Append-Only
-* **Batas Upload:** Unggahan arsip dibatasi sebesar 200 MB (`--max-upload-mb`) untuk melindungi server dari serangan penipisan memori/disk (*resource exhaustion*).
-* **Audit Log:** Seluruh aktivitas dicatat dalam tabel `audit_logs` SQLite dengan identitas aktor (`admin` atau `agent:<app>/<name>#<id12>`). Log audit tidak pernah menyimpan plain-text token.
+### Pillar 7: Upload Limits & Append-Only Audit Logging
+* **Upload Limits:** Archive uploads are capped at 200 MB (`--max-upload-mb`) to protect against resource exhaustion attacks.
+* **Audit Logging:** All actions are recorded in an append-only SQLite `audit_logs` table with actor attribution (`admin` or `agent:<app>/<name>#<id12>`). Plain-text tokens are never stored in audit logs.

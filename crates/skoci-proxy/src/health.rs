@@ -50,10 +50,10 @@ impl HealthChecker {
             match self.probe(addr, path).await {
                 Ok(status) if (200..400).contains(&status) => return Ok(()),
                 Ok(status) => {
-                    last_detail = format!("aplikasi membalas HTTP {status}");
+                    last_detail = format!("app responded with HTTP {status}");
                 }
                 Err(_) => {
-                    last_detail = "aplikasi belum menerima koneksi di port tersebut".to_string();
+                    last_detail = "app is not accepting connections on that port yet".to_string();
                 }
             }
 
@@ -61,7 +61,7 @@ impl HealthChecker {
             if remaining.is_zero() {
                 return Err(SkociError::health_check_failed(
                     &format!("http://{addr}{path}"),
-                    &format!("{last_detail} setelah {} detik", total.as_secs()),
+                    &format!("{last_detail} after {} seconds", total.as_secs()),
                 ));
             }
             tokio::time::sleep(Duration::from_secs(1).min(remaining)).await;

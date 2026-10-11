@@ -31,8 +31,8 @@ pub async fn handle_set_default_app(
 
         if current_default.is_some() {
             let err = SkociError::forbidden(
-                "Aplikasi default sudah ditentukan. Hanya admin yang dapat mengubahnya",
-                "Gunakan kredensial admin / master token untuk mengubah aplikasi default",
+                "Default app is already configured. Only an admin can change it",
+                "Use admin credentials / master token to change the default app",
             );
             return api_reply::<()>(Err(err));
         }
@@ -55,7 +55,7 @@ pub async fn handle_set_default_app(
         subject.actor_type(),
         "set_default_app",
         &body.app,
-        "Aplikasi default server diubah",
+        "Server default app updated",
     );
 
     api_reply(Ok(DefaultAppResponse {

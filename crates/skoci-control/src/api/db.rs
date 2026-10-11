@@ -35,7 +35,7 @@ pub async fn handle_db_backup(
                 subject.actor_type(),
                 "db_backup",
                 &format!("{}/{}", body.app, body.service),
-                &format!("Backup {} dibuat", resp.backup_id),
+                &format!("Backup {} created", resp.backup_id),
             );
             api_reply(Ok(resp))
         }
@@ -75,8 +75,8 @@ pub async fn handle_db_restore(
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
     if !is_valid_id {
         return api_reply::<()>(Err(SkociError::bad_request(
-            format!("ID backup '{}' tidak valid", body.backup_id),
-            "ID backup hanya boleh mengandung huruf kecil, angka, '_' dan '-'",
+            format!("Backup ID '{}' is invalid", body.backup_id),
+            "Backup ID can only contain lowercase letters, numbers, '_' and '-'",
         )));
     }
 
@@ -88,10 +88,10 @@ pub async fn handle_db_restore(
             app: body.app.clone(),
             action: "db_restore".to_string(),
             detail: format!(
-                "Restore backup {} untuk service {}",
+                "Restore backup {} for service {}",
                 body.backup_id, body.service
             ),
-            reason: "Permintaan restore database oleh agent".to_string(),
+            reason: "Database restore requested by agent".to_string(),
             status: "pending".to_string(),
             requested_by: subject.identifier(),
             decided_by: None,
@@ -113,7 +113,7 @@ pub async fn handle_db_restore(
             "db_restore_request",
             &format!("{}/{}", body.app, body.service),
             &format!(
-                "Persetujuan {} dibuat untuk restore backup {}",
+                "Approval request {} created to restore backup {}",
                 approval_id, body.backup_id
             ),
         );
@@ -144,7 +144,7 @@ pub async fn handle_db_restore(
                 "admin",
                 "db_restore",
                 &format!("{}/{}", body.app, body.service),
-                &format!("Backup {} berhasil di-restore", body.backup_id),
+                &format!("Backup {} restored successfully", body.backup_id),
             );
             api_reply(Ok(resp))
         }

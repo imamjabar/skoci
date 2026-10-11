@@ -32,23 +32,23 @@ pub async fn handle_deploy(
 
     if query.env != ENV_PRODUCTION && query.env != skoci_api::models::ENV_PREVIEW {
         return api_reply::<()>(Err(SkociError::bad_request(
-            format!("Environment '{}' tidak dikenal", query.env),
-            "Gunakan --env preview atau --env production",
+            format!("Unknown environment '{}'", query.env),
+            "Use --env preview or --env production",
         )));
     }
 
     if !subject.is_admin() && query.env == ENV_PRODUCTION {
         return api_reply::<()>(Err(SkociError::new(
             "approval_required",
-            "Token agen tidak boleh deploy langsung ke production",
-            "Deploy ke preview dulu, lalu jalankan 'skoci promote \"alasan\"' dan minta admin menyetujui",
+            "Agent tokens cannot deploy directly to production",
+            "Deploy to preview first, then run 'skoci promote \"reason\"' and have an admin approve it",
         )));
     }
 
     if !is_valid_app_name(&query.app) {
         let err = SkociError::config_invalid(
-            format!("Nama aplikasi '{}' tidak valid", query.app),
-            "Gunakan nama aplikasi dengan huruf kecil, angka, dan '-'",
+            format!("App name '{}' is invalid", query.app),
+            "Use an app name with lowercase letters, numbers, and '-'",
         );
         return api_reply::<()>(Err(err));
     }
@@ -59,8 +59,8 @@ pub async fn handle_deploy(
     let uploads_dir = state.config.data_dir.join("uploads");
     if let Err(e) = fs::create_dir_all(&uploads_dir).await {
         return api_reply::<()>(Err(SkociError::internal(
-            format!("Gagal membuat folder uploads: {e}"),
-            "Periksa izin folder data",
+            format!("Failed to create uploads directory: {e}"),
+            "Check data directory permissions",
         )));
     }
 
@@ -73,8 +73,8 @@ pub async fn handle_deploy(
         Ok(f) => f,
         Err(e) => {
             return api_reply::<()>(Err(SkociError::internal(
-                format!("Gagal membuat file upload: {e}"),
-                "Periksa izin folder data",
+                format!("Failed to create upload file: {e}"),
+                "Check data directory permissions",
             )));
         }
     };
@@ -86,8 +86,8 @@ pub async fn handle_deploy(
             Err(e) => {
                 let _ = fs::remove_file(&tar_gz_path).await;
                 return api_reply::<()>(Err(SkociError::bad_request(
-                    format!("Gagal membaca data upload: {e}"),
-                    "Coba deploy kembali",
+                    format!("Failed to read upload data: {e}"),
+                    "Try deploying again",
                 )));
             }
         };
@@ -103,8 +103,8 @@ pub async fn handle_deploy(
         if let Err(e) = file.write_all(&chunk).await {
             let _ = fs::remove_file(&tar_gz_path).await;
             return api_reply::<()>(Err(SkociError::internal(
-                format!("Gagal menulis file upload: {e}"),
-                "Periksa disk server",
+                format!("Failed to write upload file: {e}"),
+                "Check server disk space",
             )));
         }
     }
@@ -112,8 +112,8 @@ pub async fn handle_deploy(
     if let Err(e) = file.flush().await {
         let _ = fs::remove_file(&tar_gz_path).await;
         return api_reply::<()>(Err(SkociError::internal(
-            format!("Gagal flush file upload: {e}"),
-            "Periksa disk server",
+            format!("Failed to flush upload file: {e}"),
+            "Check server disk space",
         )));
     }
 
@@ -150,7 +150,7 @@ pub async fn handle_deploy(
         events_url: format!("/api/deployments/{deployment_id}/events"),
     };
 
-    api_accepted(accepted, "Deployment diterima dan antre untuk diproses")
+    api_accepted(accepted, "Deployment accepted and queued for processing")
 }
 
 pub async fn handle_list_deployments(
@@ -197,8 +197,8 @@ pub async fn handle_get_deployment(
             api_reply(Ok(rec.to_info()))
         }
         Ok(None) => api_reply::<()>(Err(SkociError::not_found(
-            format!("Deployment '{id}' tidak ditemukan"),
-            "Periksa ID deployment",
+            format!("Deployment '{id}' not found"),
+            "Check deployment ID",
         ))),
         Err(e) => api_reply::<()>(Err(e)),
     }
@@ -295,7 +295,7 @@ pub async fn handle_get_deployment_events(
                 ts: rec.finished_at.unwrap_or(rec.created_at),
                 stage: DeployStage::Done,
                 status,
-                message: format!("Deployment {} selesai ({})", rec.id, rec.status),
+                message: format!("Deployment {} completed ({})", rec.id, rec.status),
                 progress: 100,
                 result,
                 error,
@@ -308,8 +308,8 @@ pub async fn handle_get_deployment_events(
             Sse::new(stream).into_response()
         }
         Ok(None) => api_reply::<()>(Err(SkociError::not_found(
-            format!("Deployment '{id}' tidak ditemukan"),
-            "Periksa ID deployment",
+            format!("Deployment '{id}' not found"),
+            "Check deployment ID",
         ))),
         Err(e) => api_reply::<()>(Err(e)),
     }

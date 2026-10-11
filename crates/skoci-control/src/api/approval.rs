@@ -46,8 +46,8 @@ pub async fn handle_approve(
         Ok(Some(a)) => a,
         Ok(None) => {
             return api_reply::<()>(Err(SkociError::not_found(
-                format!("Persetujuan '{}' tidak ditemukan", body.request_id),
-                "Periksa ID persetujuan",
+                format!("Approval request '{}' not found", body.request_id),
+                "Check approval ID",
             )));
         }
         Err(e) => return api_reply::<()>(Err(e)),
@@ -56,10 +56,10 @@ pub async fn handle_approve(
     if approval.status != "pending" {
         return api_reply::<()>(Err(SkociError::bad_request(
             format!(
-                "Persetujuan '{}' sudah diproses dengan status '{}'",
+                "Approval request '{}' has already been processed with status '{}'",
                 body.request_id, approval.status
             ),
-            "Pilih persetujuan yang masih berstatus pending",
+            "Choose an approval request that is still pending",
         )));
     }
 
@@ -80,8 +80,8 @@ pub async fn handle_approve(
                     Some(&subject.identifier()),
                 );
                 return api_reply::<()>(Err(SkociError::bad_request(
-                    "Payload persetujuan promosi tidak memiliki versi yang valid",
-                    "Buat permintaan promosi baru",
+                    "Promotion approval payload does not have a valid version",
+                    "Create a new promotion request",
                 )));
             }
 
@@ -121,7 +121,7 @@ pub async fn handle_approve(
                 "admin",
                 "approve_promote",
                 &format!("{}/production", approval.app),
-                &format!("Persetujuan {} disetujui", body.request_id),
+                &format!("Approval {} approved", body.request_id),
             );
 
             let accepted = DeployAccepted {
@@ -137,7 +137,7 @@ pub async fn handle_approve(
                 approved: true,
                 action: "promote".to_string(),
                 deployment: Some(accepted),
-                detail: format!("Promosi versi {version} disetujui dan proses deployment dimulai"),
+                detail: format!("Promotion of version {version} approved; deployment started"),
             }))
         }
         "db_restore" => {
@@ -172,7 +172,7 @@ pub async fn handle_approve(
                         "admin",
                         "approve_db_restore",
                         &format!("{}/{}", approval.app, service),
-                        &format!("Restore backup {} disetujui dan berhasil", backup_id),
+                        &format!("Backup restore {} approved and succeeded", backup_id),
                     );
 
                     api_reply(Ok(ApproveResponse {
@@ -180,7 +180,7 @@ pub async fn handle_approve(
                         approved: true,
                         action: "db_restore".to_string(),
                         deployment: None,
-                        detail: format!("Restore backup '{backup_id}' berhasil dilakukan"),
+                        detail: format!("Backup restore '{backup_id}' completed successfully"),
                     }))
                 }
                 Err(e) => {
@@ -195,7 +195,7 @@ pub async fn handle_approve(
                         "admin",
                         "approve_db_restore_failed",
                         &format!("{}/{}", approval.app, service),
-                        &format!("Restore gagal: {}", e.message),
+                        &format!("Restore failed: {}", e.message),
                     );
 
                     api_reply::<()>(Err(e))
@@ -216,7 +216,7 @@ pub async fn handle_approve(
                         "admin",
                         "approve_app_delete",
                         &approval.app,
-                        &format!("Persetujuan hapus aplikasi {} dijalankan", approval.app),
+                        &format!("App deletion approval for {} executed", approval.app),
                     );
 
                     api_reply(Ok(ApproveResponse {
@@ -224,7 +224,7 @@ pub async fn handle_approve(
                         approved: true,
                         action: "app_delete".to_string(),
                         deployment: None,
-                        detail: format!("Aplikasi '{}' berhasil dihapus", approval.app),
+                        detail: format!("App '{}' successfully deleted", approval.app),
                     }))
                 }
                 Err(e) => {
@@ -245,8 +245,8 @@ pub async fn handle_approve(
                 Some(&subject.identifier()),
             );
             api_reply::<()>(Err(SkociError::bad_request(
-                format!("Aksi persetujuan '{unknown}' tidak dikenali"),
-                "Aksi tidak didukung",
+                format!("Approval action '{unknown}' not recognized"),
+                "Action not supported",
             )))
         }
     }
@@ -265,8 +265,8 @@ pub async fn handle_reject(
         Ok(Some(a)) => a,
         Ok(None) => {
             return api_reply::<()>(Err(SkociError::not_found(
-                format!("Persetujuan '{}' tidak ditemukan", body.request_id),
-                "Periksa ID persetujuan",
+                format!("Approval request '{}' not found", body.request_id),
+                "Check approval ID",
             )));
         }
         Err(e) => return api_reply::<()>(Err(e)),
@@ -275,10 +275,10 @@ pub async fn handle_reject(
     if approval.status != "pending" {
         return api_reply::<()>(Err(SkociError::bad_request(
             format!(
-                "Persetujuan '{}' sudah diproses dengan status '{}'",
+                "Approval request '{}' has already been processed with status '{}'",
                 body.request_id, approval.status
             ),
-            "Pilih persetujuan yang masih berstatus pending",
+            "Choose an approval request that is still pending",
         )));
     }
 
@@ -292,14 +292,14 @@ pub async fn handle_reject(
 
     let note_text = body
         .note
-        .unwrap_or_else(|| "Ditolak oleh administrator".to_string());
+        .unwrap_or_else(|| "Rejected by administrator".to_string());
 
     let _ = state.db.record_audit(
         &subject.identifier(),
         "admin",
         "reject_approval",
         &format!("{}/{}", approval.app, body.request_id),
-        &format!("Alasan: {note_text}"),
+        &format!("Reason: {note_text}"),
     );
 
     api_reply(Ok(ApproveResponse {
@@ -307,6 +307,6 @@ pub async fn handle_reject(
         approved: false,
         action: approval.action,
         deployment: None,
-        detail: format!("Permintaan ditolak: {note_text}"),
+        detail: format!("Request rejected: {note_text}"),
     }))
 }

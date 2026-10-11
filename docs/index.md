@@ -1,80 +1,80 @@
-# Skoci — Dokumentasi Resmi
+# Skoci — Documentation
 
-> Platform deployment self-hosted yang sangat ringan (<20 MB RAM), aman sejak desain, dan dirancang khusus untuk agen coding AI sebagai operator utama dengan dashboard validasi untuk manusia.
-
----
-
-## 4 Keunikan Utama
-
-1. **Sangat Ringan (<20 MB Idle RAM Target):**
-   Satu binary Rust murni menyatukan control plane, embedded reverse proxy (port 80 dan 443), SQLite database, dan dashboard. Menghemat 95% RAM dibandingkan Coolify (~800 MB) dan Dokploy (~600 MB), sehingga VPS hemat $4/bulan atau Raspberry Pi tetap lega untuk aplikasi pengguna.
-
-2. **Agen AI Sebagai Operator Utama:**
-   CLI dan MCP (Model Context Protocol) dibuat dari satu sumber kebenaran API (`skoci-api`) dengan paritas 100%. Setiap output terstruktur JSON (`--json`), error menyertakan solusi perbaikan `{code, message, fix}`, dan skill bawaan tersedia untuk berbagai harness (OMP, Claude Code, Pi, Codex, OpenClaw).
-
-3. **Dashboard untuk Validasi, Bukan Konfigurasi:**
-   Semua konfigurasi aplikasi tinggal di repositori Git (`skoci.yaml`). Dashboard berfungsi sebagai Mission Control manusia: melihat status kesehatan kontainer, memeriksa bukti deploy (`skoci.evidence.json`), memberikan persetujuan promosi production, dan rollback 1-klik.
-
-4. **Aman Sejak Desain:**
-   - **Zero Shell Concatenation:** Docker dipanggil lewat argumen terstruktur (`tokio::process::Command`), kebal terhadap prompt injection.
-   - **Zero SSH untuk Agen:** Agen hanya berkomunikasi melalui HTTPS REST API dan token scoped per aplikasi (`sk_agent_<app>_*`).
-   - **Enkripsi Secret:** Secret dienkripsi saat tersimpan di node (ChaCha20-Poly1305), disamarkan di log, dan tidak pernah dikembalikan ke prompt LLM.
-   - **Server-Side Build:** Laptop Anda tidak membutuhkan Docker; kompilasi image dilakukan sepenuhnya oleh server VPS.
+> Ultra-lightweight (<20 MB RAM), secure-by-design self-hosted deployment platform built for AI coding agents as primary operators with human validation dashboards.
 
 ---
 
-## Tabel Perbandingan Platform
+## 4 Core Differentiators
 
-| Fitur | Coolify | Dokploy | Kamal | **Skoci** |
+1. **Ultra-Lightweight (<20 MB Idle RAM Target):**
+   A single pure Rust binary unifies the control plane, embedded reverse proxy (ports 80 and 443), SQLite database, and dashboard. It saves 95% RAM compared to Coolify (~800 MB) and Dokploy (~600 MB), leaving low-cost $4/month VPS or Raspberry Pi resources free for your applications.
+
+2. **AI Agents as Primary Operators:**
+   The CLI and MCP (Model Context Protocol) share a single API source of truth (`skoci-api`) with 100% parity. Every output supports structured JSON (`--json`), errors include actionable remediation `{code, message, fix}`, and built-in skills are provided for various harnesses (OMP, Claude Code, Pi, Codex, OpenClaw).
+
+3. **Dashboard for Validation, Not Configuration:**
+   All application configurations live in your Git repository (`skoci.yaml`). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions, and trigger 1-click rollbacks.
+
+4. **Secure by Design:**
+   - **Zero Shell Concatenation:** Docker commands use structured argument vectors (`tokio::process::Command`), immune to prompt injection.
+   - **Zero SSH for Agents:** Agents communicate exclusively over HTTPS REST API using scoped per-app tokens (`sk_agent_<app>_*`).
+   - **Secret Encryption:** Secrets are encrypted at rest on the node (ChaCha20-Poly1305), masked in logs, and never returned to LLM context.
+   - **Server-Side Build:** Your local machine does not need Docker; container compilation runs entirely on the remote server.
+
+---
+
+## Platform Comparison
+
+| Feature | Coolify | Dokploy | Kamal | **Skoci** |
 | :--- | :--- | :--- | :--- | :--- |
-| **Arsitektur Binary** | Monolith PHP/Laravel (~800 MB RAM) | Monorepo Node/Next.js (~600 MB RAM) | Ruby Gem CLI (stateless) | **1 Binary Rust murni (<20 MB RAM)** |
-| **Reverse Proxy** | Traefik container terpisah | Traefik container terpisah | `kamal-proxy` Go container | **Embedded Hyper/Tokio pada port 80 & 443** |
-| **Database Internal** | PostgreSQL + Redis container | PostgreSQL container | Tidak ada | **SQLite tertanam (zero extra daemon)** |
-| **Akses Server** | Port SSH root / web login | Port SSH root / web login | **Wajib Root SSH Keys** | **Zero SSH: Scoped HTTPS Token per App** |
-| **Operator AI Agent** | MCP addon read-only | CLI terpisah (~8% API) | Tidak ada | **Native CLI & MCP (100% Parity)** |
-| **Format Error** | Log error mentah | Exception stack trace | Log error | **`{code, message, fix}` terstruktur** |
-| **Peran Dashboard** | Konfigurasi 100+ form input | Konfigurasi form input | Tidak ada | **Validasi, Evidence, & Approval** |
-| **Dukungan Raspberry Pi** | Berat / sering OOM di Pi 4 2GB | Berat di 2GB | Ringan (tapi butuh SSH) | **Sangat Ringan (<20MB, native ARM64)** |
+| **Binary Architecture** | PHP/Laravel monolith (~800 MB RAM) | Node/Next.js monorepo (~600 MB RAM) | Ruby Gem CLI (stateless) | **Single pure Rust binary (<20 MB RAM)** |
+| **Reverse Proxy** | Separate Traefik container | Separate Traefik container | `kamal-proxy` Go container | **Embedded Hyper/Tokio on ports 80 & 443** |
+| **Internal Database** | PostgreSQL + Redis containers | PostgreSQL container | None | **Embedded SQLite (zero extra daemons)** |
+| **Server Access** | Root SSH / web login | Root SSH / web login | **Requires Root SSH Keys** | **Zero SSH: Scoped HTTPS Token per App** |
+| **AI Agent Operator** | Read-only MCP addon | Separate CLI (~8% API) | None | **Native CLI & MCP (100% Parity)** |
+| **Error Format** | Raw log dumps | Exception stack traces | Raw log output | **Structured `{code, message, fix}`** |
+| **Dashboard Role** | 100+ input forms configuration | Input form configuration | None | **Validation, Evidence, & Approvals** |
+| **Raspberry Pi Support** | Heavy / frequent OOM on Pi 4 2GB | Heavy on 2GB | Lightweight (requires SSH) | **Ultra-lightweight (<20 MB, native ARM64)** |
 
 ---
 
-## Memulai Cepat (Quickstart 3 Menit)
+## Quickstart (3 Minutes)
 
-### 1. Pasang Skoci di Server VPS / Raspberry Pi 64-bit
-Jalankan di server:
+### 1. Install Skoci on VPS / 64-bit Raspberry Pi
+Run on your server:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
-Pastikan port **80** dan **443** terbuka pada firewall penyedia VPS Anda.
+Ensure ports **80** and **443** are open in your VPS provider firewall.
 
-### 2. Buat Token Aplikasi di Server
-Di server VPS, buat token khusus untuk aplikasi Anda:
+### 2. Create Application Token on Server
+On the server, create a scoped token for your application:
 ```bash
 skoci token create --app toko --name laptop
 ```
 
-### 3. Hubungkan Laptop ke Server
-Di laptop atau mesin lokal pengembang Anda:
+### 3. Connect Laptop to Server
+On your local developer workstation:
 ```bash
 skoci connect --server https://skoci.<base-domain> --token sk_agent_toko_xxxx
 ```
 
-### 4. Deploy dari Repositori Proyek
-Masuk ke direktori repositori aplikasi Anda:
+### 4. Deploy from Project Repository
+Navigate to your application repository directory:
 ```bash
 cd ~/projects/toko
 skoci init
 skoci deploy --env preview
 ```
 
-Aplikasi Anda langsung aktif di `https://toko-preview.<base-domain>`.
+Your application is immediately live at `https://toko-preview.<base-domain>`.
 
 ---
 
-## Navigasi Dokumentasi
+## Documentation Index
 
-* [Persyaratan Server & Instalasi](installation.md)
-* [Deploy Aplikasi Pertama](deploy-first-app.md)
-* [Deploy Database & Backup](deploy-first-database.md)
-* [Integrasi AI Agent (MCP & Skill)](agent-native.md)
-* [Arsitektur Keamanan & Scoped Token](security.md)
+* [Server Requirements & Installation](installation.md)
+* [Deploy Your First App](deploy-first-app.md)
+* [Deploy Databases & Backups](deploy-first-database.md)
+* [AI Agent Integration (MCP & Skills)](agent-native.md)
+* [Security Architecture & Scoped Tokens](security.md)

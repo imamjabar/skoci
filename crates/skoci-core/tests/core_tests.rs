@@ -1,9 +1,8 @@
-use skoci_api::models::{ActionPermission, DatabaseEngine, SkociPolicy};
+use skoci_api::models::DatabaseEngine;
 use skoci_core::config::{
     is_safe_relative_path, is_valid_app_name, is_valid_env_key, is_valid_hostname, ConfigLoader,
 };
 use skoci_core::detector::{Framework, ProjectDetector};
-use skoci_core::policy::{Action, Decision, PolicyEvaluator};
 
 struct TestDir(std::path::PathBuf);
 
@@ -172,7 +171,7 @@ fn test_validation_rejects_underscore_app_names() {
     let yaml = "version: 1\napp: belajar_paper\nrun:\n  port: 8080\n";
     let err = ConfigLoader::parse_config(yaml).unwrap_err();
     assert_eq!(err.code, "config_invalid");
-    assert!(err.message.contains("garis bawah"));
+    assert!(err.message.contains("underscore"));
     assert!(err.fix.contains("belajar-paper"));
 }
 
@@ -213,77 +212,6 @@ fn test_validation_rejects_skoci_public_key() {
     let err = ConfigLoader::parse_config(yaml).unwrap_err();
     assert_eq!(err.code, "config_invalid");
     assert!(err.message.contains("SKOCI_"));
-}
-
-#[test]
-fn test_policy_evaluator_decisions() {
-    let policy = SkociPolicy::default();
-
-    // Human on preview: Allow unless Deny
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "preview", Action::Deploy, true),
-        Decision::Allow
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "preview", Action::DbRestore, true),
-        Decision::Allow
-    );
-
-    // Agent on preview: Auto -> Allow, Approve -> NeedsApproval
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "preview", Action::Deploy, false),
-        Decision::Allow
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "preview", Action::Rollback, false),
-        Decision::Allow
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "preview", Action::DbRestore, false),
-        Decision::NeedsApproval
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "preview", Action::Delete, false),
-        Decision::NeedsApproval
-    );
-
-    // Agent on production: deploy requires approval
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "production", Action::Deploy, false),
-        Decision::NeedsApproval
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "production", Action::Rollback, false),
-        Decision::Allow
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "production", Action::DbRestore, false),
-        Decision::NeedsApproval
-    );
-
-    // Human on production: deploy is allowed
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "production", Action::Deploy, true),
-        Decision::Allow
-    );
-
-    // Unknown env falls back to production policy
-    assert_eq!(
-        PolicyEvaluator::evaluate(&policy, "staging", Action::Deploy, false),
-        Decision::NeedsApproval
-    );
-
-    // Deny permission for human and agent
-    let mut custom_policy = policy.clone();
-    custom_policy.production.delete = ActionPermission::Deny;
-    assert_eq!(
-        PolicyEvaluator::evaluate(&custom_policy, "production", Action::Delete, true),
-        Decision::Deny
-    );
-    assert_eq!(
-        PolicyEvaluator::evaluate(&custom_policy, "production", Action::Delete, false),
-        Decision::Deny
-    );
 }
 
 #[test]

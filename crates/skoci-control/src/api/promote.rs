@@ -28,8 +28,8 @@ pub async fn handle_promote(
                 Ok(Some(r)) => r,
                 Ok(None) => {
                     return api_reply::<()>(Err(SkociError::bad_request(
-                        "Tidak ada versi preview yang sedang aktif untuk dipromosikan",
-                        "Jalankan deploy preview terlebih dahulu",
+                        "No active preview version to promote",
+                        "Deploy to preview first",
                     )));
                 }
                 Err(e) => return api_reply::<()>(Err(e)),
@@ -43,8 +43,8 @@ pub async fn handle_promote(
         Ok(true) => {}
         Ok(false) => {
             return api_reply::<()>(Err(SkociError::bad_request(
-                format!("Docker image '{image_tag}' tidak ditemukan"),
-                "Deploy versi ini terlebih dahulu sebelum dipromosikan",
+                format!("Docker image '{image_tag}' not found"),
+                "Deploy this version before promoting",
             )));
         }
         Err(e) => return api_reply::<()>(Err(e)),
@@ -57,7 +57,7 @@ pub async fn handle_promote(
             id: approval_id.clone(),
             app: body.app.clone(),
             action: "promote".to_string(),
-            detail: format!("Promosikan versi {version} ke production"),
+            detail: format!("Promote version {version} to production"),
             reason: body.reason,
             status: "pending".to_string(),
             requested_by: subject.identifier(),
@@ -78,7 +78,7 @@ pub async fn handle_promote(
             "agent",
             "promote_request",
             &format!("{}/production", body.app),
-            &format!("Persetujuan {approval_id} dibuat untuk versi {version}"),
+            &format!("Approval request {approval_id} created for version {version}"),
         );
 
         return api_reply(Ok(PromoteResponse {

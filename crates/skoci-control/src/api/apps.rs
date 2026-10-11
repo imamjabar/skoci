@@ -107,8 +107,8 @@ pub async fn handle_delete_app(
             id: approval_id.clone(),
             app: app.clone(),
             action: "app_delete".to_string(),
-            detail: format!("Hapus aplikasi {app}"),
-            reason: "Permintaan hapus aplikasi oleh agent".to_string(),
+            detail: format!("Delete app {app}"),
+            reason: "App deletion requested by agent".to_string(),
             status: "pending".to_string(),
             requested_by: subject.identifier(),
             decided_by: None,
@@ -125,7 +125,7 @@ pub async fn handle_delete_app(
             "agent",
             "app_delete_request",
             &app,
-            &format!("Persetujuan {approval_id} dibuat"),
+            &format!("Approval request {approval_id} created"),
         );
 
         return api_reply(Ok(AppDeleteResponse {
@@ -147,7 +147,7 @@ pub async fn handle_delete_app(
         "admin",
         "app_delete",
         &app,
-        &format!("Aplikasi {app} dihapus"),
+        &format!("App {app} deleted"),
     );
 
     api_reply(Ok(AppDeleteResponse {
@@ -161,8 +161,8 @@ pub async fn handle_delete_app(
 pub async fn delete_app_resources(state: &AppState, app: &str) -> SkociResult<Vec<String>> {
     if let Some(running) = state.jobs.get_running_deployment(app) {
         return Err(skoci_api::error::SkociError::conflict(
-            format!("Deployment {running} untuk '{app}' masih berjalan"),
-            format!("Tunggu sampai selesai ('skoci watch {running}'), lalu hapus lagi"),
+            format!("Deployment {running} for '{app}' is still running"),
+            format!("Wait until finished ('skoci watch {running}'), then delete again"),
         ));
     }
 

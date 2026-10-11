@@ -990,12 +990,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range-header"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1346,16 +1340,6 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
-
-[[package]]
-name = "mime_guess"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
-dependencies = [
- "mime",
- "unicase",
-]
 
 [[package]]
 name = "minimal-lexical"
@@ -1787,7 +1771,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http 0.6.11",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -2067,58 +2051,44 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skoci"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
- "parking_lot",
- "skoci-api",
  "skoci-cli",
- "skoci-client",
  "skoci-control",
- "skoci-core",
  "skoci-mcp",
- "skoci-node",
- "skoci-proxy",
  "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "skoci-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 1.0.69",
- "uuid",
 ]
 
 [[package]]
 name = "skoci-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "anyhow",
- "chrono",
  "clap",
  "futures-util",
  "serde",
  "serde_json",
- "serde_yaml",
  "skoci-api",
  "skoci-client",
  "skoci-core",
- "thiserror 1.0.69",
  "tokio",
- "tracing",
 ]
 
 [[package]]
 name = "skoci-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "futures-util",
@@ -2128,7 +2098,6 @@ dependencies = [
  "serde_json",
  "skoci-api",
  "tar",
- "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "uuid",
@@ -2136,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-control"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2155,32 +2124,25 @@ dependencies = [
  "skoci-core",
  "skoci-node",
  "skoci-proxy",
- "thiserror 1.0.69",
  "tokio",
- "tokio-util",
  "tower",
- "tower-http 0.5.2",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "skoci-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "chrono",
- "serde",
  "serde_json",
  "serde_yaml",
  "skoci-api",
- "thiserror 1.0.69",
- "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "skoci-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2189,14 +2151,12 @@ dependencies = [
  "skoci-api",
  "skoci-cli",
  "skoci-client",
- "thiserror 1.0.69",
  "tokio",
- "tracing",
 ]
 
 [[package]]
 name = "skoci-node"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chacha20poly1305",
  "chrono",
@@ -2212,10 +2172,8 @@ dependencies = [
 
 [[package]]
 name = "skoci-proxy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
- "anyhow",
- "chrono",
  "futures-util",
  "http-body-util",
  "hyper",
@@ -2224,13 +2182,9 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-acme",
- "serde",
- "serde_json",
  "skoci-api",
- "thiserror 1.0.69",
  "tokio",
  "tokio-rustls",
- "tower",
  "tracing",
 ]
 
@@ -2525,31 +2479,6 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "http-range-header",
- "httpdate",
- "mime",
- "mime_guess",
- "percent-encoding",
- "pin-project-lite",
- "tokio",
- "tokio-util",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
@@ -2651,12 +2580,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "unicase"
-version = "2.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-ident"

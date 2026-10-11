@@ -17,7 +17,7 @@ fn wrap_api_response<T: Serialize>(res: SkociResult<ApiResponse<T>>) -> McpToolC
         Ok(api_resp) => {
             let is_error = !api_resp.success;
             let text = serde_json::to_string_pretty(&api_resp)
-                .unwrap_or_else(|e| format!("Gagal memformat JSON: {e}"));
+                .unwrap_or_else(|e| format!("Failed to format JSON: {e}"));
             McpToolCallResult {
                 content: vec![McpContent {
                     content_type: "text".to_string(),
@@ -29,7 +29,7 @@ fn wrap_api_response<T: Serialize>(res: SkociResult<ApiResponse<T>>) -> McpToolC
         Err(err) => {
             let api_err = ApiResponse::<()>::err(err);
             let text = serde_json::to_string_pretty(&api_err)
-                .unwrap_or_else(|e| format!("Gagal memformat JSON: {e}"));
+                .unwrap_or_else(|e| format!("Failed to format JSON: {e}"));
             McpToolCallResult {
                 content: vec![McpContent {
                     content_type: "text".to_string(),
@@ -49,128 +49,128 @@ pub fn list_tools() -> Vec<McpTool> {
     vec![
         McpTool {
             name: "skoci_init".to_string(),
-            description: "Deteksi framework proyek dan buat skoci.yaml, Dockerfile, serta .dockerignore".to_string(),
+            description: "Detect project framework and generate skoci.yaml, Dockerfile, and .dockerignore".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Direktori proyek (default: .)" },
-                    "app": { "type": "string", "description": "Nama aplikasi opsional" }
+                    "path": { "type": "string", "description": "Project directory (default: .)" },
+                    "app": { "type": "string", "description": "Optional application name" }
                 }
             }),
         },
         McpTool {
             name: "skoci_deploy".to_string(),
-            description: "Deploy proyek ke server Skoci (pack, upload, dan pantau event sampai selesai)".to_string(),
+            description: "Deploy project to Skoci server (pack, upload, and stream events until complete)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Direktori proyek (default: .)" },
-                    "env": { "type": "string", "description": "Target environment (preview atau production, default: preview)" }
+                    "path": { "type": "string", "description": "Project directory (default: .)" },
+                    "env": { "type": "string", "description": "Target environment (preview or production, default: preview)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_watch".to_string(),
-            description: "Pantau deployment yang sedang berjalan hingga selesai dan kembalikan status akhir".to_string(),
+            description: "Watch a running deployment until completion and return final status".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "deployment_id": { "type": "string", "description": "ID deployment yang dipantau" }
+                    "deployment_id": { "type": "string", "description": "Deployment ID to watch" }
                 },
                 "required": ["deployment_id"]
             }),
         },
         McpTool {
             name: "skoci_status".to_string(),
-            description: "Periksa status kontainer, kesehatan live, dan URL aplikasi".to_string(),
+            description: "Check container status, live health, and application URLs".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_logs".to_string(),
-            description: "Lihat log aplikasi terbaru beserta ringkasan baris error".to_string(),
+            description: "View recent application logs with error line summary".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "env": { "type": "string", "description": "Environment aplikasi (opsional)" },
-                    "tail": { "type": "number", "description": "Jumlah baris log terbaru (default: 100)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "env": { "type": "string", "description": "Application environment (optional)" },
+                    "tail": { "type": "number", "description": "Number of recent log lines (default: 100)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_deployments".to_string(),
-            description: "Daftar riwayat deployment aplikasi".to_string(),
+            description: "List application deployment history".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi opsional" },
-                    "limit": { "type": "number", "description": "Batas jumlah riwayat (default: 20)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Optional application name" },
+                    "limit": { "type": "number", "description": "Maximum history entries (default: 20)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_secret_set".to_string(),
-            description: "Simpan secret terenkripsi untuk aplikasi".to_string(),
+            description: "Set encrypted secret for application".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "key": { "type": "string", "description": "Nama kunci secret (huruf besar dan underscore)" },
-                    "value": { "type": "string", "description": "Nilai secret" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "key": { "type": "string", "description": "Secret key name (uppercase and underscores)" },
+                    "value": { "type": "string", "description": "Secret value" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 },
                 "required": ["key", "value"]
             }),
         },
         McpTool {
             name: "skoci_secret_list".to_string(),
-            description: "Daftar nama kunci secret aplikasi (nilai tetap terenkripsi dan dirahasiakan)".to_string(),
+            description: "List application secret key names (values remain encrypted and hidden)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_promote".to_string(),
-            description: "Ajukan promosi versi preview ke production (memerlukan persetujuan admin jika dipanggil oleh agent)".to_string(),
+            description: "Submit promotion from preview to production (requires admin approval when called by agent)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "reason": { "type": "string", "description": "Alasan promosi" },
-                    "version": { "type": "string", "description": "Versi yang akan dipromosikan (opsional)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "reason": { "type": "string", "description": "Promotion reason" },
+                    "version": { "type": "string", "description": "Version to promote (optional)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 },
                 "required": ["reason"]
             }),
         },
         McpTool {
             name: "skoci_rollback".to_string(),
-            description: "Rollback aplikasi ke versi sehat sebelumnya".to_string(),
+            description: "Roll back application to a previous healthy version".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
                     "env": { "type": "string", "description": "Target environment (default: preview)" },
-                    "target_version": { "type": "string", "description": "Versi target rollback opsional" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "target_version": { "type": "string", "description": "Optional target rollback version" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_approvals".to_string(),
-            description: "Lihat daftar permintaan persetujuan yang menunggu tindakan admin".to_string(),
+            description: "List pending approval requests waiting for admin action".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -178,7 +178,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "skoci_doctor".to_string(),
-            description: "Periksa kesehatan server Skoci, daemon Docker, RAM, dan status proxy".to_string(),
+            description: "Check health of Skoci server, Docker daemon, RAM, and proxy status".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -186,37 +186,37 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "skoci_db_backup".to_string(),
-            description: "Buat backup database aplikasi secara aman".to_string(),
+            description: "Create secure application database backup".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "service": { "type": "string", "description": "Nama service database (default: db)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "service": { "type": "string", "description": "Database service name (default: db)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_db_list".to_string(),
-            description: "Daftar riwayat backup database untuk aplikasi".to_string(),
+            description: "List database backup history for application".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 }
             }),
         },
         McpTool {
             name: "skoci_db_restore".to_string(),
-            description: "Ajukan restore database dari file backup (memerlukan persetujuan admin jika dipanggil oleh agent)".to_string(),
+            description: "Submit database restore from backup file (requires admin approval when called by agent)".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "app": { "type": "string", "description": "Nama aplikasi (opsional jika skoci.yaml ada)" },
-                    "backup_id": { "type": "string", "description": "ID backup database" },
-                    "service": { "type": "string", "description": "Nama service database (default: db)" },
-                    "path": { "type": "string", "description": "Direktori tempat skoci.yaml berada (default: .)" }
+                    "app": { "type": "string", "description": "Application name (optional if skoci.yaml exists)" },
+                    "backup_id": { "type": "string", "description": "Database backup ID" },
+                    "service": { "type": "string", "description": "Database service name (default: db)" },
+                    "path": { "type": "string", "description": "Directory containing skoci.yaml (default: .)" }
                 },
                 "required": ["backup_id"]
             }),
@@ -239,7 +239,7 @@ pub async fn call_tool(
         "skoci_init" => {
             let app = args.get("app").and_then(|v| v.as_str());
             let res = skoci_cli::init_project(&default_path, app).map(|(r, _)| r);
-            wrap_api_response(res.map(|r| ApiResponse::ok(r, "Proyek berhasil diinisialisasi")))
+            wrap_api_response(res.map(|r| ApiResponse::ok(r, "Project successfully initialized")))
         }
 
         "skoci_deploy" => {
@@ -287,8 +287,8 @@ pub async fn call_tool(
                         Some(d) => d,
                         None => {
                             return wrap_api_response::<()>(Err(SkociError::internal(
-                                "Respons kosong dari server",
-                                "Coba deploy kembali",
+                                "Empty response from server",
+                                "Try deploying again",
                             )))
                         }
                     }
@@ -327,17 +327,17 @@ pub async fn call_tool(
             }
 
             if let Some(resp) = final_response {
-                wrap_api_response(Ok(ApiResponse::ok(resp, "Deployment berhasil")))
+                wrap_api_response(Ok(ApiResponse::ok(resp, "Deployment successful")))
             } else if let Some(mut err) = final_error {
                 if !log_lines.is_empty() {
                     let tail_logs = log_lines.iter().rev().take(30).rev().cloned().collect::<Vec<_>>().join("\n");
-                    err.message = format!("{}\n\nLog build/kontainer terakhir:\n{}", err.message, tail_logs);
+                    err.message = format!("{}\n\nRecent build/container logs:\n{}", err.message, tail_logs);
                 }
                 wrap_api_response::<DeployResponse>(Err(err))
             } else {
                 wrap_api_response::<DeployResponse>(Err(SkociError::internal(
-                    "Event stream terputus tanpa data status akhir",
-                    format!("Gunakan tool skoci_watch dengan deployment_id '{}'", accepted.deployment_id),
+                    "Event stream disconnected without final status data",
+                    format!("Use skoci_watch tool with deployment_id '{}'", accepted.deployment_id),
                 )))
             }
         }
@@ -347,8 +347,8 @@ pub async fn call_tool(
                 Some(id) => id,
                 None => {
                     return wrap_api_response::<()>(Err(SkociError::bad_request(
-                        "Parameter 'deployment_id' wajib diisi",
-                        "Berikan deployment_id yang ingin dipantau",
+                        "Parameter 'deployment_id' is required",
+                        "Provide deployment_id to watch",
                     )))
                 }
             };
@@ -384,17 +384,17 @@ pub async fn call_tool(
             }
 
             if let Some(resp) = final_response {
-                wrap_api_response(Ok(ApiResponse::ok(resp, "Deployment berhasil")))
+                wrap_api_response(Ok(ApiResponse::ok(resp, "Deployment successful")))
             } else if let Some(mut err) = final_error {
                 if !log_lines.is_empty() {
                     let tail_logs = log_lines.iter().rev().take(30).rev().cloned().collect::<Vec<_>>().join("\n");
-                    err.message = format!("{}\n\nLog build/kontainer terakhir:\n{}", err.message, tail_logs);
+                    err.message = format!("{}\n\nRecent build/container logs:\n{}", err.message, tail_logs);
                 }
                 wrap_api_response::<DeployResponse>(Err(err))
             } else {
                 wrap_api_response::<DeployResponse>(Err(SkociError::internal(
-                    "Event stream terputus tanpa status akhir",
-                    format!("Gunakan tool skoci_watch kembali dengan deployment_id '{}'", dep_id),
+                    "Event stream disconnected without final status",
+                    format!("Use skoci_watch tool again with deployment_id '{}'", dep_id),
                 )))
             }
         }
@@ -432,8 +432,8 @@ pub async fn call_tool(
                 Some(k) => k.to_string(),
                 None => {
                     return wrap_api_response::<()>(Err(SkociError::bad_request(
-                        "Parameter 'key' wajib diisi",
-                        "Tentukan nama kunci secret",
+                        "Parameter 'key' is required",
+                        "Specify secret key name",
                     )))
                 }
             };
@@ -441,8 +441,8 @@ pub async fn call_tool(
                 Some(v) => v.to_string(),
                 None => {
                     return wrap_api_response::<()>(Err(SkociError::bad_request(
-                        "Parameter 'value' wajib diisi",
-                        "Tentukan nilai secret",
+                        "Parameter 'value' is required",
+                        "Specify secret value",
                     )))
                 }
             };
@@ -466,8 +466,8 @@ pub async fn call_tool(
                 Some(r) => r.to_string(),
                 None => {
                     return wrap_api_response::<()>(Err(SkociError::bad_request(
-                        "Parameter 'reason' wajib diisi",
-                        "Jelaskan alasan promosi ke production",
+                        "Parameter 'reason' is required",
+                        "Explain reason for production promotion",
                     )))
                 }
             };
@@ -519,8 +519,8 @@ pub async fn call_tool(
                 Some(b) => b.to_string(),
                 None => {
                     return wrap_api_response::<()>(Err(SkociError::bad_request(
-                        "Parameter 'backup_id' wajib diisi",
-                        "Tentukan ID backup yang ingin direstore",
+                        "Parameter 'backup_id' is required",
+                        "Specify backup ID to restore",
                     )))
                 }
             };
@@ -531,7 +531,7 @@ pub async fn call_tool(
         _ => McpToolCallResult {
             content: vec![McpContent {
                 content_type: "text".to_string(),
-                text: format!("Tool '{name}' tidak ditemukan"),
+                text: format!("Tool '{name}' not found"),
             }],
             is_error: Some(true),
         },
@@ -569,6 +569,6 @@ mod tests {
         let client = SkociClient::new("http://localhost:8787", None);
         let res = call_tool(&client, "unknown_tool", json!({})).await;
         assert_eq!(res.is_error, Some(true));
-        assert!(res.content[0].text.contains("tidak ditemukan"));
+        assert!(res.content[0].text.contains("not found"));
     }
 }

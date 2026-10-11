@@ -1,119 +1,119 @@
-# Persyaratan Server & Panduan Instalasi Skoci
+# Server Requirements & Installation Guide
 
-Skoci dirancang agar dapat berjalan di perangkat komputasi apa pun yang menjalankan Linux 64-bit dengan konsumsi sumber daya minimal (<20 MB RAM).
+Skoci is engineered to run on any 64-bit Linux system with minimal resource consumption (<20 MB RAM).
 
 ---
 
-## 1. Persyaratan Server
+## 1. Server Requirements
 
-Anda membutuhkan server Linux 64-bit yang memiliki koneksi internet dan akses Docker.
+You need a 64-bit Linux server with internet connectivity and Docker support.
 
 ### A. VPS (Virtual Private Server)
-* **Penyedia yang Teruji:** Sumopod, Hetzner, DigitalOcean, Linode/Akamai, Vultr, AWS Lightsail, OVHcloud, Hostinger, Biznet Gio, IDCloudHost.
-* **Spesifikasi Minimum:** 1 vCPU, 512 MB RAM (Target konsumsi RAM Skoci <20 MB, menyisakan sebagian besar memori untuk aplikasi Anda).
+* **Tested Providers:** Sumopod, Hetzner, DigitalOcean, Linode/Akamai, Vultr, AWS Lightsail, OVHcloud, Hostinger, Biznet Gio, IDCloudHost.
+* **Minimum Specifications:** 1 vCPU, 512 MB RAM (Skoci targets <20 MB idle RAM, leaving virtually all host memory for your applications).
 
 ### B. Dedicated Server / Homelab
-* Server fisik atau PC/laptop bekas dengan instalasi Ubuntu Server, Debian, atau Fedora 64-bit.
+* Physical server or refurbished PC/laptop running Ubuntu Server, Debian, or Fedora 64-bit.
 
-### C. Raspberry Pi (SBC 64-bit)
-* **Perangkat:** Raspberry Pi 4 Model B, Raspberry Pi 5, atau SBC ARM64 setara (Orange Pi 5, Rock 5).
-* **PENTING (OS 64-bit Wajib):** Harus menggunakan sistem operasi 64-bit seperti **Raspberry Pi OS 64-bit (aarch64)** atau **Ubuntu Server 64-bit ARM64**. OS 32-bit (`armv7l`) tidak didukung.
+### C. Raspberry Pi (64-bit SBC)
+* **Hardware:** Raspberry Pi 4 Model B, Raspberry Pi 5, or equivalent ARM64 SBC (Orange Pi 5, Rock 5).
+* **IMPORTANT (64-bit OS Required):** Must run a 64-bit operating system such as **Raspberry Pi OS 64-bit (aarch64)** or **Ubuntu Server 64-bit ARM64**. 32-bit operating systems (`armv7l`) are not supported.
 
 ---
 
-## 2. Cara Instalasi Server (1 Baris Perintah)
+## 2. Server Installation (1-Line Command)
 
-Jalankan perintah berikut di terminal server Linux Anda:
+Run the following command in your Linux server terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
 
-### Opsi Tambahan Installer (Flags)
-Anda dapat menyertakan opsi konfigurasi saat menjalankan installer:
+### Additional Installer Flags
+You can pass custom configuration options to the installer:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- \
   --domain sumopod.id \
   --email admin@sumopod.id
 ```
 
-| Opsi | Default | Keterangan |
+| Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--domain <domain>` | `<ip-dashed>.sslip.io` | Base domain untuk routing aplikasi (`*.domain`) dan dashboard (`skoci.domain`). |
-| `--email <email>` | *(kosong)* | Email kontak untuk pendaftaran sertifikat ACME Let's Encrypt. |
-| `--no-tls` | *(TLS ACME aktif)* | Menonaktifkan HTTPS otomatis (hanya melayani HTTP plain). |
-| `--version <tag>` | `latest` | Tag rilis spesifik yang ingin dipasang (misal `v0.1.0`). |
-| `--client-only` | *(false di Linux)* | Hanya memasang binary client tanpa mengaktifkan daemon server (default di macOS). |
+| `--domain <domain>` | `<dashed-ip>.sslip.io` | Base domain for routing apps (`*.domain`) and the dashboard (`skoci.domain`). |
+| `--email <email>` | *(empty)* | Contact email for Let's Encrypt ACME certificate registration. |
+| `--no-tls` | *(ACME TLS enabled)* | Disable automatic HTTPS (serve plain HTTP only). |
+| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.1.0`). |
+| `--client-only` | *(false on Linux)* | Install client binary only without server daemon (default on macOS). |
 
 ---
 
-## 3. Apa yang Dikonfigurasi di Server?
+## 3. Server Configuration Details
 
-1. **Docker Engine:** Jika belum terpasang, installer memasang Docker resmi via `get.docker.com`.
-2. **Pengguna Sistem `skoci`:** Layanan berjalan di bawah user non-root `skoci` yang tergabung dalam grup `docker`.
-3. **Direktori Data:**
-   - `/etc/skoci` (izin `0750`, milik `root:skoci`) untuk konfigurasi lingkungan.
-   - `/var/lib/skoci` (izin `0750`, milik `skoci:skoci`) untuk database SQLite `skoci.db`, kunci enkripsi node, dan backup.
-4. **Master Admin Token:** Disimpan dengan aman di `/etc/skoci/master_token` (izin `0640`). Token ini tidak dicetak sembarangan ke terminal.
-5. **Reverse Proxy & TLS:** Mengikat port 80 dan 443 secara langsung untuk menerima trafik web publik.
-6. **Layanan Latar Belakang Systemd:** Mengaktifkan unit `/etc/systemd/system/skoci.service` dengan pengerasan keamanan modern (`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `CAP_NET_BIND_SERVICE`).
+1. **Docker Engine:** Installed automatically via official `get.docker.com` script if not already present.
+2. **System User `skoci`:** Runs under a non-root system user `skoci` added to the `docker` group.
+3. **Data Directories:**
+   - `/etc/skoci` (permissions `0750`, owned by `root:skoci`) for environment configuration.
+   - `/var/lib/skoci` (permissions `0750`, owned by `skoci:skoci`) for SQLite database `skoci.db`, node encryption key, and backups.
+4. **Master Admin Token:** Stored securely at `/etc/skoci/master_token` (permissions `0640`). Never printed casually to standard output.
+5. **Reverse Proxy & TLS:** Directly binds ports 80 and 443 to handle public web traffic.
+6. **Systemd Background Service:** Enables `/etc/systemd/system/skoci.service` with modern sandboxing hardening (`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `CAP_NET_BIND_SERVICE`).
 
 ---
 
-## 4. Instalasi Client di Laptop (macOS & Linux)
+## 4. Client Installation on Workstation (macOS & Linux)
 
-Di komputer pengembang lokal Anda, pasang binary `skoci` untuk berinteraksi dengan server:
+On your local developer workstation, install the `skoci` binary to interact with the remote server:
 
 ```bash
-# macOS atau Linux (Client Only)
+# macOS or Linux (Client Only)
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
 ```
 
-Binary akan terpasang di `/usr/local/bin/skoci` (atau `~/.local/bin/skoci`).
+The binary is installed into `/usr/local/bin/skoci` (or `~/.local/bin/skoci`).
 
 ---
 
-## 5. Port Jaringan & Firewall
+## 5. Network Ports & Firewall
 
-Skoci menggunakan port standar web internasional:
+Skoci uses standard web ports:
 
-* **Port 80 (HTTP):** Menerima trafik HTTP dan tantangan ACME Let's Encrypt.
-* **Port 443 (HTTPS):** Menerima trafik HTTPS terenkripsi.
-* **Port 8787 (Control API):** **Hanya mengikat `127.0.0.1`** (tidak boleh dibuka ke publik). Akses dashboard dari luar dilakukan via domain proxy (`https://skoci.<base-domain>`) atau SSH tunnel.
+* **Port 80 (HTTP):** Handles plain HTTP traffic and ACME challenge validation.
+* **Port 443 (HTTPS):** Handles encrypted HTTPS traffic.
+* **Port 8787 (Control API):** **Binds strictly to `127.0.0.1`** (never expose publicly). External dashboard/API access routes through the reverse proxy (`https://skoci.<base-domain>`) or SSH tunnel.
 
-Konfigurasi firewall UFW di server:
+UFW firewall configuration on the server:
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 
-# Jika sebelumnya ada aturan port 8787 atau 8000, hapus aturan tersebut:
+# If previous rules for port 8787 or 8000 exist, remove them:
 sudo ufw delete allow 8787/tcp || true
 sudo ufw delete allow 8000/tcp || true
 ```
 
-> **Perhatian:** Buka port **80** dan **443** di firewall cloud penyedia VPS Anda (misal dashboard firewall Sumopod, Hetzner Cloud Firewall, atau Security Group AWS).
+> **Warning:** Make sure ports **80** and **443** are open in your cloud provider firewall (e.g. Sumopod dashboard, Hetzner Cloud Firewall, or AWS Security Group).
 
 ---
 
-## 6. Verifikasi Kesehatan Sistem (`skoci doctor`)
+## 6. System Health Verification (`skoci doctor`)
 
-Periksa kondisi seluruh subsistem Skoci:
+Check the health of all Skoci subsystems:
 
 ```bash
 skoci doctor
 ```
 
-Output:
+Example output:
 ```json
 {
   "healthy": true,
   "version": "0.1.0",
   "idle_ram_mb": 11.4,
   "checks": [
-    { "name": "docker_daemon", "passed": true, "message": "Docker Engine aktif" },
-    { "name": "proxy_http", "passed": true, "message": "Reverse proxy mengikat port 80" },
-    { "name": "proxy_tls", "passed": true, "message": "TLS ACME aktif" },
-    { "name": "data_dir", "passed": true, "message": "Direktori /var/lib/skoci dapat ditulis" },
+    { "name": "docker_daemon", "passed": true, "message": "Docker Engine is active" },
+    { "name": "proxy_http", "passed": true, "message": "Reverse proxy bound to port 80" },
+    { "name": "proxy_tls", "passed": true, "message": "ACME TLS is active" },
+    { "name": "data_dir", "passed": true, "message": "Directory /var/lib/skoci is writable" },
     { "name": "sqlite_integrity", "passed": true, "message": "PRAGMA quick_check: ok" }
   ]
 }
@@ -121,9 +121,9 @@ Output:
 
 ---
 
-## 7. Mengelola Layanan di Server
+## 7. Managing the Server Service
 
-* **Lihat log layanan:** `sudo journalctl -u skoci -f`
-* **Restart server:** `sudo systemctl restart skoci`
-* **Hentikan server:** `sudo systemctl stop skoci`
-* **Baca Master Token:** `sudo cat /etc/skoci/master_token`
+* **View service logs:** `sudo journalctl -u skoci -f`
+* **Restart service:** `sudo systemctl restart skoci`
+* **Stop service:** `sudo systemctl stop skoci`
+* **Read Master Token:** `sudo cat /etc/skoci/master_token`

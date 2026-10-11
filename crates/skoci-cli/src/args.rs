@@ -3,17 +3,17 @@ use std::path::PathBuf;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
-    #[command(about = "Hubungkan CLI ke server Skoci dan simpan konfigurasi")]
+    #[command(about = "Connect CLI to Skoci server and save configuration")]
     Connect {
         #[arg(long)]
         server: String,
         #[arg(long)]
         token: String,
-        #[arg(long, help = "Izinkan koneksi HTTP tidak terenkripsi ke host non-localhost")]
+        #[arg(long, help = "Allow unencrypted HTTP connection to non-localhost hosts")]
         insecure: bool,
     },
 
-    #[command(about = "Deteksi framework dan inisialisasi konfigurasi proyek")]
+    #[command(about = "Detect framework and initialize project configuration")]
     Init {
         #[arg(long)]
         app: Option<String>,
@@ -21,24 +21,24 @@ pub enum Commands {
         path: PathBuf,
     },
 
-    #[command(about = "Deploy proyek ke server Skoci")]
+    #[command(about = "Deploy project to Skoci server")]
     Deploy {
         #[arg(long, default_value = "preview")]
         env: String,
         #[arg(long, default_value = ".")]
         path: PathBuf,
-        #[arg(long, help = "Jalankan deployment di latar belakang tanpa menunggu event")]
+        #[arg(long, help = "Run deployment in the background without waiting for events")]
         detach: bool,
-        #[arg(long, help = "Commit SHA atau identifier git")]
+        #[arg(long, help = "Commit SHA or git identifier")]
         commit: Option<String>,
     },
 
-    #[command(about = "Pantau live event dari deployment yang sedang berjalan")]
+    #[command(about = "Watch live events from a running deployment")]
     Watch {
         deployment_id: String,
     },
 
-    #[command(about = "Daftar riwayat deployment")]
+    #[command(about = "List deployment history")]
     Deployments {
         #[arg(long)]
         app: Option<String>,
@@ -46,12 +46,12 @@ pub enum Commands {
         limit: usize,
     },
 
-    #[command(about = "Lihat status kesehatan aplikasi dan kontainer")]
+    #[command(about = "View application and container health status")]
     Status {
         app: Option<String>,
     },
 
-    #[command(about = "Lihat log aplikasi dan ringkasan error")]
+    #[command(about = "View application logs and error summary")]
     Logs {
         app: Option<String>,
         #[arg(long)]
@@ -60,96 +60,96 @@ pub enum Commands {
         tail: usize,
     },
 
-    #[command(about = "Kelola secret dan variabel terenkripsi")]
+    #[command(about = "Manage secrets and encrypted variables")]
     Secret {
         #[command(subcommand)]
         action: SecretCommands,
     },
 
-    #[command(about = "Promosikan versi preview ke production")]
+    #[command(about = "Promote preview version to production")]
     Promote {
         reason: String,
         #[arg(long)]
         version: Option<String>,
-        #[arg(long, help = "Jalankan deployment di latar belakang")]
+        #[arg(long, help = "Run deployment in the background")]
         detach: bool,
     },
-    #[command(about = "Lihat daftar permintaan persetujuan yang menunggu")]
+    #[command(about = "List pending approval requests")]
     Approvals,
 
-    #[command(about = "Setujui permintaan persetujuan (khusus admin)")]
+    #[command(about = "Approve an approval request (admin only)")]
     Approve {
         request_id: String,
         #[arg(long)]
         note: Option<String>,
-        #[arg(long, help = "Jalankan deployment di latar belakang")]
+        #[arg(long, help = "Run deployment in the background")]
         detach: bool,
     },
-    #[command(about = "Tolak permintaan persetujuan (khusus admin)")]
+    #[command(about = "Reject an approval request (admin only)")]
     Reject {
         request_id: String,
     },
 
-    #[command(about = "Rollback aplikasi ke versi sebelumnya")]
+    #[command(about = "Roll back application to a previous version")]
     Rollback {
         #[arg(long, default_value = "preview")]
         env: String,
-        #[arg(long, help = "Versi target rollback")]
+        #[arg(long, help = "Target rollback version")]
         to: Option<String>,
-        #[arg(long, help = "Jalankan deployment di latar belakang")]
+        #[arg(long, help = "Run deployment in the background")]
         detach: bool,
     },
-    #[command(about = "Periksa kesehatan server, Docker, dan konfigurasi")]
+    #[command(about = "Check server, Docker, and configuration health")]
     Doctor,
 
-    #[command(about = "Backup dan restore database aplikasi")]
+    #[command(about = "Backup and restore application database")]
     Db {
         #[command(subcommand)]
         action: DbCommands,
     },
 
-    #[command(about = "Kelola aplikasi")]
+    #[command(about = "Manage applications")]
     App {
         #[command(subcommand)]
         action: AppCommands,
     },
 
-    #[command(name = "default-app", about = "Lihat atau setel aplikasi default")]
+    #[command(name = "default-app", about = "View or set default application")]
     DefaultApp {
         app: Option<String>,
     },
 
-    #[command(about = "Kelola scoped agent token")]
+    #[command(about = "Manage scoped agent tokens")]
     Token {
         #[command(subcommand)]
         action: TokenCommands,
     },
 
-    #[command(name = "agent-guide", about = "Panduan operasional Skoci untuk AI agent")]
+    #[command(name = "agent-guide", about = "Skoci operational guide for AI agents")]
     AgentGuide,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SecretCommands {
-    #[command(about = "Simpan secret untuk aplikasi")]
+    #[command(about = "Set secret for application")]
     Set {
         key: String,
         value: String,
     },
-    #[command(about = "Daftar nama kunci secret aplikasi")]
+    #[command(about = "List application secret key names")]
     List,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum DbCommands {
-    #[command(about = "Buat backup database")]
+    #[command(about = "Create database backup")]
     Backup {
         #[arg(default_value = "db")]
         service: String,
     },
-    #[command(about = "Daftar riwayat backup database")]
+    #[command(about = "List database backup history")]
     List,
-    #[command(about = "Restore database dari backup")]
+    #[command(about = "Restore database from backup")]
     Restore {
         backup_id: String,
         #[arg(default_value = "db")]
@@ -159,7 +159,7 @@ pub enum DbCommands {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
-    #[command(about = "Hapus aplikasi")]
+    #[command(about = "Delete application")]
     Delete {
         app: Option<String>,
     },
@@ -167,19 +167,19 @@ pub enum AppCommands {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TokenCommands {
-    #[command(about = "Buat scoped agent token baru")]
+    #[command(about = "Create a new scoped agent token")]
     Create {
         #[arg(long)]
         app: String,
         #[arg(long, default_value = "agent")]
         name: String,
     },
-    #[command(about = "Daftar token untuk aplikasi")]
+    #[command(about = "List tokens for application")]
     List {
         #[arg(long)]
         app: String,
     },
-    #[command(about = "Cabut token")]
+    #[command(about = "Revoke token")]
     Revoke {
         #[arg(long)]
         app: String,

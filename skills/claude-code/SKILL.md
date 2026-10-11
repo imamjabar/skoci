@@ -65,10 +65,10 @@ When an API error occurs, the JSON response structure is:
   "success": false,
   "error": {
     "code": "secret_missing",
-    "message": "Secret 'DATABASE_URL' belum diset",
+    "message": "Secret 'DATABASE_URL' is not set",
     "fix": "skoci secret set DATABASE_URL <value>"
   },
-  "summary": "secret_missing: Secret 'DATABASE_URL' belum diset"
+  "summary": "secret_missing: Secret 'DATABASE_URL' is not set"
 }
 ```
 Read the `fix` string and execute it directly.

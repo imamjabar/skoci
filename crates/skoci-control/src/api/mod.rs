@@ -18,7 +18,6 @@ pub mod tokens;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::Router;
-use tower_http::cors::CorsLayer;
 
 use crate::state::AppState;
 
@@ -73,10 +72,5 @@ pub fn build_router(state: AppState) -> Router {
         // Audits & Doctor
         .route("/api/audits", get(audits::handle_list_audits))
         .route("/api/doctor", get(doctor::handle_doctor))
-        .layer(CorsLayer::permissive())
         .with_state(state)
-}
-
-pub fn create_router(state: AppState) -> Router {
-    build_router(state)
 }

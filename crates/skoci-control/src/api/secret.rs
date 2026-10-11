@@ -20,24 +20,24 @@ pub async fn handle_set_secret(
 
     if !is_valid_env_key(&body.key) {
         let err = SkociError::bad_request(
-            format!("Nama secret key '{}' tidak valid", body.key),
-            "Gunakan huruf kapital, angka, dan underscore, contoh: API_KEY atau DB_PASSWORD",
+            format!("Secret key name '{}' is invalid", body.key),
+            "Use uppercase letters, numbers, and underscores, e.g., API_KEY or DB_PASSWORD",
         );
         return api_reply::<()>(Err(err));
     }
 
     if body.key.starts_with("SKOCI_") {
         let err = SkociError::bad_request(
-            "Prefix 'SKOCI_' dicadangkan untuk internal sistem",
-            "Gunakan nama key lain tanpa prefix 'SKOCI_'",
+            "Prefix 'SKOCI_' is reserved for internal system use",
+            "Use a different key name without the 'SKOCI_' prefix",
         );
         return api_reply::<()>(Err(err));
     }
 
     if body.value.contains('\n') {
         let err = SkociError::bad_request(
-            "Nilai secret tidak boleh mengandung baris baru (newline)",
-            "Hapus karakter baris baru atau lakukan base64 encode jika membutuhkan teks multi-baris",
+            "Secret value cannot contain newlines",
+            "Remove newline characters or base64-encode if multi-line text is required",
         );
         return api_reply::<()>(Err(err));
     }
@@ -56,7 +56,7 @@ pub async fn handle_set_secret(
         subject.actor_type(),
         "secret_set",
         &format!("{}/{}", body.app, body.key),
-        "Secret diperbarui",
+        "Secret updated",
     );
 
     api_reply(Ok(()))

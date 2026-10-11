@@ -128,7 +128,7 @@ pub struct Database {
 impl Database {
     pub fn open_in_memory() -> SkociResult<Self> {
         let conn = Connection::open_in_memory().map_err(|e| {
-            SkociError::internal(format!("Gagal membuka SQLite in-memory: {e}"), "Coba lagi")
+            SkociError::internal(format!("Failed to open SQLite in-memory: {e}"), "Try again")
         })?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -139,7 +139,7 @@ impl Database {
 
     pub fn open(path: impl AsRef<Path>) -> SkociResult<Self> {
         let conn = Connection::open(path).map_err(|e| {
-            SkociError::internal(format!("Gagal membuka SQLite: {e}"), "Periksa izin file database")
+            SkociError::internal(format!("Failed to open SQLite: {e}"), "Check database file permissions")
         })?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -156,12 +156,12 @@ impl Database {
         // so it is dropped once and every old token is revoked.
         if Self::table_columns(&conn, "apps")?.contains("server") {
             tracing::warn!(
-                "Database Skoci versi lama terdeteksi: data lama dihapus dan semua token agen lama dicabut. Buat token baru dengan 'skoci token create' dan set ulang secret dengan 'skoci secret set'"
+                "Legacy Skoci database detected: old data removed and all legacy agent tokens revoked. Create a new token with 'skoci token create' and reset secrets with 'skoci secret set'"
             );
             conn.execute_batch(
                 "DROP TABLE IF EXISTS apps; DROP TABLE IF EXISTS deployments; DROP TABLE IF EXISTS approvals; DROP TABLE IF EXISTS secrets; DROP TABLE IF EXISTS agent_tokens;",
             )
-            .map_err(|e| SkociError::internal(format!("Migrasi data lama gagal: {e}"), "Periksa izin file database"))?;
+            .map_err(|e| SkociError::internal(format!("Legacy data migration failed: {e}"), "Check database file permissions"))?;
         }
 
         conn.execute_batch(
@@ -254,7 +254,7 @@ impl Database {
             "#,
         )
         .map_err(|e| {
-            SkociError::internal(format!("Migrasi database tabel gagal: {e}"), "Periksa skema DB")
+            SkociError::internal(format!("Database table migration failed: {e}"), "Check DB schema")
         })?;
 
         // Additive columns for backwards-compatibility
@@ -276,7 +276,7 @@ impl Database {
             "UPDATE audit_logs SET actor = 'agent:redacted' WHERE actor LIKE 'sk_%'",
             [],
         )
-        .map_err(|e| SkociError::internal(format!("Scrub audit logs gagal: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Scrub audit logs failed: {e}"), "Try again"))?;
 
         Ok(())
     }
@@ -284,20 +284,20 @@ impl Database {
     fn table_columns(conn: &Connection, table: &str) -> SkociResult<HashSet<String>> {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         Ok(rows.flatten().collect())
     }
 
     fn ensure_column(conn: &Connection, table: &str, column: &str, col_def: &str) -> SkociResult<()> {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut existing = HashSet::new();
         for c in rows.flatten() {
@@ -307,7 +307,7 @@ impl Database {
         if !existing.contains(column) {
             let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {col_def}");
             conn.execute(&sql, [])
-                .map_err(|e| SkociError::internal(format!("Alter table {table} gagal: {e}"), "Coba lagi"))?;
+                .map_err(|e| SkociError::internal(format!("Alter table {table} failed: {e}"), "Try again"))?;
         }
 
         Ok(())
@@ -326,46 +326,15 @@ impl Database {
             "#,
             params![name, now, now],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal ensure app: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to ensure app: {e}"), "Try again"))?;
         Ok(())
-    }
-
-    pub fn get_app(&self, name: &str) -> SkociResult<Option<AppRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare("SELECT name, created_at, updated_at FROM apps WHERE name = ?1")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
-
-        let opt = stmt
-            .query_row(params![name], |row| {
-                let name: String = row.get(0)?;
-                let created_at_str: String = row.get(1)?;
-                let updated_at_str: String = row.get(2)?;
-
-                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-                let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-
-                Ok(AppRecord {
-                    name,
-                    created_at,
-                    updated_at,
-                })
-            })
-            .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
-
-        Ok(opt)
     }
 
     pub fn list_apps(&self) -> SkociResult<Vec<AppRecord>> {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT name, created_at, updated_at FROM apps ORDER BY name ASC")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -384,11 +353,11 @@ impl Database {
                     updated_at,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut apps = Vec::new();
         for app in rows {
-            apps.push(app.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            apps.push(app.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(apps)
     }
@@ -396,24 +365,24 @@ impl Database {
     pub fn delete_app(&self, app: &str) -> SkociResult<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM apps WHERE name = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         conn.execute("DELETE FROM routes WHERE app = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         conn.execute("DELETE FROM app_configs WHERE app = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         conn.execute("DELETE FROM secrets WHERE app = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         conn.execute("DELETE FROM agent_tokens WHERE app = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         conn.execute("DELETE FROM approvals WHERE app = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         conn.execute("DELETE FROM deployments WHERE app = ?1", params![app])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         // If default app is this app, unset it
         let mut stmt = conn
             .prepare("SELECT value FROM settings WHERE key = 'default_app'")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         let default_val: Option<String> = stmt.query_row([], |r| r.get(0)).ok();
         if default_val.as_deref() == Some(app) {
             let _ = conn.execute("DELETE FROM settings WHERE key = 'default_app'", []);
@@ -452,7 +421,7 @@ impl Database {
                 rec.evidence_json,
             ],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal insert deployment: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to insert deployment: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -479,7 +448,7 @@ impl Database {
                 rec.id,
             ],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal update deployment: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to update deployment: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -495,7 +464,7 @@ impl Database {
                 FROM deployments WHERE id = ?1
                 "#,
             )
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![id], |row| {
@@ -531,7 +500,7 @@ impl Database {
                 })
             })
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -567,7 +536,7 @@ impl Database {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let params_slice: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let rows = stmt
@@ -603,11 +572,11 @@ impl Database {
                     evidence_json: row.get(14).ok(),
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -645,7 +614,7 @@ impl Database {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![app, env], |row| {
@@ -681,7 +650,7 @@ impl Database {
                 })
             })
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -712,7 +681,7 @@ impl Database {
                 rec.deployed_at.to_rfc3339()
             ],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal upsert route: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to upsert route: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -720,7 +689,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("PRAGMA quick_check")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         let result: Result<String, _> = stmt.query_row([], |row| row.get(0));
         Ok(result.map(|s| s == "ok").unwrap_or(false))
     }
@@ -731,7 +700,7 @@ impl Database {
             .prepare(
                 "SELECT app, env, container, host_port, version, hosts_json, deployed_at FROM routes WHERE app = ?1 AND env = ?2",
             )
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![app, env], |row| {
@@ -754,7 +723,7 @@ impl Database {
                 })
             })
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -763,7 +732,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT app, env, container, host_port, version, hosts_json, deployed_at FROM routes")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -784,11 +753,11 @@ impl Database {
                     deployed_at,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -797,7 +766,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT app, env, container, host_port, version, hosts_json, deployed_at FROM routes WHERE app = ?1")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map(params![app], |row| {
@@ -818,11 +787,11 @@ impl Database {
                     deployed_at,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -830,7 +799,7 @@ impl Database {
     pub fn remove_route(&self, app: &str, env: &str) -> SkociResult<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM routes WHERE app = ?1 AND env = ?2", params![app, env])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         Ok(())
     }
 
@@ -839,7 +808,7 @@ impl Database {
     pub fn save_app_config(&self, app: &str, cfg: &SkociConfig) -> SkociResult<()> {
         let conn = self.conn.lock();
         let json = serde_json::to_string(cfg).map_err(|e| {
-            SkociError::internal(format!("Serialize skoci config gagal: {e}"), "Coba lagi")
+            SkociError::internal(format!("Failed to serialize skoci config: {e}"), "Try again")
         })?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
@@ -852,7 +821,7 @@ impl Database {
             "#,
             params![app, json, now],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal simpan app config: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to save app config: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -860,16 +829,16 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT config_json FROM app_configs WHERE app = ?1")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![app], |row| row.get::<_, String>(0))
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         if let Some(json) = opt {
             let cfg: SkociConfig = serde_json::from_str(&json).map_err(|e| {
-                SkociError::internal(format!("Parse app config dari DB gagal: {e}"), "Coba lagi")
+                SkociError::internal(format!("Failed to parse app config from DB: {e}"), "Try again")
             })?;
             Ok(Some(cfg))
         } else {
@@ -881,7 +850,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT app, config_json FROM app_configs")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -889,11 +858,11 @@ impl Database {
                 let json: String = row.get(1)?;
                 Ok((app, json))
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            let (app, json) = r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            let (app, json) = r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
             if let Ok(cfg) = serde_json::from_str::<SkociConfig>(&json) {
                 list.push((app, cfg));
             }
@@ -923,7 +892,7 @@ impl Database {
             "#,
             params![app, key, ciphertext_hex, nonce_hex, now],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal simpan secret: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to save secret: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -931,7 +900,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT app, key, ciphertext_hex, nonce_hex, updated_at FROM secrets WHERE app = ?1 AND key = ?2")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![app, key], |row| {
@@ -948,7 +917,7 @@ impl Database {
                 })
             })
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -957,7 +926,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT app, key, ciphertext_hex, nonce_hex, updated_at FROM secrets WHERE app = ?1 ORDER BY key ASC")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map(params![app], |row| {
@@ -973,11 +942,11 @@ impl Database {
                     updated_at,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -986,15 +955,15 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT key FROM secrets WHERE app = ?1 ORDER BY key ASC")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map(params![app], |row| row.get::<_, String>(0))
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -1008,7 +977,7 @@ impl Database {
             "INSERT INTO agent_tokens (token_hash, app, name, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![token_hash, app, name, now],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal simpan token: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to save token: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -1016,7 +985,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT token_hash, app, name, created_at, last_used_at FROM agent_tokens WHERE token_hash = ?1")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![token_hash], |row| {
@@ -1041,7 +1010,7 @@ impl Database {
                 })
             })
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -1059,7 +1028,7 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT token_hash, app, name, created_at, last_used_at FROM agent_tokens WHERE app = ?1 ORDER BY created_at DESC")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map(params![app], |row| {
@@ -1081,11 +1050,11 @@ impl Database {
                     last_used_at,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -1097,7 +1066,7 @@ impl Database {
                 "DELETE FROM agent_tokens WHERE app = ?1 AND name = ?2",
                 params![app, name],
             )
-            .map_err(|e| SkociError::internal(format!("Gagal cabut token: {e}"), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(format!("Failed to revoke token: {e}"), "Try again"))?;
         Ok(rows as u32)
     }
 
@@ -1123,7 +1092,7 @@ impl Database {
                 rec.created_at.to_rfc3339(),
             ],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal insert approval: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to insert approval: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -1133,7 +1102,7 @@ impl Database {
             .prepare(
                 "SELECT id, app, action, detail, reason, status, requested_by, decided_by, payload_json, created_at FROM approvals WHERE id = ?1",
             )
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![id], |row| {
@@ -1156,7 +1125,7 @@ impl Database {
                 })
             })
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -1176,7 +1145,7 @@ impl Database {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let params_slice: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let rows = stmt
@@ -1198,11 +1167,11 @@ impl Database {
                     created_at,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -1218,7 +1187,7 @@ impl Database {
             "UPDATE approvals SET status = ?1, decided_by = ?2 WHERE id = ?3",
             params![status, decided_by, id],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal update approval status: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to update approval status: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -1241,7 +1210,7 @@ impl Database {
             "#,
             params![now, actor, actor_type, action, target, details],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal mencatat audit log: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to record audit log: {e}"), "Try again"))?;
         Ok(())
     }
 
@@ -1252,7 +1221,7 @@ impl Database {
         );
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -1270,11 +1239,11 @@ impl Database {
                     details: row.get(6)?,
                 })
             })
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?);
+            list.push(r.map_err(|e| SkociError::internal(e.to_string(), "Try again"))?);
         }
         Ok(list)
     }
@@ -1285,12 +1254,12 @@ impl Database {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT value FROM settings WHERE key = ?1")
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         let opt = stmt
             .query_row(params![key], |row| row.get::<_, String>(0))
             .optional()
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
 
         Ok(opt)
     }
@@ -1305,14 +1274,14 @@ impl Database {
             "#,
             params![key, value],
         )
-        .map_err(|e| SkociError::internal(format!("Gagal simpan setting: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to save setting: {e}"), "Try again"))?;
         Ok(())
     }
 
     pub fn delete_setting(&self, key: &str) -> SkociResult<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
-            .map_err(|e| SkociError::internal(e.to_string(), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         Ok(())
     }
 }

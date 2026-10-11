@@ -54,16 +54,16 @@ impl SkociClient {
     ) -> SkociResult<ApiResponse<T>> {
         let resp = rb.send().await.map_err(|e| {
             SkociError::internal(
-                format!("Gagal menghubungi server Skoci: {e}"),
-                "Periksa apakah server Skoci berjalan dan URL server sudah benar (SKOCI_SERVER_URL)",
+                format!("Failed to connect to Skoci server: {e}"),
+                "Check whether the Skoci server is running and the server URL is correct (SKOCI_SERVER_URL)",
             )
         })?;
 
         let status = resp.status();
         let text = resp.text().await.map_err(|e| {
             SkociError::internal(
-                format!("Gagal membaca respons dari server Skoci: {e}"),
-                "Periksa koneksi jaringan dan server Skoci",
+                format!("Failed to read response from Skoci server: {e}"),
+                "Check network connection and Skoci server",
             )
         })?;
 
@@ -73,11 +73,11 @@ impl SkociClient {
                 let snippet: String = text.chars().take(200).collect();
                 Err(SkociError::internal(
                     format!(
-                        "Respons bukan format JSON yang valid (HTTP {}): {}",
+                        "Response is not valid JSON format (HTTP {}): {}",
                         status.as_u16(),
                         snippet
                     ),
-                    "Periksa apakah SKOCI_SERVER_URL mengarah ke server Skoci yang benar dan bukan layanan lain",
+                    "Check whether SKOCI_SERVER_URL points to the correct Skoci server and not another service",
                 ))
             }
         }
@@ -92,12 +92,12 @@ impl SkociClient {
         let path = path.as_ref();
         let file = tokio::fs::File::open(path).await.map_err(|e| {
             SkociError::bad_request(
-                format!("Gagal membuka file context {}: {e}", path.display()),
-                "Pastikan file arsip context tersedia dan dapat dibaca",
+                format!("Failed to open context file {}: {e}", path.display()),
+                "Ensure context archive file exists and is readable",
             )
         })?;
         let total_bytes = file.metadata().await.map_err(|e| {
-            SkociError::internal(format!("Gagal membaca metadata file: {e}"), "Coba deploy kembali")
+            SkociError::internal(format!("Failed to read file metadata: {e}"), "Try deploying again")
         })?.len();
 
         let sent = Arc::new(AtomicU64::new(0));
@@ -136,16 +136,16 @@ impl SkociClient {
         let init = async move {
             let resp = rb.send().await.map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal menghubungkan ke event stream: {e}"),
-                    format!("Gunakan `skoci watch {id_str}` untuk mencoba kembali"),
+                    format!("Failed to connect to event stream: {e}"),
+                    format!("Use `skoci watch {id_str}` to retry"),
                 )
             })?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
                 return Err(SkociError::internal(
-                    format!("Server merespons error HTTP {status}: {text}"),
-                    format!("Gunakan `skoci watch {id_str}` untuk mencoba kembali"),
+                    format!("Server responded with HTTP error {status}: {text}"),
+                    format!("Use `skoci watch {id_str}` to retry"),
                 ));
             }
             Ok(resp.bytes_stream())
@@ -368,8 +368,8 @@ where
                                 state.terminated = true;
                                 return Some((
                                     Err(SkociError::internal(
-                                        format!("Gagal mem-parsing SSE event: {e}"),
-                                        "Periksa format data SSE dari server",
+                                        format!("Failed to parse SSE event: {e}"),
+                                        "Check SSE data format from server",
                                     )),
                                     state,
                                 ));
@@ -391,8 +391,8 @@ where
                 if !state.saw_done {
                     return Some((
                         Err(SkociError::internal(
-                            "Koneksi event terputus sebelum deployment selesai",
-                            format!("Gunakan `skoci watch {}` untuk menghubungkan kembali", state.deployment_id),
+                            "Event connection closed before deployment completed",
+                            format!("Use `skoci watch {}` to reconnect", state.deployment_id),
                         )),
                         state,
                     ));
@@ -409,8 +409,8 @@ where
                     state.terminated = true;
                     return Some((
                         Err(SkociError::internal(
-                            format!("Koneksi SSE terputus dengan error: {e}"),
-                            format!("Gunakan `skoci watch {}` untuk menghubungkan kembali", state.deployment_id),
+                            format!("SSE connection closed with error: {e}"),
+                            format!("Use `skoci watch {}` to reconnect", state.deployment_id),
                         )),
                         state,
                     ));
@@ -441,8 +441,8 @@ where
                         state.terminated = true;
                         return Some((
                             Err(SkociError::internal(
-                                "Koneksi event terputus sebelum deployment selesai",
-                                format!("Gunakan `skoci watch {}` untuk menghubungkan kembali", state.deployment_id),
+                                "Event connection closed before deployment completed",
+                                format!("Use `skoci watch {}` to reconnect", state.deployment_id),
                             )),
                             state,
                         ));

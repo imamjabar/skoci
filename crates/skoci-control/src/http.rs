@@ -16,7 +16,7 @@ pub fn api_reply<T: Serialize>(res: SkociResult<T>) -> Response {
     match res {
         Ok(data) => (
             StatusCode::OK,
-            Json(ApiResponse::ok(data, "Berhasil")),
+            Json(ApiResponse::ok(data, "Success")),
         )
             .into_response(),
         Err(err) => {
@@ -89,8 +89,8 @@ impl FromRequestParts<AppState> for AuthSubject {
                             .and_then(|v| v.to_str().ok());
                         if csrf != Some("1") {
                             let err = SkociError::forbidden(
-                                "Header X-Skoci-Dashboard: 1 wajib disertakan untuk sesi dashboard",
-                                "Tambahkan header 'X-Skoci-Dashboard: 1' pada permintaan ini",
+                                "Header X-Skoci-Dashboard: 1 is required for dashboard sessions",
+                                "Add header 'X-Skoci-Dashboard: 1' to this request",
                             );
                             let status = StatusCode::from_u16(err.http_status())
                                 .unwrap_or(StatusCode::FORBIDDEN);
@@ -101,7 +101,7 @@ impl FromRequestParts<AppState> for AuthSubject {
                 } else {
                     state.rate_limiter.record_failure(peer_ip);
                     let err = SkociError::unauthorized(
-                        "Sesi dashboard tidak valid atau telah kedaluwarsa",
+                        "Dashboard session is invalid or expired",
                     );
                     let status = StatusCode::from_u16(err.http_status())
                         .unwrap_or(StatusCode::UNAUTHORIZED);
@@ -112,7 +112,7 @@ impl FromRequestParts<AppState> for AuthSubject {
 
         // Neither credential provided
         let err = SkociError::unauthorized(
-            "Autentikasi diperlukan. Berikan token Bearer atau login ke dashboard",
+            "Authentication required. Provide a Bearer token or log in to the dashboard",
         );
         let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::UNAUTHORIZED);
         Err((status, Json(ApiResponse::<()>::err(err))).into_response())

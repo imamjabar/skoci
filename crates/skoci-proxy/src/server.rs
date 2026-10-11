@@ -218,7 +218,7 @@ pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
             });
         }
         Err(e) => {
-            let msg = format!("Gagal bind listener HTTP pada {}: {e}", cfg.http_bind);
+            let msg = format!("Failed to bind HTTP listener on {}: {e}", cfg.http_bind);
             tracing::error!("{msg}");
             status.add_bind_error(msg);
         }
@@ -289,7 +289,7 @@ pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
                 });
             }
             Err(e) => {
-                let msg = format!("Gagal bind listener HTTPS pada {}: {e}", cfg.https_bind);
+                let msg = format!("Failed to bind HTTPS listener on {}: {e}", cfg.https_bind);
                 tracing::error!("{msg}");
                 status.add_bind_error(msg);
             }
@@ -355,14 +355,14 @@ async fn run_acme_manager(
                 while let Some(event) = state.next().await {
                     match event {
                         Ok(EventOk::DeployedCachedCert) | Ok(EventOk::DeployedNewCert) => {
-                            tracing::info!("Sertifikat TLS aktif untuk {host_clone}");
+                            tracing::info!("TLS certificate active for {host_clone}");
                             status_cert.set_certificate_status(&host_clone, true, None);
                         }
                         Ok(_) => {}
                         Err(e) => {
                             let err_msg = e.to_string();
                             tracing::warn!(
-                                "Gagal memproses sertifikat TLS {host_clone}: {err_msg}"
+                                "Failed to process TLS certificate for {host_clone}: {err_msg}"
                             );
                             status_cert.set_certificate_status(
                                 &host_clone,
@@ -546,7 +546,7 @@ async fn handle_proxy_request(
                     .body(empty_body())
                     .unwrap());
             } else {
-                let msg = "Akses API Skoci lewat HTTP publik ditolak. Gunakan HTTPS (--tls acme) atau SSH tunnel: ssh -L 8787:127.0.0.1:8787 user@server\n";
+                let msg = "Public HTTP access to Skoci API is forbidden. Use HTTPS (--tls acme) or an SSH tunnel: ssh -L 8787:127.0.0.1:8787 user@server\n";
                 return Ok(Response::builder()
                     .status(StatusCode::FORBIDDEN)
                     .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -564,8 +564,8 @@ async fn handle_proxy_request(
         Resolution::Control(addr) => (addr, None),
         Resolution::NotFound => {
             let body = format!(
-                "404 Tidak Ditemukan: Domain '{host}' tidak terdaftar di Skoci.\n\
-                 Petunjuk: tambahkan domain ke skoci.yaml lalu skoci deploy\n"
+                "404 Not Found: Domain '{host}' is not registered in Skoci.\n\
+                 Hint: add the domain to skoci.yaml then run skoci deploy\n"
             );
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -659,14 +659,14 @@ async fn handle_proxy_request(
     let mut upstream_resp = match client.request(fwd_req).await {
         Ok(resp) => resp,
         Err(err) => {
-            tracing::error!("Gagal terhubung ke upstream {target}: {err}");
+            tracing::error!("Failed to connect to upstream {target}: {err}");
             let app_hint = match &target_app {
                 Some(app) => format!(" 'skoci logs {app}'"),
                 None => " 'skoci logs'".to_string(),
             };
             let body = format!(
-                "502 Bad Gateway: Gagal terhubung ke upstream {target}.\n\
-                 Petunjuk: jalankan{app_hint} untuk melihat log container.\n"
+                "502 Bad Gateway: Failed to connect to upstream {target}.\n\
+                 Hint: run{app_hint} to view container logs.\n"
             );
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)

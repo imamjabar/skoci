@@ -6,7 +6,7 @@ use skoci_core::config::ConfigLoader;
 use skoci_node::archive::extract_tar_gz;
 use skoci_node::builder::{BuildOptions, ImageBuilder};
 use skoci_node::docker::{ContainerConfig, PortPublish};
-use skoci_node::services::ServiceSpec;
+use skoci_node::services::{ServiceManager, ServiceSpec};
 use skoci_proxy::health::HealthChecker;
 use skoci_proxy::router::Route;
 use std::collections::HashSet;
@@ -62,7 +62,7 @@ pub async fn run_deploy_pipeline(
         app = %opts.app,
         env = %opts.env,
         kind = %opts.kind.as_str(),
-        "Deployment dimulai"
+        "Deployment started"
     );
 
     let res = execute_pipeline(&state, &opts, buffer.clone()).await;
@@ -82,7 +82,7 @@ pub async fn run_deploy_pipeline(
             tracing::info!(
                 deployment_id = %opts.deployment_id,
                 duration_ms = duration_ms,
-                "Deployment berhasil"
+                "Deployment succeeded"
             );
 
             // Record audit
@@ -91,20 +91,20 @@ pub async fn run_deploy_pipeline(
                 actor_type(&opts.actor),
                 opts.kind.as_str(),
                 &format!("{}/{}", opts.app, opts.env),
-                &format!("Versi {} berhasil diterapkan", opts.version),
+                &format!("Version {} successfully deployed", opts.version),
             );
         }
         Err(err) => {
             tracing::error!(
                 deployment_id = %opts.deployment_id,
                 error = %err.message,
-                "Deployment gagal"
+                "Deployment failed"
             );
 
             buffer.emit(
                 DeployStage::Done,
                 StageStatus::Failed,
-                format!("Deployment gagal: {}", err.message),
+                format!("Deployment failed: {}", err.message),
                 100,
                 None,
                 Some(err.clone()),
@@ -143,7 +143,7 @@ pub async fn run_deploy_pipeline(
                 actor_type(&opts.actor),
                 opts.kind.as_str(),
                 &format!("{}/{}", opts.app, opts.env),
-                &format!("Gagal: {}", err.message),
+                &format!("Failed: {}", err.message),
             );
         }
     }
@@ -186,14 +186,14 @@ async fn execute_pipeline(
             buffer.emit(
                 DeployStage::Extract,
                 StageStatus::Running,
-                "Mengekstrak source code arsip...",
+                "Extracting source code archive...",
                 5,
                 None,
                 None,
             );
 
             let tar_path = opts.tar_gz_path.as_ref().ok_or_else(|| {
-                SkociError::bad_request("File arsip upload tidak ditemukan", "Coba deploy kembali")
+                SkociError::bad_request("Upload archive file not found", "Try deploying again")
             })?;
 
             let max_unpacked = state.config.max_upload_mb * 1024 * 1024 * 4;
@@ -202,15 +202,15 @@ async fn execute_pipeline(
             let config_path = build_dir.join("skoci.yaml");
             if !config_path.exists() {
                 return Err(SkociError::config_invalid(
-                    "File skoci.yaml tidak ditemukan di root project",
-                    "Jalankan 'skoci init' untuk membuat skoci.yaml",
+                    "skoci.yaml file not found in project root",
+                    "Run 'skoci init' to create skoci.yaml",
                 ));
             }
 
             let config_content = fs::read_to_string(&config_path).await.map_err(|e| {
                 SkociError::config_invalid(
-                    format!("Gagal membaca skoci.yaml: {e}"),
-                    "Periksa sintaks skoci.yaml",
+                    format!("Failed to read skoci.yaml: {e}"),
+                    "Check skoci.yaml syntax",
                 )
             })?;
 
@@ -218,10 +218,10 @@ async fn execute_pipeline(
             if cfg.app != opts.app {
                 return Err(SkociError::config_invalid(
                     format!(
-                        "Nama app pada skoci.yaml ('{}') tidak cocok dengan parameter ('{}')",
+                        "App name in skoci.yaml ('{}') does not match parameter ('{}')",
                         cfg.app, opts.app
                     ),
-                    "Sesuaikan 'app' di skoci.yaml atau target deploy",
+                    "Adjust 'app' in skoci.yaml or deploy target",
                 ));
             }
 
@@ -241,7 +241,7 @@ async fn execute_pipeline(
             buffer.emit(
                 DeployStage::Extract,
                 StageStatus::Ok,
-                "Ekstraksi dan validasi skoci.yaml berhasil",
+                "skoci.yaml extraction and validation succeeded",
                 10,
                 None,
                 None,
@@ -251,7 +251,7 @@ async fn execute_pipeline(
             buffer.emit(
                 DeployStage::Build,
                 StageStatus::Running,
-                format!("Membangun Docker image skoci/{}:{}...", opts.app, opts.version),
+                format!("Building Docker image skoci/{}:{}...", opts.app, opts.version),
                 10,
                 None,
                 None,
@@ -260,35 +260,35 @@ async fn execute_pipeline(
             // Canonicalize and validate paths
             let canonical_build_dir = build_dir
                 .canonicalize()
-                .map_err(|e| SkociError::internal(format!("Canonicalize build dir gagal: {e}"), "Coba lagi"))?;
+                .map_err(|e| SkociError::internal(format!("Canonicalize build dir failed: {e}"), "Try again"))?;
 
             let raw_context = build_dir.join(&cfg.build.context);
             let canonical_context = raw_context.canonicalize().map_err(|e| {
                 SkociError::bad_request(
-                    format!("Context path '{}' tidak valid: {e}", cfg.build.context),
-                    "Periksa build.context pada skoci.yaml",
+                    format!("Context path '{}' is invalid: {e}", cfg.build.context),
+                    "Check build.context in skoci.yaml",
                 )
             })?;
 
             if !canonical_context.starts_with(&canonical_build_dir) {
                 return Err(SkociError::bad_request(
-                    "build.context keluar dari direktori build",
-                    "Pastikan path build.context berada di dalam repositori",
+                    "build.context escapes build directory",
+                    "Ensure build.context path is inside repository",
                 ));
             }
 
             let raw_dockerfile = canonical_build_dir.join(&cfg.build.dockerfile);
             let canonical_dockerfile = raw_dockerfile.canonicalize().map_err(|e| {
                 SkociError::bad_request(
-                    format!("Dockerfile '{}' tidak ditemukan: {e}", cfg.build.dockerfile),
-                    "Periksa build.dockerfile pada skoci.yaml",
+                    format!("Dockerfile '{}' not found: {e}", cfg.build.dockerfile),
+                    "Check build.dockerfile in skoci.yaml",
                 )
             })?;
 
             if !canonical_dockerfile.starts_with(&canonical_build_dir) {
                 return Err(SkociError::bad_request(
-                    "build.dockerfile keluar dari direktori build",
-                    "Pastikan path Dockerfile berada di dalam repositori",
+                    "build.dockerfile escapes build directory",
+                    "Ensure Dockerfile path is inside repository",
                 ));
             }
 
@@ -327,7 +327,7 @@ async fn execute_pipeline(
             buffer.emit(
                 DeployStage::Build,
                 StageStatus::Ok,
-                format!("Image {image_tag} berhasil dibangun"),
+                format!("Image {image_tag} successfully built"),
                 60,
                 None,
                 None,
@@ -340,7 +340,7 @@ async fn execute_pipeline(
             buffer.emit(
                 DeployStage::Extract,
                 StageStatus::Skipped,
-                "Ekstraksi dilewati (menggunakan image versi tersimpan)",
+                "Extraction skipped (using cached version image)",
                 10,
                 None,
                 None,
@@ -348,7 +348,7 @@ async fn execute_pipeline(
             buffer.emit(
                 DeployStage::Build,
                 StageStatus::Skipped,
-                "Build dilewati (menggunakan image versi tersimpan)",
+                "Build skipped (using cached version image)",
                 60,
                 None,
                 None,
@@ -359,8 +359,8 @@ async fn execute_pipeline(
                 .get_app_config(&opts.app)?
                 .ok_or_else(|| {
                     SkociError::bad_request(
-                        format!("Konfigurasi app '{}' tidak ditemukan di database", opts.app),
-                        "Deploy app terlebih dahulu",
+                        format!("App config for '{}' not found in database", opts.app),
+                        "Deploy app first",
                     )
                 })?;
 
@@ -378,7 +378,7 @@ async fn execute_pipeline(
         buffer.emit(
             DeployStage::Services,
             StageStatus::Skipped,
-            "Tidak ada database/service tambahan yang dikonfigurasi",
+            "No additional database/services configured",
             65,
             None,
             None,
@@ -387,21 +387,21 @@ async fn execute_pipeline(
         buffer.emit(
             DeployStage::Services,
             StageStatus::Running,
-            format!("Menyiapkan {} service database...", cfg.services.len()),
+            format!("Setting up {} database service(s)...", cfg.services.len()),
             60,
             None,
             None,
         );
 
-        let network_name = format!("skoci-{}", opts.app);
+        let network_name = ServiceManager::network_name(&opts.app);
         state.docker.ensure_network(&network_name).await?;
 
         for (svc_name, svc_cfg) in &cfg.services {
-            let pw_secret_key = format!("SKOCI_{}_PASSWORD", svc_name.to_uppercase().replace('-', "_"));
+            let pw_secret_key = ServiceManager::password_secret_key(svc_name);
             let password = match state.db.get_secret(&opts.app, &pw_secret_key)? {
                 Some(sec) => state.secret_cipher.decrypt(&sec.ciphertext_hex, &sec.nonce_hex)?,
                 None => {
-                    let gen_pw = skoci_node::services::ServiceManager::generate_password();
+                    let gen_pw = ServiceManager::generate_password();
                     let (ct, nonce) = state.secret_cipher.encrypt(&gen_pw)?;
                     state.db.set_secret(&opts.app, &pw_secret_key, &ct, &nonce)?;
                     gen_pw
@@ -421,7 +421,7 @@ async fn execute_pipeline(
         buffer.emit(
             DeployStage::Services,
             StageStatus::Ok,
-            "Seluruh service database aktif dan siap melayani",
+            "All database services are active and ready",
             65,
             None,
             None,
@@ -432,19 +432,19 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Start,
         StageStatus::Running,
-        "Menjalankan container aplikasi...",
+        "Starting application container...",
         65,
         None,
         None,
     );
 
     let container_name = format!("skoci-{}-{}-{}", opts.app, opts.env, opts.version);
-    let network_name = format!("skoci-{}", opts.app);
+    let network_name = ServiceManager::network_name(&opts.app);
     state.docker.ensure_network(&network_name).await?;
 
     // Create env file
     fs::create_dir_all(&build_dir).await.map_err(|e| {
-        SkociError::internal(format!("Gagal membuat direktori build: {e}"), "Coba lagi")
+        SkociError::internal(format!("Failed to create build directory: {e}"), "Try again")
     })?;
     let env_file_path = build_dir.join(".skoci.env");
 
@@ -470,13 +470,8 @@ async fn execute_pipeline(
 
     // 3. Service URLs
     for (svc_name, svc_cfg) in &cfg.services {
-        let env_key = if svc_name == "db" {
-            "DATABASE_URL".to_string()
-        } else {
-            format!("{}_URL", svc_name.to_uppercase().replace('-', "_"))
-        };
-
-        let pw_secret_key = format!("SKOCI_{}_PASSWORD", svc_name.to_uppercase().replace('-', "_"));
+        let env_key = ServiceManager::env_var_name(svc_name);
+        let pw_secret_key = ServiceManager::password_secret_key(svc_name);
         if let Some(sec) = state.db.get_secret(&opts.app, &pw_secret_key)? {
             if let Ok(pw) = state.secret_cipher.decrypt(&sec.ciphertext_hex, &sec.nonce_hex) {
                 let spec = ServiceSpec {
@@ -485,7 +480,7 @@ async fn execute_pipeline(
                     cfg: svc_cfg,
                     password: &pw,
                 };
-                let url = skoci_node::services::ServiceManager::connection_url(&spec);
+                let url = ServiceManager::connection_url(&spec);
                 // Do not overwrite user-defined secret
                 if !env_lines.iter().any(|l| l.starts_with(&format!("{env_key}="))) {
                     env_lines.push(format!("{env_key}={url}"));
@@ -501,7 +496,7 @@ async fn execute_pipeline(
 
     let env_content = env_lines.join("\n");
     fs::write(&env_file_path, &env_content).await.map_err(|e| {
-        SkociError::internal(format!("Gagal menulis env file: {e}"), "Coba lagi")
+        SkociError::internal(format!("Failed to write env file: {e}"), "Try again")
     })?;
 
     #[cfg(unix)]
@@ -547,8 +542,8 @@ async fn execute_pipeline(
     if let Some(live) = state.router.get_route(&format!("{}:{}", opts.app, opts.env)).await {
         if live.version == opts.version {
             return Err(SkociError::conflict(
-                format!("Versi {} sudah live di {}", opts.version, opts.env),
-                "Pilih versi lain dengan 'skoci rollback --to <versi>'",
+                format!("Version {} is already live in {}", opts.version, opts.env),
+                "Choose another version with 'skoci rollback --to <version>'",
             ));
         }
     }
@@ -565,7 +560,7 @@ async fn execute_pipeline(
         .host_port(&container_name, cfg.run.port)
         .await
         .map_err(|e| {
-            SkociError::docker_error(format!("Gagal membaca port container: {e}"))
+            SkociError::docker_error(format!("Failed to read container port: {e}"))
         })?;
 
     rec.container = container_name.clone();
@@ -575,7 +570,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Start,
         StageStatus::Ok,
-        format!("Container aktif di 127.0.0.1:{host_port}"),
+        format!("Container active at 127.0.0.1:{host_port}"),
         72,
         None,
         None,
@@ -586,7 +581,7 @@ async fn execute_pipeline(
         DeployStage::Health,
         StageStatus::Running,
         format!(
-            "Memeriksa health check di http://127.0.0.1:{host_port}{} (timeout {}s)...",
+            "Checking health at http://127.0.0.1:{host_port}{} (timeout {}s)...",
             cfg.run.health, cfg.run.health_timeout_secs
         ),
         72,
@@ -596,7 +591,7 @@ async fn execute_pipeline(
 
     let target_addr: SocketAddr = format!("127.0.0.1:{host_port}")
         .parse()
-        .map_err(|e| SkociError::internal(format!("Target addr parsing gagal: {e}"), "Coba lagi"))?;
+        .map_err(|e| SkociError::internal(format!("Failed to parse target address: {e}"), "Try again"))?;
 
     let health_checker = HealthChecker::new(Duration::from_secs(5));
     let health_res = health_checker
@@ -638,7 +633,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Health,
         StageStatus::Ok,
-        "Health check lolos",
+        "Health check passed",
         85,
         None,
         None,
@@ -648,7 +643,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Cutover,
         StageStatus::Running,
-        "Mengalihkan trafik proxy ke versi baru...",
+        "Switching proxy traffic to new version...",
         85,
         None,
         None,
@@ -685,7 +680,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Cutover,
         StageStatus::Ok,
-        "Trafik proxy berhasil dialihkan",
+        "Proxy traffic successfully switched",
         90,
         None,
         None,
@@ -695,7 +690,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Smoke,
         StageStatus::Running,
-        "Menjalankan smoke test (GET /)...",
+        "Running smoke test (GET /)...",
         90,
         None,
         None,
@@ -708,7 +703,7 @@ async fn execute_pipeline(
         Some(status) if smoke_passed => buffer.emit(
             DeployStage::Smoke,
             StageStatus::Ok,
-            format!("Smoke test lolos (GET / → {status})"),
+            format!("Smoke test passed (GET / → {status})"),
             95,
             None,
             None,
@@ -717,8 +712,8 @@ async fn execute_pipeline(
             DeployStage::Smoke,
             StageStatus::Failed,
             format!(
-                "Smoke test gagal (GET / → {}). Versi tetap live karena health check lolos; cek 'skoci logs'",
-                other.map(|s| s.to_string()).unwrap_or_else(|| "tidak ada respons".to_string())
+                "Smoke test failed (GET / → {}). Version remains live because health check passed; check 'skoci logs'",
+                other.map(|s| s.to_string()).unwrap_or_else(|| "no response".to_string())
             ),
             95,
             None,
@@ -730,7 +725,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Cleanup,
         StageStatus::Running,
-        "Membersihkan container versi sebelumnya...",
+        "Cleaning up previous version containers...",
         95,
         None,
         None,
@@ -751,7 +746,7 @@ async fn execute_pipeline(
     buffer.emit(
         DeployStage::Cleanup,
         StageStatus::Ok,
-        "Pembersihan container selesai",
+        "Container cleanup completed",
         99,
         None,
         None,
@@ -917,11 +912,11 @@ fn allocate_host_port(reserved: &HashSet<u16>) -> SkociResult<u16> {
     for _ in 0..50 {
         let port = std::net::TcpListener::bind(("127.0.0.1", 0))
             .and_then(|l| l.local_addr())
-            .map_err(|e| SkociError::internal(format!("Gagal mencari port kosong: {e}"), "Coba deploy lagi"))?
+            .map_err(|e| SkociError::internal(format!("Failed to find free port: {e}"), "Try deploying again"))?
             .port();
         if !reserved.contains(&port) {
             return Ok(port);
         }
     }
-    Err(SkociError::internal("Tidak menemukan port kosong untuk container", "Coba deploy lagi"))
+    Err(SkociError::internal("Could not find free port for container", "Try deploying again"))
 }

@@ -441,7 +441,7 @@ async fn test_secret_value_with_newline_returns_400() {
 
     let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body_str = String::from_utf8_lossy(&body_bytes);
-    assert!(body_str.contains("newline") || body_str.contains("baris baru"));
+    assert!(body_str.contains("newline"));
 }
 
 #[tokio::test]
@@ -485,7 +485,7 @@ async fn test_master_token_min_length_validation() {
 
     let res = skoci_control::server::run_server(cfg).await;
     assert!(res.is_err());
-    assert!(res.unwrap_err().to_string().contains("32 karakter"));
+    assert!(res.unwrap_err().to_string().contains("32 characters"));
 }
 
 #[test]

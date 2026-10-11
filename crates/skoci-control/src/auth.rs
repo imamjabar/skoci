@@ -54,8 +54,8 @@ impl Subject {
             Ok(())
         } else {
             Err(SkociError::forbidden(
-                "Aksi ini membutuhkan hak akses admin",
-                "Gunakan token admin / master untuk menjalankan aksi ini",
+                "This action requires admin privileges",
+                "Use an admin / master token to perform this action",
             ))
         }
     }
@@ -93,7 +93,7 @@ pub fn generate_agent_token(app: &str) -> (String, String, String) {
 pub fn authenticate_token(db: &Database, master_token: &str, token: &str) -> SkociResult<Subject> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
-        return Err(SkociError::unauthorized("Token otorisasi kosong"));
+        return Err(SkociError::unauthorized("Authorization token is empty"));
     }
 
     if constant_time_eq(trimmed.as_bytes(), master_token.as_bytes()) {
@@ -124,5 +124,5 @@ pub fn authenticate_token(db: &Database, master_token: &str, token: &str) -> Sko
         }
     }
 
-    Err(SkociError::unauthorized("Token tidak valid atau telah dicabut"))
+    Err(SkociError::unauthorized("Token is invalid or has been revoked"))
 }

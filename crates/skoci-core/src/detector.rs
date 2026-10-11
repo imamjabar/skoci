@@ -73,9 +73,9 @@ impl ProjectDetector {
                     }
                 }
             }
-            notes.push("Menggunakan Dockerfile yang sudah ada di proyek.".to_string());
+            notes.push("Using existing Dockerfile found in the project.".to_string());
             notes.push(
-                "Pastikan container menyediakan endpoint '/healthz' atau ubah 'run.health' di skoci.yaml."
+                "Ensure the container provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -100,14 +100,14 @@ impl ProjectDetector {
                         || dir.join("npm-shrinkwrap.json").is_file();
 
                     if has_start {
-                        notes.push("Terdeteksi Node.js dengan script 'start'.".to_string());
+                        notes.push("Detected Node.js with 'start' script.".to_string());
                         if has_lockfile {
-                            notes.push("Menggunakan 'npm ci' karena package-lock.json ditemukan.".to_string());
+                            notes.push("Using 'npm ci' because package-lock.json was found.".to_string());
                         } else {
-                            notes.push("Menggunakan 'npm install'.".to_string());
+                            notes.push("Using 'npm install'.".to_string());
                         }
                         notes.push(
-                            "Health check diset ke '/' agar deploy pertama langsung sukses. Ubah ke '/healthz' jika sudah ada endpoint khusus."
+                            "Health check set to '/' so initial deployment succeeds immediately. Change to '/healthz' once a dedicated endpoint exists."
                                 .to_string(),
                         );
                         return Detection {
@@ -127,14 +127,14 @@ impl ProjectDetector {
                             }
                         }
                         notes.push(
-                            "Terdeteksi build statis (Node.js build dengan web server nginx)."
+                            "Detected static build (Node.js build with nginx web server)."
                                 .to_string(),
                         );
-                        notes.push(format!("Direktori output build: '{out_dir}'"));
+                        notes.push(format!("Build output directory: '{out_dir}'"));
                         if has_lockfile {
-                            notes.push("Menggunakan 'npm ci' karena package-lock.json ditemukan.".to_string());
+                            notes.push("Using 'npm ci' because package-lock.json was found.".to_string());
                         } else {
-                            notes.push("Menggunakan 'npm install'.".to_string());
+                            notes.push("Using 'npm install'.".to_string());
                         }
                         return Detection {
                             framework: Framework::StaticBuild,
@@ -162,7 +162,7 @@ impl ProjectDetector {
             }
             let lower = all_text.to_ascii_lowercase();
 
-            notes.push("Terdeteksi proyek Python.".to_string());
+            notes.push("Detected Python project.".to_string());
             if lower.contains("fastapi") {
                 notes.push("Server: uvicorn main:app".to_string());
             } else if lower.contains("flask") || lower.contains("django") {
@@ -171,7 +171,7 @@ impl ProjectDetector {
                 notes.push("Server: python main.py".to_string());
             }
             notes.push(
-                "Health check diset ke '/' agar deploy pertama langsung sukses. Ubah ke '/healthz' jika sudah ada endpoint khusus."
+                "Health check set to '/' so initial deployment succeeds immediately. Change to '/healthz' once a dedicated endpoint exists."
                     .to_string(),
             );
 
@@ -188,10 +188,10 @@ impl ProjectDetector {
         let cargo_path = dir.join("Cargo.toml");
         if cargo_path.is_file() {
             let bin_name = extract_rust_bin_name(&cargo_path);
-            notes.push("Terdeteksi proyek Rust.".to_string());
-            notes.push(format!("Binary Rust: '{bin_name}'"));
+            notes.push("Detected Rust project.".to_string());
+            notes.push(format!("Rust binary: '{bin_name}'"));
             notes.push(
-                "Pastikan aplikasi menyediakan endpoint '/healthz' atau ubah 'run.health' di skoci.yaml."
+                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -205,9 +205,9 @@ impl ProjectDetector {
 
         // 5. go.mod
         if dir.join("go.mod").is_file() {
-            notes.push("Terdeteksi proyek Go.".to_string());
+            notes.push("Detected Go project.".to_string());
             notes.push(
-                "Pastikan aplikasi menyediakan endpoint '/healthz' atau ubah 'run.health' di skoci.yaml."
+                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -221,12 +221,12 @@ impl ProjectDetector {
 
         // 6. composer.json
         if dir.join("composer.json").is_file() {
-            notes.push("Terdeteksi proyek PHP.".to_string());
+            notes.push("Detected PHP project.".to_string());
             if dir.join("public").is_dir() {
-                notes.push("Document root Apache: public/".to_string());
+                notes.push("Apache document root: public/".to_string());
             }
             notes.push(
-                "Pastikan aplikasi menyediakan endpoint '/healthz' atau ubah 'run.health' di skoci.yaml."
+                "Ensure the application provides a '/healthz' endpoint or change 'run.health' in skoci.yaml."
                     .to_string(),
             );
             return Detection {
@@ -240,7 +240,7 @@ impl ProjectDetector {
 
         // 7. index.html at root
         if dir.join("index.html").is_file() {
-            notes.push("Terdeteksi situs web statis (HTML/CSS/JS) dengan web server nginx.".to_string());
+            notes.push("Detected static website (HTML/CSS/JS) with nginx web server.".to_string());
             return Detection {
                 framework: Framework::Static,
                 port: 80,
@@ -253,7 +253,7 @@ impl ProjectDetector {
         // 8. Fallback: static html depth <= 2 else Docker
         if has_html_within_depth_2(dir) {
             notes.push(
-                "Terdeteksi file HTML di direktori proyek; disajikan dengan web server nginx."
+                "Detected HTML files in project directory; served with nginx web server."
                     .to_string(),
             );
             return Detection {
@@ -266,7 +266,7 @@ impl ProjectDetector {
         }
 
         notes.push(
-            "Tidak dapat mendeteksi framework secara otomatis. Buat file 'Dockerfile' di direktori proyek untuk melanjutkan."
+            "Could not detect framework automatically. Create a 'Dockerfile' in the project directory to continue."
                 .to_string(),
         );
         Detection {
@@ -290,7 +290,7 @@ impl ProjectDetector {
         out.push_str(&format!("  health: \"{}\"\n", d.health));
         out.push_str("  health_timeout_secs: 60\n");
         out.push_str("  memory: 256m\n");
-        out.push_str("# Tambahkan domain Anda di sini jika sudah siap (misal: - app.domainanda.com)\n");
+        out.push_str("# Add your domains here when ready (e.g. - app.yourdomain.com)\n");
         out.push_str("domains: []\n");
         out.push_str("preview_domains: []\n");
         out.push_str("env:\n");
@@ -351,8 +351,8 @@ CMD ["npm", "start"]
             Framework::StaticBuild => {
                 let mut out_dir = "dist";
                 for note in &d.notes {
-                    if let Some(pos) = note.find("Direktori output build: '") {
-                        let rest = &note[pos + "Direktori output build: '".len()..];
+                    if let Some(pos) = note.find("Build output directory: '") {
+                        let rest = &note[pos + "Build output directory: '".len()..];
                         if let Some(end) = rest.find('\'') {
                             out_dir = &rest[..end];
                             break;
@@ -416,8 +416,8 @@ EXPOSE 8000
             Framework::Rust => {
                 let mut bin_name = "app";
                 for note in &d.notes {
-                    if let Some(pos) = note.find("Binary Rust: '") {
-                        let rest = &note[pos + "Binary Rust: '".len()..];
+                    if let Some(pos) = note.find("Rust binary: '") {
+                        let rest = &note[pos + "Rust binary: '".len()..];
                         if let Some(end) = rest.find('\'') {
                             bin_name = &rest[..end];
                             break;

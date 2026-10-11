@@ -236,7 +236,7 @@ async fn test_live_proxy_end_to_end() {
     assert_eq!(large_bytes.len(), 2 * 1024 * 1024);
     assert!(large_bytes.iter().all(|&b| b == b'X'));
 
-    // 5. Unknown host -> 404 with Indonesian text and hint
+    // 5. Unknown host -> 404 with text and hint
     let resp_404 = client
         .get(format!("http://{proxy_http_addr}/"))
         .header("Host", "unknown-domain.local")
@@ -247,11 +247,11 @@ async fn test_live_proxy_end_to_end() {
     assert_eq!(resp_404.status(), 404);
     let text_404 = resp_404.text().await.unwrap();
     assert!(
-        text_404.contains("404 Tidak Ditemukan"),
+        text_404.contains("404 Not Found"),
         "body was: {text_404}"
     );
     assert!(
-        text_404.contains("tambahkan domain ke skoci.yaml lalu skoci deploy"),
+        text_404.contains("add the domain to skoci.yaml then run skoci deploy"),
         "body was: {text_404}"
     );
 
@@ -286,7 +286,7 @@ async fn test_live_proxy_end_to_end() {
     );
     assert!(text_502.contains("skoci logs"), "body was: {text_502}");
 
-    // 7. Control host over HTTP when TLS is off -> 403 with exact Indonesian message
+    // 7. Control host over HTTP when TLS is off -> 403 with exact message
     let resp_403 = client
         .get(format!("http://{proxy_http_addr}/"))
         .header("Host", "control.skoci.local")
@@ -296,7 +296,7 @@ async fn test_live_proxy_end_to_end() {
 
     assert_eq!(resp_403.status(), 403);
     let text_403 = resp_403.text().await.unwrap();
-    let expected_msg = "Akses API Skoci lewat HTTP publik ditolak. Gunakan HTTPS (--tls acme) atau SSH tunnel: ssh -L 8787:127.0.0.1:8787 user@server";
+    let expected_msg = "Public HTTP access to Skoci API is forbidden. Use HTTPS (--tls acme) or an SSH tunnel: ssh -L 8787:127.0.0.1:8787 user@server";
     assert!(
         text_403.contains(expected_msg),
         "body was: {text_403}, expected to contain: {expected_msg}"

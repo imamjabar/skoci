@@ -8,7 +8,7 @@ use skoci_api::responses::{
 pub fn print_json<T: Serialize>(resp: &ApiResponse<T>) {
     match serde_json::to_string_pretty(resp) {
         Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("Gagal memformat JSON: {e}"),
+        Err(e) => eprintln!("Failed to format JSON: {e}"),
     }
 }
 
@@ -18,23 +18,23 @@ pub fn print_error(err: &SkociError, is_json: bool) {
         print_json(&resp);
     } else {
         eprintln!("✗ Error [{}]: {}", err.code, err.message);
-        eprintln!("  Solusi: {}", err.fix);
+        eprintln!("  Fix: {}", err.fix);
     }
 }
 
 pub fn render_status(status: &StatusResponse) {
-    println!("Aplikasi: {}", status.app);
-    println!("Aplikasi Default: {}", if status.is_default_app { "Ya" } else { "Tidak" });
+    println!("App: {}", status.app);
+    println!("Default App: {}", if status.is_default_app { "Yes" } else { "No" });
 
     if let Some(dep_id) = &status.running_deployment {
-        println!("Deployment sedang berjalan: {dep_id}");
+        println!("Running deployment: {dep_id}");
     }
 
-    println!("\nLingkungan (Environments):");
+    println!("\nEnvironments:");
     if status.environments.is_empty() {
-        println!("  (Belum ada lingkungan yang di-deploy)");
+        println!("  (No environments deployed yet)");
     } else {
-        println!("  {:<12} {:<18} {:<12} {:<8} URL", "ENV", "VERSI", "STATUS", "SEHAT");
+        println!("  {:<12} {:<18} {:<12} {:<8} URL", "ENV", "VERSION", "STATUS", "HEALTHY");
         println!("  {}", "-".repeat(70));
         for env in &status.environments {
             let healthy_str = if env.healthy { "✓" } else { "✗" };
@@ -51,7 +51,7 @@ pub fn render_status(status: &StatusResponse) {
     }
 
     if !status.services.is_empty() {
-        println!("\nLayanan Terhubung (Services):");
+        println!("\nConnected Services:");
         for (service, state) in &status.services {
             println!("  • {}: {}", service, state);
         }
@@ -60,11 +60,11 @@ pub fn render_status(status: &StatusResponse) {
 
 pub fn render_deployments(deployments: &[DeploymentInfo]) {
     if deployments.is_empty() {
-        println!("Belum ada riwayat deployment.");
+        println!("No deployment history yet.");
         return;
     }
 
-    println!("{:<24} {:<16} {:<12} {:<18} {:<10} DIBUAT", "ID", "APP", "ENV", "VERSI", "STATUS");
+    println!("{:<24} {:<16} {:<12} {:<18} {:<10} CREATED", "ID", "APP", "ENV", "VERSION", "STATUS");
     println!("{}", "-".repeat(95));
     for dep in deployments {
         let ts = dep.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -77,11 +77,11 @@ pub fn render_deployments(deployments: &[DeploymentInfo]) {
 
 pub fn render_approvals(approvals: &[ApprovalInfo]) {
     if approvals.is_empty() {
-        println!("Tidak ada permintaan persetujuan yang menunggu.");
+        println!("No pending approval requests.");
         return;
     }
 
-    println!("{:<24} {:<16} {:<12} {:<10} {:<18} DETAIL", "REQUEST ID", "APP", "AKSI", "STATUS", "PEMOHON");
+    println!("{:<24} {:<16} {:<12} {:<10} {:<18} DETAIL", "REQUEST ID", "APP", "ACTION", "STATUS", "REQUESTER");
     println!("{}", "-".repeat(95));
     for app in approvals {
         println!(
@@ -93,11 +93,11 @@ pub fn render_approvals(approvals: &[ApprovalInfo]) {
 
 pub fn render_tokens(tokens: &[TokenInfo]) {
     if tokens.is_empty() {
-        println!("Belum ada token untuk aplikasi ini.");
+        println!("No tokens for this app yet.");
         return;
     }
 
-    println!("{:<16} {:<16} {:<16} {:<20} TERAKHIR DIGUNAKAN", "ID (12 HEX)", "APP", "NAMA", "DIBUAT");
+    println!("{:<16} {:<16} {:<16} {:<20} LAST USED", "ID (12 HEX)", "APP", "NAME", "CREATED");
     println!("{}", "-".repeat(85));
     for tok in tokens {
         let created = tok.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -113,32 +113,32 @@ pub fn render_tokens(tokens: &[TokenInfo]) {
 }
 
 pub fn render_doctor(doctor: &DoctorResponse) {
-    let health_str = if doctor.healthy { "Sehat (Healthy)" } else { "Bermasalah (Issues Detected)" };
-    println!("Status Server : {}", health_str);
-    println!("Versi Server  : {}", doctor.version);
+    let health_str = if doctor.healthy { "Healthy" } else { "Issues Detected" };
+    println!("Server Status : {}", health_str);
+    println!("Server Version: {}", doctor.version);
     println!("Idle RAM      : {:.1} MB", doctor.idle_ram_mb);
-    println!("\nHasil Pemeriksaan:");
+    println!("\nCheck Results:");
 
     for check in &doctor.checks {
         let icon = if check.passed { "✓" } else { "✗" };
         println!("  {} {:<24} : {}", icon, check.name, check.message);
         if let Some(fix) = &check.fix {
             if !check.passed {
-                println!("    Solusi: {}", fix);
+                println!("    Fix: {}", fix);
             }
         }
     }
 }
 
 pub fn render_logs(logs: &LogsResponse) {
-    println!("Log Aplikasi: {} ({}) Kontainer: {}", logs.app, logs.env, logs.container);
+    println!("App Logs: {} ({}) Container: {}", logs.app, logs.env, logs.container);
     println!("{}", "-".repeat(70));
     for line in &logs.lines {
         println!("{}", line);
     }
 
     if !logs.error_summary.is_empty() {
-        println!("\nRingkasan Error ({} baris):", logs.error_summary.len());
+        println!("\nError Summary ({} lines):", logs.error_summary.len());
         println!("{}", "-".repeat(70));
         for err_line in &logs.error_summary {
             println!("  [!] {}", err_line);

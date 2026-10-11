@@ -27,7 +27,7 @@ pub async fn handle_create_session(
     let token = body.token.trim();
     if !constant_time_eq(token.as_bytes(), state.config.master_token.as_bytes()) {
         state.rate_limiter.record_failure(ip);
-        let err = SkociError::unauthorized("Master token salah");
+        let err = SkociError::unauthorized("Incorrect master token");
         let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::UNAUTHORIZED);
         return (status, Json(ApiResponse::<()>::err(err))).into_response();
     }

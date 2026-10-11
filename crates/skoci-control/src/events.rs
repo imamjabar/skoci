@@ -127,8 +127,8 @@ impl JobRegistry {
 
         if let Some(existing_id) = running.get(&key) {
             return Err(SkociError::conflict(
-                format!("Deployment {existing_id} sedang berjalan untuk {app}/{env}"),
-                "Tunggu hingga proses deployment selesai sebelum memulai yang baru",
+                format!("Deployment {existing_id} is already running for {app}/{env}"),
+                "Wait for the current deployment to finish before starting a new one",
             ));
         }
 

@@ -37,8 +37,8 @@ pub async fn handle_rollback(
                 Ok(Some(d)) => d,
                 Ok(None) => {
                     return api_reply::<()>(Err(SkociError::bad_request(
-                        "Tidak ditemukan versi deployment sebelumnya untuk rollback",
-                        "Tidak ada versi riwayat yang dapat dipulihkan",
+                        "No previous deployment version found for rollback",
+                        "No historical version available to restore",
                     )));
                 }
                 Err(e) => return api_reply::<()>(Err(e)),
@@ -52,8 +52,8 @@ pub async fn handle_rollback(
         Ok(true) => {}
         Ok(false) => {
             return api_reply::<()>(Err(SkociError::bad_request(
-                format!("Docker image '{image_tag}' tidak ditemukan untuk rollback"),
-                "Image versi ini tidak tersedia di host Docker",
+                format!("Docker image '{image_tag}' not found for rollback"),
+                "This image version is not available on Docker host",
             )));
         }
         Err(e) => return api_reply::<()>(Err(e)),
@@ -90,5 +90,5 @@ pub async fn handle_rollback(
         events_url: format!("/api/deployments/{deployment_id}/events"),
     };
 
-    api_accepted(accepted, "Rollback diterima dan antre untuk diproses")
+    api_accepted(accepted, "Rollback accepted and queued for processing")
 }

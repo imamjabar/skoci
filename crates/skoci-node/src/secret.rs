@@ -15,17 +15,17 @@ impl SecretCipher {
         if key_path.exists() {
             let bytes = fs::read(key_path).map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal membaca file kunci enkripsi: {e}"),
-                    "Periksa izin baca pada file kunci",
+                    format!("Failed to read encryption key file: {e}"),
+                    "Check read permissions on the key file",
                 )
             })?;
             if bytes.len() != 32 {
                 return Err(SkociError::bad_request(
                     format!(
-                        "Panjang file kunci enkripsi tidak valid: {} byte (harus 32 byte)",
+                        "Invalid encryption key file length: {} bytes (must be 32 bytes)",
                         bytes.len()
                     ),
-                    "Hapus file kunci yang rusak agar dapat dibuat ulang secara otomatis",
+                    "Delete the corrupted key file so it can be regenerated automatically",
                 ));
             }
             let mut key = [0u8; 32];
@@ -35,8 +35,8 @@ impl SecretCipher {
             if let Some(parent) = key_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
                     SkociError::internal(
-                        format!("Gagal membuat folder kunci enkripsi: {e}"),
-                        "Periksa izin folder",
+                        format!("Failed to create encryption key directory: {e}"),
+                        "Check directory permissions",
                     )
                 })?;
             }
@@ -55,15 +55,15 @@ impl SecretCipher {
 
             let mut file = opts.open(key_path).map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal membuat file kunci enkripsi 0600: {e}"),
-                    "Periksa izin direktori",
+                    format!("Failed to create 0600 encryption key file: {e}"),
+                    "Check directory permissions",
                 )
             })?;
 
             file.write_all(&key).map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal menulis byte kunci enkripsi: {e}"),
-                    "Periksa disk space atau izin",
+                    format!("Failed to write encryption key bytes: {e}"),
+                    "Check disk space or permissions",
                 )
             })?;
 
@@ -82,7 +82,7 @@ impl SecretCipher {
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.key));
         let ciphertext = cipher
             .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
-            .map_err(|e| SkociError::internal(format!("Enkripsi secret gagal: {e}"), "Coba lagi"))?;
+            .map_err(|e| SkociError::internal(format!("Secret encryption failed: {e}"), "Try again"))?;
 
         Ok((hex::encode(ciphertext), hex::encode(nonce_bytes)))
     }
@@ -90,25 +90,25 @@ impl SecretCipher {
     pub fn decrypt(&self, ciphertext_hex: &str, nonce_hex: &str) -> SkociResult<String> {
         let ciphertext = hex::decode(ciphertext_hex).map_err(|e| {
             SkociError::bad_request(
-                format!("Format hex ciphertext tidak valid: {e}"),
-                "Periksa integritas data secret",
+                format!("Invalid ciphertext hex format: {e}"),
+                "Check secret data integrity",
             )
         })?;
 
         let nonce_bytes = hex::decode(nonce_hex).map_err(|e| {
             SkociError::bad_request(
-                format!("Format hex nonce tidak valid: {e}"),
-                "Periksa integritas data nonce",
+                format!("Invalid nonce hex format: {e}"),
+                "Check nonce data integrity",
             )
         })?;
 
         if nonce_bytes.len() != 12 {
             return Err(SkociError::bad_request(
                 format!(
-                    "Panjang nonce tidak valid (harus 12 byte, didapat {})",
+                    "Invalid nonce length (must be 12 bytes, got {})",
                     nonce_bytes.len()
                 ),
-                "Periksa integritas data nonce",
+                "Check nonce data integrity",
             ));
         }
 
@@ -117,15 +117,15 @@ impl SecretCipher {
             .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
             .map_err(|e| {
                 SkociError::bad_request(
-                    format!("Dekripsi gagal (kunci salah atau ciphertext dimodifikasi): {e}"),
-                    "Periksa apakah kunci enkripsi cocok dengan data",
+                    format!("Decryption failed (wrong key or corrupted ciphertext): {e}"),
+                    "Verify that the encryption key matches the data",
                 )
             })?;
 
         String::from_utf8(decrypted_bytes).map_err(|e| {
             SkociError::bad_request(
-                format!("Hasil dekripsi bukan UTF-8 valid: {e}"),
-                "Pastikan data yang dienkripsi adalah teks valid",
+                format!("Decrypted result is not valid UTF-8: {e}"),
+                "Ensure encrypted data is valid text",
             )
         })
     }

@@ -23,12 +23,12 @@ pub async fn handle_doctor(
         name: "docker_daemon".to_string(),
         passed: docker_ok,
         message: if docker_ok {
-            "Docker daemon aktif dan merespons".to_string()
+            "Docker daemon is active and responding".to_string()
         } else {
-            "Docker daemon tidak merespons".to_string()
+            "Docker daemon is not responding".to_string()
         },
         fix: if !docker_ok {
-            Some("Pastikan Docker berjalan: 'sudo systemctl start docker'".to_string())
+            Some("Ensure Docker is running: 'sudo systemctl start docker'".to_string())
         } else {
             None
         },
@@ -49,17 +49,17 @@ pub async fn handle_doctor(
         name: "proxy_http".to_string(),
         passed: http_ok && bind_errors.is_empty(),
         message: if bind_errors.is_empty() && http_ok {
-            format!("Proxy HTTP mendengarkan di {}", state.config.http_bind)
+            format!("HTTP proxy listening on {}", state.config.http_bind)
         } else if !bind_errors.is_empty() {
-            format!("Proxy gagal membuka port: {}", bind_errors.join("; "))
+            format!("Proxy failed to bind port: {}", bind_errors.join("; "))
         } else {
-            format!("Proxy HTTP tidak merespons di port {}", state.config.http_bind.port())
+            format!("HTTP proxy not responding on port {}", state.config.http_bind.port())
         },
         fix: if http_ok && bind_errors.is_empty() {
             None
         } else {
             Some(format!(
-                "Port dipakai proses lain? Cek: sudo ss -ltnp 'sport = :{}' (container lama: sudo docker ps --filter publish={}), hentikan lalu 'sudo systemctl restart skoci'",
+                "Port in use by another process? Check: sudo ss -ltnp 'sport = :{}' (old container: sudo docker ps --filter publish={}), stop it, then 'sudo systemctl restart skoci'",
                 state.config.http_bind.port(),
                 state.config.http_bind.port()
             ))
@@ -71,7 +71,7 @@ pub async fn handle_doctor(
         TlsMode::Off => checks.push(DoctorCheck {
             name: "tls".to_string(),
             passed: true,
-            message: "TLS mati (HTTP biasa). Akses API dari luar server lewat SSH tunnel".to_string(),
+            message: "TLS disabled (plain HTTP). Access API from outside server via SSH tunnel".to_string(),
             fix: None,
         }),
         TlsMode::Acme => {
@@ -85,7 +85,7 @@ pub async fn handle_doctor(
                 .filter(|(_, issued, _)| !issued)
                 .map(|(host, _, err)| match err {
                     Some(e) => format!("{host} ({e})"),
-                    None => format!("{host} (sedang diproses)"),
+                    None => format!("{host} (in progress)"),
                 })
                 .collect();
             let issued = certs.iter().filter(|(_, issued, _)| *issued).count();
@@ -93,14 +93,14 @@ pub async fn handle_doctor(
                 name: "tls".to_string(),
                 passed: pending.is_empty(),
                 message: if pending.is_empty() {
-                    format!("Sertifikat HTTPS aktif untuk {issued} host")
+                    format!("HTTPS certificates active for {issued} host(s)")
                 } else {
-                    format!("Sertifikat belum aktif: {}", pending.join(", "))
+                    format!("Certificates not active yet: {}", pending.join(", "))
                 },
                 fix: if pending.is_empty() {
                     None
                 } else {
-                    Some("Pastikan port 80 dan 443 terbuka di firewall cloud VPS dan DNS host mengarah ke IP server; Skoci mencoba ulang otomatis".to_string())
+                    Some("Ensure ports 80 and 443 are open in VPS firewall and host DNS points to server IP; Skoci will retry automatically".to_string())
                 },
             });
         }
@@ -114,16 +114,16 @@ pub async fn handle_doctor(
         name: "data_dir_writable".to_string(),
         passed: writable,
         message: if writable {
-            format!("Direktori data '{}' dapat ditulis", state.config.data_dir.display())
+            format!("Data directory '{}' is writable", state.config.data_dir.display())
         } else {
             format!(
-                "Direktori data '{}' tidak dapat ditulis",
+                "Data directory '{}' is not writable",
                 state.config.data_dir.display()
             )
         },
         fix: if !writable {
             Some(format!(
-                "Periksa permission folder data: sudo chown -R $USER '{}'",
+                "Check data directory permissions: sudo chown -R $USER '{}'",
                 state.config.data_dir.display()
             ))
         } else {
@@ -137,12 +137,12 @@ pub async fn handle_doctor(
         name: "database_integrity".to_string(),
         passed: db_ok,
         message: if db_ok {
-            "Database SQLite integritas OK".to_string()
+            "SQLite database integrity OK".to_string()
         } else {
-            "Database SQLite gagal quick_check".to_string()
+            "SQLite database failed quick_check".to_string()
         },
         fix: if !db_ok {
-            Some("Database korup, periksa file skoci.db".to_string())
+            Some("Database corrupt, check skoci.db file".to_string())
         } else {
             None
         },
@@ -154,11 +154,11 @@ pub async fn handle_doctor(
         name: "base_domain".to_string(),
         passed: true,
         message: match &state.config.base_domain {
-            Some(d) => format!("Base domain terkonfigurasi: {d}"),
-            None => "Base domain belum diset (menggunakan host spesifik skoci.yaml)".to_string(),
+            Some(d) => format!("Base domain configured: {d}"),
+            None => "Base domain not configured (using specific hosts from skoci.yaml)".to_string(),
         },
         fix: if !base_domain_set {
-            Some("Set --base-domain <domain> agar host otomatis aktif".to_string())
+            Some("Set --base-domain <domain> to enable automatic host routing".to_string())
         } else {
             None
         },

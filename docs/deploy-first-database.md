@@ -1,20 +1,20 @@
-# Deploy Database & Manajemen Backup di Skoci
+# Deploy Databases & Manage Backups on Skoci
 
-Skoci mendukung penyediaan layanan database (*database accessories*) yang berjalan sebagai kontainer dengan volume data persisten dan jaringan internal yang terisolasi.
-
----
-
-## 1. Engine Database yang Didukung
-
-* **PostgreSQL:** Versi `15`, `16`, `17` (Image resmi: `postgres:<version>`)
-* **MySQL:** Versi `8.0`, `8.4` (Image resmi: `mysql:<version>`)
-* **Valkey / Redis:** Versi `7.2`, `8.0` (Image resmi: `valkey/valkey:<version>`)
+Skoci supports provisioning managed database accessory services that run in isolated containers with persistent storage volumes and dedicated internal networks.
 
 ---
 
-## 2. Mendeklarasikan Database di `skoci.yaml`
+## 1. Supported Database Engines
 
-Database dideklarasikan di bagian `services` pada file `skoci.yaml` di repositori aplikasi Anda:
+* **PostgreSQL:** Versions `15`, `16`, `17` (Official image: `postgres:<version>`)
+* **MySQL:** Versions `8.0`, `8.4` (Official image: `mysql:<version>`)
+* **Valkey / Redis:** Versions `7.2`, `8.0` (Official image: `valkey/valkey:<version>`)
+
+---
+
+## 2. Declaring Databases in `skoci.yaml`
+
+Databases are declared under the `services` section of `skoci.yaml` in your application repository:
 
 ```yaml
 version: 1
@@ -26,36 +26,36 @@ services:
   db:
     engine: postgres
     version: "16"
-    memory: 512m          # Batas memori kontainer database
+    memory: 512m          # Database container memory limit
     backup:
-      schedule: "0 2 * * *"  # Jadwal cron UTC (setiap jam 02:00 malam)
-      keep: 7                # Menyimpan 7 snapshot backup terbaru
+      schedule: "0 2 * * *"  # Cron schedule in UTC (daily at 02:00 AM)
+      keep: 7                # Keep 7 most recent backup snapshots
 ```
 
-### Karakteristik Jaringan & Keamanan Layanan:
-1. **Jaringan Internal Terisolasi:** Kontainer database tergabung dalam jaringan bridge Docker `skoci-<app>` dan tidak memublikasikan port ke internet publik host.
-2. **Volume Persisten:** Data tersimpan pada volume Docker bernama `skoci-<app>-<service>-data` (misal `skoci-toko-db-data`). Data tetap aman saat kontainer aplikasi di-deploy ulang.
-3. **Penyuntikan Kredensial Otomatis:**
-   - Skoci otomatis membuat kata sandi acak alfanumerik 32 karakter dan menyimpannya sebagai secret terenkripsi `SKOCI_<SERVICE_UPPER>_PASSWORD`.
-   - Variabel koneksi otomatis disuntikkan ke kontainer aplikasi:
-     - Layanan bernama `db` → disuntikkan sebagai `DATABASE_URL`.
-     - Layanan dengan nama lain (misal `cache`) → disuntikkan sebagai `<NAMA_UPPER>_URL` (misal `CACHE_URL`).
-   - Format URL koneksi:
-     - **Postgres:** `postgresql://skoci:<password>@db:5432/<nama_app>`
-     - **MySQL:** `mysql://skoci:<password>@<service>:3306/<nama_app>`
+### Network & Security Properties:
+1. **Isolated Internal Network:** Database containers join an isolated Docker bridge network `skoci-<app>` and do not publish ports to the public host interface.
+2. **Persistent Volumes:** Data is preserved on a named Docker volume `skoci-<app>-<service>-data` (e.g. `skoci-toko-db-data`). Data persists across app redeploys.
+3. **Automatic Credential Injection:**
+   - Skoci generates a random 32-character alphanumeric password and saves it as an encrypted secret `SKOCI_<SERVICE_UPPER>_PASSWORD`.
+   - Connection URLs are automatically injected into the application container:
+     - A service named `db` is injected as `DATABASE_URL`.
+     - A service with another name (e.g. `cache`) is injected as `<NAME_UPPER>_URL` (e.g. `CACHE_URL`).
+   - Connection URL formats:
+     - **Postgres:** `postgresql://skoci:<password>@db:5432/<app_name>`
+     - **MySQL:** `mysql://skoci:<password>@<service>:3306/<app_name>`
      - **Valkey:** `redis://:<password>@<service>:6379`
 
 ---
 
-## 3. Membuat Backup Database Segera (`skoci db backup`)
+## 3. Creating Immediate Database Backups (`skoci db backup`)
 
-Selain backup otomatis sesuai jadwal cron, Anda atau agen AI dapat memicu backup seketika sebelum melakukan migrasi data:
+In addition to scheduled cron backups, you or an AI agent can trigger an on-demand snapshot before running data migrations:
 
 ```bash
 skoci db backup db
 ```
 
-Output terstruktur:
+Structured output:
 ```json
 {
   "success": true,
@@ -67,36 +67,36 @@ Output terstruktur:
     "location": "/var/lib/skoci/backups/toko/db/db-20261011024500.dump",
     "created_at": "2026-10-11T02:45:00Z"
   },
-  "summary": "Backup database 'db' berhasil dibuat"
+  "summary": "Database backup 'db' created successfully"
 }
 ```
 
-Format berkas backup:
-* PostgreSQL: `.dump` (menggunakan `pg_dump -Fc`)
-* MySQL: `.sql` (menggunakan `mysqldump`)
-* Valkey: `.rdb` (menggunakan snapshot `SAVE`)
+Backup file formats:
+* PostgreSQL: `.dump` (via `pg_dump -Fc`)
+* MySQL: `.sql` (via `mysqldump`)
+* Valkey: `.rdb` (via `SAVE` snapshot)
 
-Daftar backup dapat dilihat kapan saja dengan:
+List existing backups at any time:
 ```bash
 skoci db list
 ```
 
 ---
 
-## 4. Memulihkan Database (`skoci db restore`)
+## 4. Restoring Databases (`skoci db restore`)
 
-Pemulihan database (*restore*) adalah aksi destruktif yang berpotensi menimpa data yang sedang berjalan.
+Database restoration is a destructive action that can overwrite active runtime data.
 
-Secara default pada server Skoci, **pemulihan database oleh agen selalu memerlukan persetujuan operator manusia**:
+By default on Skoci servers, **database restoration by an agent always requires human operator approval**:
 
-### Alur Restore:
-1. Agen AI atau pengembang meminta pemulihan:
+### Restoration Workflow:
+1. The AI agent or developer requests restoration:
    ```bash
    skoci db restore db-20261011024500 db
    ```
-2. Skoci mencatat permintaan pemulihan dan mengembalikan status `pending_approval` dengan `request_id`.
-3. Operator manusia memvalidasi dan menyetujui pemulihan lewat **Web Dashboard** di `https://skoci.<base-domain>` atau lewat terminal server:
+2. Skoci records the restore request and returns status `pending_approval` with a `request_id`.
+3. A human operator validates and approves the restore via the **Web Dashboard** at `https://skoci.<base-domain>` or via the server CLI:
    ```bash
    skoci approve req_restore_9876
    ```
-4. Skoci memulihkan arsip data ke kontainer database secara atomik.
+4. Skoci atomically restores the data archive into the database container.

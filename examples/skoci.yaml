@@ -4,23 +4,23 @@ build:
   dockerfile: Dockerfile
   context: .
 run:
-  port: 3000
-  health: /healthz
-  health_timeout_secs: 60
-  memory: 256m
+  port: 3000                  # Internal port the app listens on
+  health: /healthz            # HTTP health check probe path
+  health_timeout_secs: 60     # Maximum wait time for readiness (seconds)
+  memory: 256m                # Container memory limit
 domains:
-  - toko.sumopod.id
+  - toko.sumopod.id           # Production custom domain
 preview_domains:
-  - toko-preview.sumopod.id
+  - toko-preview.sumopod.id   # Preview custom domain
 env:
   public:
     NODE_ENV: production
   secrets:
-    - API_KEY
+    - API_KEY                 # Secret key names only; values set via `skoci secret set`
 services:
   db:
     engine: postgres
     version: "16"
     backup:
-      schedule: "0 2 * * *"
-      keep: 7
+      schedule: "0 2 * * *"   # Nightly UTC backup schedule
+      keep: 7                 # Retain 7 most recent snapshots

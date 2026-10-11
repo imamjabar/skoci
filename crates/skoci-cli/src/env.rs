@@ -60,9 +60,9 @@ pub fn load_env_files() {
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                        eprintln!("Izin ditolak membaca /etc/skoci/skoci.env: {e}");
+                        eprintln!("Permission denied reading /etc/skoci/skoci.env: {e}");
                         eprintln!(
-                            "Solusi: sudo usermod -aG skoci $USER lalu login ulang, atau gunakan sudo."
+                            "Fix: sudo usermod -aG skoci $USER then log in again, or use sudo."
                         );
                     }
                     Err(_) => {}
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn test_parse_env_file_content() {
         let sample = r#"
-# Ini komentar
+# This is a comment
 SKOCI_SERVER_URL=http://localhost:8787
 SKOCI_TOKEN="sk_test_token_123"
 OTHER_VAL='single-quoted'

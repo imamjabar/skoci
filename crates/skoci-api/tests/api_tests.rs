@@ -1,12 +1,12 @@
 use skoci_api::error::SkociError;
-use skoci_api::models::{ActionPermission, ApiResponse, SkociConfig, SkociPolicy};
+use skoci_api::models::{ApiResponse, SkociConfig};
 
 #[test]
 fn test_error_serialization() {
     let err = SkociError::secret_missing("DATABASE_URL");
     let json = serde_json::to_string(&err).unwrap();
     assert!(json.contains("\"code\":\"secret_missing\""));
-    assert!(json.contains("Secret 'DATABASE_URL' belum diset"));
+    assert!(json.contains("Secret 'DATABASE_URL' is not set"));
 
     let deserialized: SkociError = serde_json::from_str(&json).unwrap();
     assert_eq!(err, deserialized);
@@ -18,7 +18,7 @@ fn test_api_response_wrapper() {
     assert!(res.success);
     assert_eq!(res.summary, "System healthy");
 
-    let res_err = ApiResponse::<()>::err(SkociError::unauthorized("Token kedaluwarsa"));
+    let res_err = ApiResponse::<()>::err(SkociError::unauthorized("Token expired"));
     assert!(!res_err.success);
     assert!(res_err.summary.contains("unauthorized"));
 }
@@ -31,14 +31,6 @@ fn test_error_http_status_mapping() {
     assert_eq!(SkociError::app_not_found("a").http_status(), 404);
     assert_eq!(SkociError::payload_too_large(200).http_status(), 413);
     assert_eq!(SkociError::new("something_new", "m", "f").http_status(), 500);
-}
-
-#[test]
-fn test_builtin_policy_requires_approval_for_production_deploy() {
-    let policy = SkociPolicy::default();
-    assert_eq!(policy.preview.deploy, ActionPermission::Auto);
-    assert_eq!(policy.production.deploy, ActionPermission::Approve);
-    assert_eq!(policy.preview.db_restore, ActionPermission::Approve);
 }
 
 #[test]

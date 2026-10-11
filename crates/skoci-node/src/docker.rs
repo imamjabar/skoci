@@ -70,7 +70,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal mengecek versi docker: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to check docker version: {e}")))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -89,7 +89,7 @@ impl DockerClient {
             .stderr(Stdio::null())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal inspect network: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to inspect network: {e}")))?;
 
         if inspect.status.success() {
             return Ok(());
@@ -103,7 +103,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal create network: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to create network: {e}")))?;
 
         if create.status.success() {
             Ok(())
@@ -112,7 +112,7 @@ impl DockerClient {
             if err.contains("already exists") {
                 Ok(())
             } else {
-                Err(SkociError::docker_error(format!("Gagal membuat network '{name}': {err}")))
+                Err(SkociError::docker_error(format!("Failed to create network '{name}': {err}")))
             }
         }
     }
@@ -176,7 +176,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menjalankan docker run: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to run docker run: {e}")))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -195,7 +195,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menjalankan docker port: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to run docker port: {e}")))?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -227,7 +227,7 @@ impl DockerClient {
         }
 
         Err(SkociError::docker_error(format!(
-            "Tidak dapat menemukan mapping host port IPv4 untuk container '{container}' port '{container_port}'"
+            "Could not find IPv4 host port mapping for container '{container}' port '{container_port}'"
         )))
     }
 
@@ -241,7 +241,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menjalankan docker inspect: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to run docker inspect: {e}")))?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr).to_lowercase();
@@ -262,7 +262,7 @@ impl DockerClient {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let val: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|e| {
-            SkociError::docker_error(format!("Format JSON inspect tidak valid: {e}"))
+            SkociError::docker_error(format!("Invalid inspect JSON format: {e}"))
         })?;
 
         let state = if val.get("state").is_some() {
@@ -314,13 +314,13 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal start container: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to start container: {e}")))?;
 
         if output.status.success() {
             Ok(())
         } else {
             let err = String::from_utf8_lossy(&output.stderr);
-            Err(SkociError::docker_error(format!("Gagal start container '{name}': {err}")))
+            Err(SkociError::docker_error(format!("Failed to start container '{name}': {err}")))
         }
     }
 
@@ -334,13 +334,13 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal stop container: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to stop container: {e}")))?;
 
         if output.status.success() {
             Ok(())
         } else {
             let err = String::from_utf8_lossy(&output.stderr);
-            Err(SkociError::docker_error(format!("Gagal stop container '{name}': {err}")))
+            Err(SkociError::docker_error(format!("Failed to stop container '{name}': {err}")))
         }
     }
 
@@ -353,7 +353,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal remove container: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to remove container: {e}")))?;
 
         if output.status.success() {
             Ok(())
@@ -363,7 +363,7 @@ impl DockerClient {
                 Ok(())
             } else {
                 Err(SkociError::docker_error(format!(
-                    "Gagal remove container '{name}': {}",
+                    "Failed to remove container '{name}': {}",
                     String::from_utf8_lossy(&output.stderr)
                 )))
             }
@@ -380,7 +380,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal membaca logs: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to read logs: {e}")))?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -405,7 +405,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal inspect image: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to inspect image: {e}")))?;
 
         if output.status.success() {
             Ok(true)
@@ -415,7 +415,7 @@ impl DockerClient {
                 Ok(false)
             } else {
                 Err(SkociError::docker_error(format!(
-                    "Gagal inspect image '{image}': {}",
+                    "Failed to inspect image '{image}': {}",
                     String::from_utf8_lossy(&output.stderr)
                 )))
             }
@@ -430,7 +430,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal remove image: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to remove image: {e}")))?;
 
         if output.status.success() {
             Ok(())
@@ -440,7 +440,7 @@ impl DockerClient {
                 Ok(())
             } else {
                 Err(SkociError::docker_error(format!(
-                    "Gagal remove image '{image}': {}",
+                    "Failed to remove image '{image}': {}",
                     String::from_utf8_lossy(&output.stderr)
                 )))
             }
@@ -459,7 +459,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal list containers: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to list containers: {e}")))?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -484,14 +484,14 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal spawn docker exec: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to spawn docker exec: {e}")))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             let err = String::from_utf8_lossy(&output.stderr);
             Err(SkociError::docker_error(format!(
-                "Docker exec gagal pada container '{container}': {err}"
+                "Docker exec failed on container '{container}': {err}"
             )))
         }
     }
@@ -504,31 +504,31 @@ impl DockerClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| SkociError::docker_error(format!("Gagal spawn docker exec: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to spawn docker exec: {e}")))?;
 
         let mut stdout = child
             .stdout
             .take()
-            .ok_or_else(|| SkociError::docker_error("Stdout tidak dapat dipipe"))?;
+            .ok_or_else(|| SkociError::docker_error("Failed to pipe stdout"))?;
         let mut stderr = child
             .stderr
             .take()
-            .ok_or_else(|| SkociError::docker_error("Stderr tidak dapat dipipe"))?;
+            .ok_or_else(|| SkociError::docker_error("Failed to pipe stderr"))?;
 
         let copy_task = async {
             let mut file = tokio::fs::File::create(dest)
                 .await
-                .map_err(|e| SkociError::docker_error(format!("Gagal membuat file tujuan: {e}")))?;
+                .map_err(|e| SkociError::docker_error(format!("Failed to create destination file: {e}")))?;
             tokio::io::copy(&mut stdout, &mut file)
                 .await
-                .map_err(|e| SkociError::docker_error(format!("Gagal menyalin output ke file: {e}")))
+                .map_err(|e| SkociError::docker_error(format!("Failed to copy output to file: {e}")))
         };
 
         let stderr_task = async {
             let mut buf = Vec::new();
             tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf)
                 .await
-                .map_err(|e| SkociError::docker_error(format!("Gagal membaca stderr: {e}")))?;
+                .map_err(|e| SkociError::docker_error(format!("Failed to read stderr: {e}")))?;
             Ok::<Vec<u8>, SkociError>(buf)
         };
 
@@ -536,7 +536,7 @@ impl DockerClient {
         let status = child
             .wait()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menunggu proses docker exec: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to wait for docker exec process: {e}")))?;
 
         let stderr_bytes = stderr_res.unwrap_or_default();
         let stderr_msg = String::from_utf8_lossy(&stderr_bytes);
@@ -551,7 +551,7 @@ impl DockerClient {
                 format!("Process exited with status {:?}", status.code())
             };
             return Err(SkociError::docker_error(format!(
-                "Docker exec to file gagal: {err_detail}"
+                "Docker exec to file failed: {err_detail}"
             )));
         }
 
@@ -568,24 +568,24 @@ impl DockerClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| SkociError::docker_error(format!("Gagal spawn docker exec -i: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to spawn docker exec -i: {e}")))?;
 
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| SkociError::docker_error("Stdin tidak dapat dipipe"))?;
+            .ok_or_else(|| SkociError::docker_error("Failed to pipe stdin"))?;
         let mut stderr = child
             .stderr
             .take()
-            .ok_or_else(|| SkociError::docker_error("Stderr tidak dapat dipipe"))?;
+            .ok_or_else(|| SkociError::docker_error("Failed to pipe stderr"))?;
 
         let copy_task = async {
             let mut file = tokio::fs::File::open(src)
                 .await
-                .map_err(|e| SkociError::docker_error(format!("Gagal membuka file input: {e}")))?;
+                .map_err(|e| SkociError::docker_error(format!("Failed to open input file: {e}")))?;
             tokio::io::copy(&mut file, &mut stdin)
                 .await
-                .map_err(|e| SkociError::docker_error(format!("Gagal menyalurkan input ke stdin: {e}")))?;
+                .map_err(|e| SkociError::docker_error(format!("Failed to pipe input to stdin: {e}")))?;
             drop(stdin);
             Ok::<(), SkociError>(())
         };
@@ -594,7 +594,7 @@ impl DockerClient {
             let mut buf = Vec::new();
             tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf)
                 .await
-                .map_err(|e| SkociError::docker_error(format!("Gagal membaca stderr: {e}")))?;
+                .map_err(|e| SkociError::docker_error(format!("Failed to read stderr: {e}")))?;
             Ok::<Vec<u8>, SkociError>(buf)
         };
 
@@ -602,7 +602,7 @@ impl DockerClient {
         let status = child
             .wait()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menunggu proses docker exec: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to wait for docker exec process: {e}")))?;
 
         let stderr_bytes = stderr_res.unwrap_or_default();
         let stderr_msg = String::from_utf8_lossy(&stderr_bytes);
@@ -616,7 +616,7 @@ impl DockerClient {
                 format!("Process exited with status {:?}", status.code())
             };
             return Err(SkociError::docker_error(format!(
-                "Docker exec from file gagal: {err_detail}"
+                "Docker exec from file failed: {err_detail}"
             )));
         }
 
@@ -633,7 +633,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menjalankan docker cp: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to run docker cp: {e}")))?;
 
         if output.status.success() {
             Ok(())
@@ -653,7 +653,7 @@ impl DockerClient {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SkociError::docker_error(format!("Gagal menjalankan docker cp: {e}")))?;
+            .map_err(|e| SkociError::docker_error(format!("Failed to run docker cp: {e}")))?;
 
         if output.status.success() {
             Ok(())

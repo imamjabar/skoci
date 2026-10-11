@@ -40,17 +40,17 @@ impl ImageBuilder {
         cmd.stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| {
-            SkociError::docker_error(format!("Gagal menjalankan docker build: {e}"))
+            SkociError::docker_error(format!("Failed to run docker build: {e}"))
         })?;
 
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| SkociError::docker_error("Stdout docker build tidak dapat dipipe"))?;
+            .ok_or_else(|| SkociError::docker_error("Failed to pipe docker build stdout"))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| SkociError::docker_error("Stderr docker build tidak dapat dipipe"))?;
+            .ok_or_else(|| SkociError::docker_error("Failed to pipe docker build stderr"))?;
 
         let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -90,7 +90,7 @@ impl ImageBuilder {
         let _ = stderr_handle.await;
 
         let status = child.wait().await.map_err(|e| {
-            SkociError::docker_error(format!("Gagal menunggu proses docker build: {e}"))
+            SkociError::docker_error(format!("Failed to wait for docker build process: {e}"))
         })?;
 
         if status.success() {

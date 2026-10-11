@@ -114,48 +114,6 @@ fn default_keep() -> u32 {
     7
 }
 
-/// Server-side policy. Built in; never read from the agent-controlled repository.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkociPolicy {
-    pub preview: EnvPolicy,
-    pub production: EnvPolicy,
-}
-
-impl Default for SkociPolicy {
-    fn default() -> Self {
-        Self {
-            preview: EnvPolicy {
-                deploy: ActionPermission::Auto,
-                rollback: ActionPermission::Auto,
-                db_restore: ActionPermission::Approve,
-                delete: ActionPermission::Approve,
-            },
-            production: EnvPolicy {
-                deploy: ActionPermission::Approve,
-                rollback: ActionPermission::Auto,
-                db_restore: ActionPermission::Approve,
-                delete: ActionPermission::Approve,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvPolicy {
-    pub deploy: ActionPermission,
-    pub rollback: ActionPermission,
-    pub db_restore: ActionPermission,
-    pub delete: ActionPermission,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionPermission {
-    Auto,
-    Approve,
-    Deny,
-}
-
 /// Evidence recorded for every finished deployment. Every field is measured, never assumed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkociEvidence {

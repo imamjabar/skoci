@@ -42,8 +42,8 @@ impl BackupManager {
     ) -> SkociResult<DbBackupResponse> {
         if !is_valid_id(app) || !is_valid_id(service) {
             return Err(SkociError::bad_request(
-                "Nama app atau service tidak valid",
-                "Gunakan karakter a-z, 0-9, _, atau -",
+                "Invalid app or service name",
+                "Use characters a-z, 0-9, _, or -",
             ));
         }
 
@@ -60,8 +60,8 @@ impl BackupManager {
         let dest_dir = self.root.join(app).join(service);
         tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| {
             SkociError::internal(
-                format!("Gagal membuat folder backup: {e}"),
-                "Periksa izin folder backup",
+                format!("Failed to create backup directory: {e}"),
+                "Check backup directory permissions",
             )
         })?;
 
@@ -98,8 +98,8 @@ impl BackupManager {
 
         let meta = tokio::fs::metadata(&dest_file).await.map_err(|e| {
             SkociError::internal(
-                format!("Gagal membaca metadata backup: {e}"),
-                "Periksa disk",
+                format!("Failed to read backup metadata: {e}"),
+                "Check disk",
             )
         })?;
 
@@ -122,8 +122,8 @@ impl BackupManager {
     ) -> SkociResult<DbRestoreResponse> {
         if !is_valid_id(app) || !is_valid_id(service) || !is_valid_id(backup_id) {
             return Err(SkociError::bad_request(
-                "Parameter ID backup tidak valid",
-                "Gunakan karakter a-z, 0-9, _, atau -",
+                "Invalid backup ID parameter",
+                "Use characters a-z, 0-9, _, or -",
             ));
         }
 
@@ -136,8 +136,8 @@ impl BackupManager {
         let src_file = self.root.join(app).join(service).join(format!("{backup_id}.{ext}"));
         if !src_file.exists() {
             return Err(SkociError::not_found(
-                format!("File backup '{backup_id}' tidak ditemukan"),
-                "Periksa daftar backup dengan 'skoci db list'",
+                format!("Backup file '{backup_id}' not found"),
+                "Check the list of backups with 'skoci db list'",
             ));
         }
 
@@ -179,8 +179,8 @@ impl BackupManager {
     pub fn list_backups(&self, app: &str) -> SkociResult<Vec<DbBackupResponse>> {
         if !is_valid_id(app) {
             return Err(SkociError::bad_request(
-                "Nama app tidak valid",
-                "Gunakan karakter a-z, 0-9, _, atau -",
+                "Invalid app name",
+                "Use characters a-z, 0-9, _, or -",
             ));
         }
 
@@ -192,8 +192,8 @@ impl BackupManager {
         let mut backups = Vec::new();
         let service_entries = std::fs::read_dir(&app_dir).map_err(|e| {
             SkociError::internal(
-                format!("Gagal membaca direktori backup: {e}"),
-                "Periksa izin folder",
+                format!("Failed to read backup directory: {e}"),
+                "Check directory permissions",
             )
         })?;
 
@@ -256,8 +256,8 @@ impl BackupManager {
     pub fn prune(&self, app: &str, service: &str, keep: u32) -> SkociResult<usize> {
         if !is_valid_id(app) || !is_valid_id(service) {
             return Err(SkociError::bad_request(
-                "Nama app atau service tidak valid",
-                "Gunakan karakter a-z, 0-9, _, atau -",
+                "Invalid app or service name",
+                "Use characters a-z, 0-9, _, or -",
             ));
         }
 
@@ -268,8 +268,8 @@ impl BackupManager {
 
         let file_entries = std::fs::read_dir(&service_dir).map_err(|e| {
             SkociError::internal(
-                format!("Gagal membaca direktori service untuk prune: {e}"),
-                "Periksa izin folder",
+                format!("Failed to read service directory for prune: {e}"),
+                "Check directory permissions",
             )
         })?;
 

@@ -46,8 +46,8 @@ pub fn resolve_app_in(path: &Path, provided: Option<&str>) -> SkociResult<String
     }
 
     Err(SkociError::config_invalid(
-        "Nama aplikasi tidak ditemukan",
-        "Tentukan nama aplikasi melalui argumen atau jalankan `skoci init` untuk membuat skoci.yaml",
+        "Application name not found",
+        "Specify the application name via arguments or run `skoci init` to create skoci.yaml",
     ))
 }
 
@@ -60,8 +60,8 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|e| {
             SkociError::internal(
-                format!("Gagal membuat direktori {}: {e}", path.display()),
-                "Pastikan direktori dapat dibuat dan izin mencukupi",
+                format!("Failed to create directory {}: {e}", path.display()),
+                "Ensure the directory can be created and permissions are sufficient",
             )
         })?;
     }
@@ -87,8 +87,8 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
         let content = ProjectDetector::generate_skoci_yaml(&app_name, &detection);
         std::fs::write(&yaml_file, content).map_err(|e| {
             SkociError::internal(
-                format!("Gagal menulis skoci.yaml: {e}"),
-                "Periksa izin tulis direktori",
+                format!("Failed to write skoci.yaml: {e}"),
+                "Check directory write permissions",
             )
         })?;
         created_files.push("skoci.yaml".to_string());
@@ -101,8 +101,8 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
         if !df_file.exists() {
             std::fs::write(&df_file, df_content).map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal menulis Dockerfile: {e}"),
-                    "Periksa izin tulis direktori",
+                    format!("Failed to write Dockerfile: {e}"),
+                    "Check directory write permissions",
                 )
             })?;
             created_files.push("Dockerfile".to_string());
@@ -116,8 +116,8 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
         let di_content = ProjectDetector::dockerignore();
         std::fs::write(&di_file, di_content).map_err(|e| {
             SkociError::internal(
-                format!("Gagal menulis .dockerignore: {e}"),
-                "Periksa izin tulis direktori",
+                format!("Failed to write .dockerignore: {e}"),
+                "Check directory write permissions",
             )
         })?;
         created_files.push(".dockerignore".to_string());
@@ -143,8 +143,8 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
             .open(&gitignore_file)
             .map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal memperbarui .gitignore: {e}"),
-                    "Periksa izin tulis .gitignore",
+                    format!("Failed to update .gitignore: {e}"),
+                    "Check write permissions for .gitignore",
                 )
             })?;
         if add_newline {
@@ -181,7 +181,7 @@ pub async fn stream_events_and_render(
     let start_time = Instant::now();
 
     if !is_json && version.is_none() {
-        eprintln!("▸ Memantau deployment: {}", deployment_id);
+        eprintln!("▸ Watching deployment: {}", deployment_id);
     }
 
     let mut accumulated_logs = Vec::new();
@@ -273,13 +273,13 @@ pub async fn stream_events_and_render(
                                 for _ in 0..rendered_lines {
                                     let _ = write!(out, "\x1b[1A\x1b[2K\r");
                                 }
-                                let _ = writeln!(out, "  \x1b[33m– [{}/8] {} (dilewati)\x1b[0m", n, label);
+                                let _ = writeln!(out, "  \x1b[33m– [{}/8] {} (skipped)\x1b[0m", n, label);
                                 let _ = out.flush();
                                 log_window.clear();
                                 active_stage = None;
                                 rendered_lines = 0;
                             } else {
-                                eprintln!("  – [{}/8] {} (dilewati)", n, label);
+                                eprintln!("  – [{}/8] {} (skipped)", n, label);
                             }
                         }
                         StageStatus::Failed => {
@@ -334,15 +334,15 @@ pub async fn stream_events_and_render(
 
     if is_json {
         if let Some(resp) = final_response {
-            output::print_json(&ApiResponse::ok(resp, "Deployment berhasil"));
+            output::print_json(&ApiResponse::ok(resp, "Deployment successful"));
             return 0;
         } else if let Some(err) = final_error {
             output::print_error(&err, true);
             return error_exit_code(&err);
         } else {
             let err = SkociError::internal(
-                "Event stream terputus tanpa data hasil akhir",
-                format!("Gunakan `skoci watch {}` untuk memeriksa status", deployment_id),
+                "Event stream disconnected without final result data",
+                format!("Use `skoci watch {}` to check status", deployment_id),
             );
             output::print_error(&err, true);
             return error_exit_code(&err);
@@ -358,29 +358,29 @@ pub async fn stream_events_and_render(
                 println!("✓ Live: {}", url);
             }
         }
-        println!("Versi: {}  Durasi: {:.1}s", resp.version, dur);
-        println!("\nPetunjuk:");
+        println!("Version: {}  Duration: {:.1}s", resp.version, dur);
+        println!("\nHints:");
         println!("  skoci logs {}", resp.app);
         println!("  skoci status {}", resp.app);
         0
     } else if let Some(err) = final_error {
         if !accumulated_logs.is_empty() {
-            eprintln!("\nRingkasan log terakhir:");
+            eprintln!("\nLast log summary:");
             for line in accumulated_logs.iter().rev().take(30).rev() {
                 eprintln!("  │ {}", line);
             }
         }
         if is_term {
-            eprintln!("\n\x1b[1;31m✗ Deployment gagal:\x1b[0m {}", err.message);
+            eprintln!("\n\x1b[1;31m✗ Deployment failed:\x1b[0m {}", err.message);
         } else {
-            eprintln!("\n✗ Deployment gagal: {}", err.message);
+            eprintln!("\n✗ Deployment failed: {}", err.message);
         }
-        eprintln!("Solusi: {}", err.fix);
+        eprintln!("Fix: {}", err.fix);
         eprintln!("Deployment ID: {}  (skoci watch {})", deployment_id, deployment_id);
         error_exit_code(&err)
     } else {
-        eprintln!("\n✗ Stream selesai tanpa status deployment akhir");
-        eprintln!("Solusi: Gunakan `skoci watch {}` untuk menghubungkan kembali", deployment_id);
+        eprintln!("\n✗ Stream completed without final deployment status");
+        eprintln!("Fix: Use `skoci watch {}` to reconnect", deployment_id);
         1
     }
 }
@@ -403,9 +403,9 @@ pub async fn run_command(
             {
                 let err = SkociError::bad_request(
                     format!(
-                        "URL server menggunakan protokol HTTP tanpa enkripsi ('{server}'). Token akan dikirim dalam plaintext."
+                        "Server URL uses unencrypted HTTP protocol ('{server}'). Token will be sent in plaintext."
                     ),
-                    "Gunakan HTTPS ('https://...'), SSH tunnel (localhost), atau tambahkan flag --insecure jika Anda memahami risikonya.",
+                    "Use HTTPS ('https://...'), an SSH tunnel (localhost), or add the --insecure flag if you understand the risks.",
                 );
                 output::print_error(&err, json);
                 return 1;
@@ -414,8 +414,8 @@ pub async fn run_command(
             let env_content = format!("SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n", server, conn_token);
             if let Err(e) = std::fs::write(".env.skoci", &env_content) {
                 let err = SkociError::internal(
-                    format!("Gagal menulis .env.skoci: {e}"),
-                    "Periksa izin tulis di direktori saat ini",
+                    format!("Failed to write .env.skoci: {e}"),
+                    "Check write permissions in the current directory",
                 );
                 output::print_error(&err, json);
                 return 1;
@@ -459,7 +459,7 @@ pub async fn run_command(
                     if json {
                         output::print_json(&resp);
                     } else {
-                        println!("✓ Berhasil terhubung dan menyimpan konfigurasi ke .env.skoci (mode 0600)\n");
+                        println!("✓ Successfully connected and saved configuration to .env.skoci (mode 0600)\n");
                         if let Some(doc) = &resp.data {
                             output::render_doctor(doc);
                         }
@@ -477,23 +477,23 @@ pub async fn run_command(
             match init_project(&path, app.as_deref()) {
                 Ok((res, notes)) => {
                     if json {
-                        output::print_json(&ApiResponse::ok(res, "Proyek berhasil diinisialisasi"));
+                        output::print_json(&ApiResponse::ok(res, "Project successfully initialized"));
                     } else {
-                        println!("✓ Inisialisasi proyek '{}' berhasil!\n", res.app_name);
-                        println!("Framework terdeteksi : {}", res.detected_framework);
-                        println!("File dibuat          : {}", res.created_files.join(", "));
+                        println!("✓ Project '{}' successfully initialized!\n", res.app_name);
+                        println!("Detected framework   : {}", res.detected_framework);
+                        println!("Files created        : {}", res.created_files.join(", "));
                         if !res.skipped_files.is_empty() {
-                            println!("File dilewati (ada)  : {}", res.skipped_files.join(", "));
+                            println!("Files skipped (exist): {}", res.skipped_files.join(", "));
                         }
                         if !notes.is_empty() {
-                            println!("\nCatatan:");
+                            println!("\nNotes:");
                             for note in &notes {
                                 println!("  • {}", note);
                             }
                         }
-                        println!("  1. Tinjau dan sesuaikan file skoci.yaml jika diperlukan");
-                        println!("  2. Jalankan `skoci connect --server <url> --token <token>` untuk menghubungkan VPS");
-                        println!("  3. Jalankan `skoci deploy` untuk meluncurkan aplikasi");
+                        println!("  1. Review and adjust skoci.yaml if needed");
+                        println!("  2. Run `skoci connect --server <url> --token <token>` to connect to VPS");
+                        println!("  3. Run `skoci deploy` to launch application");
                     }
                     0
                 }
@@ -565,7 +565,7 @@ pub async fn run_command(
                     let accepted = match api_resp.data {
                         Some(d) => d,
                         None => {
-                            let err = SkociError::internal("Respons kosong dari server", "Coba deploy kembali");
+                            let err = SkociError::internal("Empty response from server", "Try deploying again");
                             output::print_error(&err, json);
                             return 1;
                         }
@@ -575,25 +575,25 @@ pub async fn run_command(
                         let elapsed = start_upload.elapsed();
                         let mb = (packed.bytes as f64) / 1_048_576.0;
                         eprintln!(
-                            "✓ Upload {:.1} MB ({} file) {:.1}s",
+                            "✓ Uploaded {:.1} MB ({} files) in {:.1}s",
                             mb,
                             packed.files,
                             elapsed.as_secs_f64()
                         );
-                        eprintln!("  Versi: {}  ID: {}", accepted.version, accepted.deployment_id);
+                        eprintln!("  Version: {}  ID: {}", accepted.version, accepted.deployment_id);
                     }
 
                     if detach {
                         if json {
                             output::print_json(&ApiResponse::ok(
                                 accepted,
-                                "Deployment diterima di latar belakang",
+                                "Deployment accepted in background",
                             ));
                         } else {
-                            println!("\nDeployment berjalan di latar belakang (detached).");
+                            println!("\nDeployment running in background (detached).");
                             println!("Deployment ID: {}", accepted.deployment_id);
-                            println!("Versi        : {}", accepted.version);
-                            println!("Gunakan `skoci watch {}` untuk memantau status.", accepted.deployment_id);
+                            println!("Version      : {}", accepted.version);
+                            println!("Use `skoci watch {}` to monitor status.", accepted.deployment_id);
                         }
                         0
                     } else {
@@ -738,7 +738,7 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("✓ Secret '{key}' berhasil disimpan untuk aplikasi '{app_name}'");
+                                println!("✓ Secret '{key}' saved successfully for app '{app_name}'");
                             }
                             0
                         }
@@ -761,9 +761,9 @@ pub async fn run_command(
                                 output::print_json(&resp);
                             } else if let Some(data) = &resp.data {
                                 if data.keys.is_empty() {
-                                    println!("Aplikasi '{app_name}' belum memiliki secret.");
+                                    println!("App '{app_name}' has no secrets yet.");
                                 } else {
-                                    println!("Daftar secret untuk aplikasi '{app_name}':");
+                                    println!("Secret list for app '{app_name}':");
                                     for k in &data.keys {
                                         println!("  • {k}");
                                     }
@@ -808,7 +808,7 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("▸ Promosi diajukan untuk persetujuan admin (Request ID: {req_id})");
+                                println!("▸ Promotion submitted for admin approval (Request ID: {req_id})");
                             }
                             2
                         } else if let Some(dep) = &data.deployment {
@@ -816,14 +816,14 @@ pub async fn run_command(
                                 if json {
                                     output::print_json(&resp);
                                 } else {
-                                    println!("✓ Promosi berhasil dimulai di latar belakang (detached).");
+                                    println!("✓ Promotion started in background (detached).");
                                     println!("Deployment ID: {}", dep.deployment_id);
                                 }
                                 0
                             } else {
                                 if !json {
-                                    eprintln!("▸ Promosi {} → production", dep.app);
-                                    eprintln!("  Versi: {}  ID: {}", dep.version, dep.deployment_id);
+                                    eprintln!("▸ Promoting {} → production", dep.app);
+                                    eprintln!("  Version: {}  ID: {}", dep.version, dep.deployment_id);
                                 }
                                 stream_events_and_render(
                                     &client,
@@ -839,7 +839,7 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("✓ Promosi berhasil diproses.");
+                                println!("✓ Promotion processed successfully.");
                             }
                             0
                         }
@@ -893,15 +893,15 @@ pub async fn run_command(
                                 if json {
                                     output::print_json(&resp);
                                 } else {
-                                    println!("✓ Permintaan persetujuan disetujui ({}). {}", data.action, data.detail);
+                                    println!("✓ Approval request approved ({}). {}", data.action, data.detail);
                                     println!("Deployment ID: {}", dep.deployment_id);
                                 }
                                 0
                             } else {
                                 if !json {
-                                    println!("✓ Permintaan persetujuan disetujui ({}). {}", data.action, data.detail);
-                                    eprintln!("▸ Menjalankan deployment {} → {}", dep.app, dep.env);
-                                    eprintln!("  Versi: {}  ID: {}", dep.version, dep.deployment_id);
+                                    println!("✓ Approval request approved ({}). {}", data.action, data.detail);
+                                    eprintln!("▸ Running deployment {} → {}", dep.app, dep.env);
+                                    eprintln!("  Version: {}  ID: {}", dep.version, dep.deployment_id);
                                 }
                                 stream_events_and_render(
                                     &client,
@@ -917,7 +917,7 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("✓ Permintaan persetujuan disetujui ({}): {}", data.action, data.detail);
+                                println!("✓ Approval request approved ({}): {}", data.action, data.detail);
                             }
                             0
                         }
@@ -945,7 +945,7 @@ pub async fn run_command(
                     if json {
                         output::print_json(&resp);
                     } else {
-                        println!("✓ Permintaan persetujuan berhasil ditolak.");
+                        println!("✓ Approval request rejected successfully.");
                     }
                     0
                 }
@@ -983,14 +983,14 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("✓ Rollback diterima di latar belakang (detached).");
+                                println!("✓ Rollback accepted in background (detached).");
                                 println!("Deployment ID: {}", data.deployment_id);
                             }
                             0
                         } else {
                             if !json {
                                 eprintln!("▸ Rollback {} → {}", data.app, data.env);
-                                eprintln!("  Versi: {}  ID: {}", data.version, data.deployment_id);
+                                eprintln!("  Version: {}  ID: {}", data.version, data.deployment_id);
                             }
                             stream_events_and_render(
                                 &client,
@@ -1061,7 +1061,7 @@ pub async fn run_command(
                                 output::print_json(&resp);
                             } else if let Some(data) = &resp.data {
                                 let mb = (data.size_bytes as f64) / 1_048_576.0;
-                                println!("✓ Backup database berhasil dibuat. ID: {} ({:.2} MB)", data.backup_id, mb);
+                                println!("✓ Database backup created successfully. ID: {} ({:.2} MB)", data.backup_id, mb);
                             }
                             0
                         }
@@ -1084,9 +1084,9 @@ pub async fn run_command(
                                 output::print_json(&resp);
                             } else if let Some(data) = &resp.data {
                                 if data.backups.is_empty() {
-                                    println!("Belum ada backup database untuk aplikasi '{app_name}'.");
+                                    println!("No database backups yet for app '{app_name}'.");
                                 } else {
-                                    println!("{:<28} {:<12} {:<12} DIBUAT", "BACKUP ID", "SERVICE", "UKURAN");
+                                    println!("{:<28} {:<12} {:<12} CREATED", "BACKUP ID", "SERVICE", "SIZE");
                                     println!("{}", "-".repeat(75));
                                     for b in &data.backups {
                                         let mb = (b.size_bytes as f64) / 1_048_576.0;
@@ -1122,10 +1122,10 @@ pub async fn run_command(
                             } else if let Some(data) = &resp.data {
                                 if data.status == "pending_approval" {
                                     let req_id = data.request_id.as_deref().unwrap_or("-");
-                                    println!("▸ Restore database diajukan untuk persetujuan admin (Request ID: {req_id})");
+                                    println!("▸ Database restore submitted for admin approval (Request ID: {req_id})");
                                     return 2;
                                 } else {
-                                    println!("✓ Database berhasil direstore.");
+                                    println!("✓ Database restored successfully.");
                                 }
                             }
                             0
@@ -1162,10 +1162,10 @@ pub async fn run_command(
                             } else if let Some(data) = &resp.data {
                                 if data.status == "pending_approval" {
                                     let req_id = data.request_id.as_deref().unwrap_or("-");
-                                    println!("▸ Penghapusan aplikasi diajukan untuk persetujuan admin (Request ID: {req_id})");
+                                    println!("▸ App deletion submitted for admin approval (Request ID: {req_id})");
                                     return 2;
                                 } else {
-                                    println!("✓ Aplikasi '{app_name}' berhasil dihapus.");
+                                    println!("✓ App '{app_name}' deleted successfully.");
                                 }
                             }
                             0
@@ -1193,7 +1193,7 @@ pub async fn run_command(
                         if json {
                             output::print_json(&resp);
                         } else {
-                            println!("✓ Aplikasi default berhasil disetel ke: {app_name}");
+                            println!("✓ Default app set to: {app_name}");
                         }
                         0
                     }
@@ -1214,8 +1214,8 @@ pub async fn run_command(
                         if json {
                             output::print_json(&resp);
                         } else if let Some(data) = &resp.data {
-                            let curr = data.app.as_deref().unwrap_or("(belum ada)");
-                            println!("Aplikasi default saat ini: {curr}");
+                            let curr = data.app.as_deref().unwrap_or("(none)");
+                            println!("Current default app: {curr}");
                         }
                         0
                     }
@@ -1242,10 +1242,10 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else if let Some(data) = &resp.data {
-                                println!("✓ Token berhasil dibuat untuk '{}' ({}):", data.app, data.name);
+                                println!("✓ Token created successfully for '{}' ({}):", data.app, data.name);
                                 println!("  Token: {}", data.token);
                                 println!("  ID   : {}", data.id);
-                                println!("  (PENTING: Simpan token ini sekarang, token tidak akan ditampilkan kembali)");
+                                println!("  (IMPORTANT: Save this token now, it will not be displayed again)");
                             }
                             0
                         }
@@ -1289,7 +1289,7 @@ pub async fn run_command(
                             if json {
                                 output::print_json(&resp);
                             } else if let Some(data) = &resp.data {
-                                println!("✓ {} token berhasil dicabut.", data.revoked);
+                                println!("✓ {} token(s) revoked successfully.", data.revoked);
                             }
                             0
                         }
@@ -1304,35 +1304,35 @@ pub async fn run_command(
 
         Commands::AgentGuide => {
             println!(
-                r#"# Panduan Operasional Skoci untuk AI Agent
+                r#"# Skoci Operational Guide for AI Agents
 
-Skoci adalah platform deployment berbasis agent yang aman dan deterministik.
+Skoci is a secure, deterministic agent-native deployment platform.
 
-## Alur Kerja Standar (Workflow):
-1. **Hubungkan ke Server**:
+## Standard Workflow:
+1. **Connect to Server**:
    `skoci connect --server <url> --token <token>`
-   Konfigurasi tersimpan di `.env.skoci` (permissions 0600) dan ditambahkan ke `.gitignore`.
-   JANGAN PERNAH mencetak token ke log atau menyimpannya di file publik.
+   Configuration is stored in `.env.skoci` (permissions 0600) and added to `.gitignore`.
+   NEVER print tokens to logs or commit them to public files.
 
-2. **Inisialisasi Proyek**:
+2. **Initialize Project**:
    `skoci init`
-   Skoci mendeteksi framework secara otomatis dan membuat `skoci.yaml`, `Dockerfile`, serta `.dockerignore`.
+   Skoci automatically detects the framework and generates `skoci.yaml`, `Dockerfile`, and `.dockerignore`.
 
-3. **Deploy Aplikasi**:
+3. **Deploy Application**:
    `skoci deploy --json`
-   Gunakan flag `--json` untuk mendapatkan respons terstruktur (`ApiResponse<DeployResponse>`).
-   Jika gagal, baca field `error.fix` untuk solusi aksi langsung yang dapat dijalankan.
+   Use the `--json` flag to receive structured output (`ApiResponse<DeployResponse>`).
+   On failure, inspect `error.fix` for an immediate actionable fix command.
 
-4. **Penanganan Exit Code**:
-   • Exit Code 0: Sukses.
-   • Exit Code 1: Error operasional (periksa error message & fix).
-   • Exit Code 2: Tindakan membutuhkan persetujuan manusia (human approval required). Tunggu persetujuan atau beri tahu pengguna untuk menjalankan `skoci approvals` dan `skoci approve <id>`.
-   • Exit Code 3: Error autentikasi atau pembatasan kuota (unauthorized, scope_violation, rate_limited).
+4. **Exit Code Handling**:
+   • Exit Code 0: Success.
+   • Exit Code 1: Operational error (check error message & fix).
+   • Exit Code 2: Action requires human approval. Wait for approval or prompt the user to run `skoci approvals` and `skoci approve <id>`.
+   • Exit Code 3: Authentication error or quota rate limit (unauthorized, scope_violation, rate_limited).
 
-5. **Aturan Keamanan Agent**:
-   • JANGAN PERNAH menggunakan SSH langsung jika tugas dapat dilakukan melalui CLI/API Skoci.
-   • JANGAN PERNAH menampilkan nilai secret atau token di console.
-   • Gunakan `skoci secret set <KEY> <VALUE>` untuk menyuntikkan env aman."#
+5. **Agent Security Rules**:
+   • NEVER use raw SSH if the task can be performed via Skoci CLI/API.
+   • NEVER display secret values or tokens on console.
+   • Use `skoci secret set <KEY> <VALUE>` to inject secure environment variables."#
             );
             0
         }

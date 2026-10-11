@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -830,11 +830,11 @@
   <!-- Confirmation Dialog -->
   <div id="confirm-dialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
     <div class="dialog-card">
-      <h3 id="confirm-dialog-title">Konfirmasi Aksi</h3>
-      <p id="confirm-dialog-msg">Apakah Anda yakin ingin melanjutkan?</p>
+      <h3 id="confirm-dialog-title">Confirm Action</h3>
+      <p id="confirm-dialog-msg">Are you sure you want to proceed?</p>
       <div class="dialog-actions">
-        <button type="button" class="secondary" id="confirm-cancel-btn">Batal</button>
-        <button type="button" class="danger" id="confirm-ok-btn">Lanjutkan</button>
+        <button type="button" class="secondary" id="confirm-cancel-btn">Cancel</button>
+        <button type="button" class="danger" id="confirm-ok-btn">Proceed</button>
       </div>
     </div>
   </div>
@@ -842,19 +842,19 @@
   <!-- Token Reveal Modal -->
   <div id="token-reveal-modal" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="token-reveal-title">
     <div class="dialog-card">
-      <h3 id="token-reveal-title">Token Berhasil Dibuat</h3>
+      <h3 id="token-reveal-title">Token Created Successfully</h3>
       <p style="color: var(--warning); font-weight: 500;">
-        ⚠️ Simpan token ini sekarang. Token hanya ditampilkan satu kali dan tidak dapat dilihat kembali setelah dialog ini ditutup.
+        ⚠️ Save this token now. It is only shown once and cannot be viewed again after closing this dialog.
       </p>
       <div style="margin-bottom: 16px;">
-        <label style="display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px;">Token Rahasia:</label>
+        <label style="display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px;">Secret Token:</label>
         <div style="display: flex; gap: 8px;">
           <input type="text" id="token-reveal-val" readonly style="flex:1; font-family: var(--font-mono); font-size: 12px;">
-          <button type="button" id="token-copy-btn">Salin</button>
+          <button type="button" id="token-copy-btn">Copy</button>
         </div>
       </div>
       <div class="dialog-actions">
-        <button type="button" class="secondary" id="token-reveal-close-btn">Saya Sudah Menyimpan Token</button>
+        <button type="button" class="secondary" id="token-reveal-close-btn">I Have Saved the Token</button>
       </div>
     </div>
   </div>
@@ -863,10 +863,10 @@
   <div id="login-view">
     <div class="login-box">
       <h1>⛵ Skoci</h1>
-      <p class="intro">Mission Control & Manajemen Deployment</p>
+      <p class="intro">Mission Control &amp; Deployment Management</p>
       
       <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
-        Masukkan Master Token server untuk mengelola aplikasi. Anda dapat menemukan token ini di server dengan menjalankan:
+        Enter the server Master Token to manage applications. You can find this token on the server by running:
       </p>
       <div class="code-callout">sudo cat /etc/skoci/master_token</div>
 
@@ -875,7 +875,7 @@
           <label for="login-token-input">Master Token:</label>
           <input type="password" id="login-token-input" placeholder="sk_master_..." required autocomplete="current-password">
         </div>
-        <button type="submit" style="width: 100%; justify-content: center;" id="login-submit-btn">Masuk ke Dashboard</button>
+        <button type="submit" style="width: 100%; justify-content: center;" id="login-submit-btn">Log in to Dashboard</button>
       </form>
     </div>
   </div>
@@ -886,8 +886,8 @@
       <div class="brand-wrap">
         <div class="brand-title">⛵ Skoci</div>
         <div class="status-tags">
-          <span class="tag highlight" id="ram-indicator">RAM: Memuat...</span>
-          <span class="tag" id="docker-indicator">Docker: Memeriksa...</span>
+          <span class="tag highlight" id="ram-indicator">RAM: Loading...</span>
+          <span class="tag" id="docker-indicator">Docker: Checking...</span>
           <span class="tag" id="default-app-indicator">Default: -</span>
         </div>
       </div>
@@ -896,31 +896,31 @@
           <span class="dot" id="sync-dot"></span>
           <span id="sync-label">Auto-sync (10s)</span>
         </div>
-        <button type="button" class="secondary" id="btn-refresh" title="Segarkan data">Segarkan</button>
-        <button type="button" class="secondary" id="btn-logout" title="Tutup sesi dashboard">Keluar</button>
+        <button type="button" class="secondary" id="btn-refresh" title="Refresh data">Refresh</button>
+        <button type="button" class="secondary" id="btn-logout" title="Close dashboard session">Log out</button>
       </div>
     </header>
 
     <!-- Navigation Tabs -->
-    <nav class="tab-nav" aria-label="Navigasi Utama">
-      <button type="button" class="tab-btn active" data-tab="apps" id="tab-apps">Aplikasi</button>
-      <button type="button" class="tab-btn" data-tab="deployments" id="tab-deployments">Deployment</button>
+    <nav class="tab-nav" aria-label="Main Navigation">
+      <button type="button" class="tab-btn active" data-tab="apps" id="tab-apps">Applications</button>
+      <button type="button" class="tab-btn" data-tab="deployments" id="tab-deployments">Deployments</button>
       <button type="button" class="tab-btn" data-tab="approvals" id="tab-approvals">
-        Persetujuan <span class="badge-count" id="nav-approval-badge" style="display: none;">0</span>
+        Approvals <span class="badge-count" id="nav-approval-badge" style="display: none;">0</span>
       </button>
-      <button type="button" class="tab-btn" data-tab="tokens" id="tab-tokens">Token Agen</button>
-      <button type="button" class="tab-btn" data-tab="audits" id="tab-audits">Log Audit</button>
-      <button type="button" class="tab-btn" data-tab="doctor" id="tab-doctor">Diagnostik (Doctor)</button>
+      <button type="button" class="tab-btn" data-tab="tokens" id="tab-tokens">Agent Tokens</button>
+      <button type="button" class="tab-btn" data-tab="audits" id="tab-audits">Audit Logs</button>
+      <button type="button" class="tab-btn" data-tab="doctor" id="tab-doctor">Diagnostics (Doctor)</button>
     </nav>
 
     <!-- SECTION 1: APPS -->
     <section id="section-apps" class="tab-content">
       <div class="card-header">
-        <h2>Aplikasi Terdaftar</h2>
-        <span class="count" id="apps-counter">0 aplikasi</span>
+        <h2>Registered Applications</h2>
+        <span class="count" id="apps-counter">0 applications</span>
       </div>
       <div id="apps-container">
-        <div class="empty-state">Memuat daftar aplikasi...</div>
+        <div class="empty-state">Loading application list...</div>
       </div>
     </section>
 
@@ -930,22 +930,22 @@
         <!-- List Panel -->
         <div class="card" style="margin-bottom: 0;">
           <div class="card-header">
-            <h2>Riwayat Deployment</h2>
-            <span class="count">30 terakhir</span>
+            <h2>Deployment History</h2>
+            <span class="count">Last 30</span>
           </div>
           <div class="table-responsive">
             <table>
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Aplikasi</th>
-                  <th>Lingkungan</th>
+                  <th>Application</th>
+                  <th>Environment</th>
                   <th>Status</th>
-                  <th>Waktu</th>
+                  <th>Time</th>
                 </tr>
               </thead>
               <tbody id="deployments-table-body">
-                <tr><td colspan="5" class="empty-state">Memuat riwayat deployment...</td></tr>
+                <tr><td colspan="5" class="empty-state">Loading deployment history...</td></tr>
               </tbody>
             </table>
           </div>
@@ -954,25 +954,25 @@
         <!-- Detail / Live Timeline Panel -->
         <div class="card" id="deployment-detail-card" style="margin-bottom: 0;">
           <div class="card-header">
-            <h2 id="detail-title">Detail Deployment</h2>
+            <h2 id="detail-title">Deployment Details</h2>
             <span class="status-badge neutral" id="detail-status-badge">-</span>
           </div>
 
           <div id="detail-content-empty" class="empty-state">
-            Pilih deployment dari tabel di sebelah kiri untuk melihat rincian proses atau timeline live.
+            Select a deployment from the table on the left to view process details or live timeline.
           </div>
 
           <div id="detail-content-active" style="display: none;">
             <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 12px;">
-              <span>Aplikasi: <strong id="detail-app-name" style="color: var(--text);">-</strong></span>
-              <span>Lingkungan: <strong id="detail-env-name" style="color: var(--text);">-</strong></span>
-              <span>Versi: <code id="detail-version">-</code></span>
-              <span>Pemicu: <span id="detail-triggered-by">-</span></span>
+              <span>Application: <strong id="detail-app-name" style="color: var(--text);">-</strong></span>
+              <span>Environment: <strong id="detail-env-name" style="color: var(--text);">-</strong></span>
+              <span>Version: <code id="detail-version">-</code></span>
+              <span>Triggered by: <span id="detail-triggered-by">-</span></span>
             </div>
 
             <!-- Progress Bar -->
             <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 600; color: var(--text-dim);">
-              <span>Kemajuan Proses</span>
+              <span>Progress</span>
               <span id="detail-progress-percent">0%</span>
             </div>
             <div class="progress-bar-wrap">
@@ -987,8 +987,8 @@
 
             <!-- Collapsible Build Log -->
             <details class="collapsible-log" open id="detail-log-details">
-              <summary>Log Build &amp; Kontainer</summary>
-              <pre class="terminal" id="detail-log-output">Menunggu log...</pre>
+              <summary>Build &amp; Container Logs</summary>
+              <pre class="terminal" id="detail-log-output">Waiting for logs...</pre>
             </details>
           </div>
         </div>
@@ -999,14 +999,14 @@
     <section id="section-approvals" class="tab-content" style="display: none;">
       <div class="card">
         <div class="card-header">
-          <h2>Kotak Persetujuan (Human Gate)</h2>
+          <h2>Approval Queue (Human Gate)</h2>
           <span class="count" id="approvals-counter">0 pending</span>
         </div>
         <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">
-          Aksi sensitif dari agen AI (seperti promosi ke production, restore database, atau hapus aplikasi) ditahan di sini hingga operator menyetujui.
+          Sensitive actions from AI agents (such as promotion to production, database restoration, or application deletion) are held here until approved by an operator.
         </p>
         <div id="approvals-list-container">
-          <div class="empty-state">Memuat permohonan...</div>
+          <div class="empty-state">Loading requests...</div>
         </div>
       </div>
     </section>
@@ -1015,28 +1015,28 @@
     <section id="section-tokens" class="tab-content" style="display: none;">
       <div class="card">
         <div class="card-header">
-          <h2>Buat Token Agen Baru</h2>
+          <h2>Create New Agent Token</h2>
         </div>
         <form id="create-token-form" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
           <div style="flex: 1; min-width: 180px;">
-            <label for="token-app-input" style="display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px;">Nama Aplikasi:</label>
-            <input type="text" id="token-app-input" placeholder="contoh: toko" required style="width: 100%;">
+            <label for="token-app-input" style="display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px;">Application Name:</label>
+            <input type="text" id="token-app-input" placeholder="e.g. shop" required style="width: 100%;">
           </div>
           <div style="flex: 1; min-width: 180px;">
-            <label for="token-name-input" style="display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px;">Nama Token (Identitas Agen):</label>
-            <input type="text" id="token-name-input" placeholder="contoh: agent" required style="width: 100%;">
+            <label for="token-name-input" style="display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px;">Token Name (Agent Identity):</label>
+            <input type="text" id="token-name-input" placeholder="e.g. agent" required style="width: 100%;">
           </div>
-          <button type="submit" id="btn-create-token">Buat Token</button>
+          <button type="submit" id="btn-create-token">Create Token</button>
         </form>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <h2>Daftar Token Per Aplikasi</h2>
+          <h2>Tokens by Application</h2>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <label for="token-filter-app" style="font-size: 11px; color: var(--text-dim);">Pilih Aplikasi:</label>
+            <label for="token-filter-app" style="font-size: 11px; color: var(--text-dim);">Select Application:</label>
             <select id="token-filter-app" style="min-width: 140px;">
-              <option value="">Pilih aplikasi...</option>
+              <option value="">Select application...</option>
             </select>
           </div>
         </div>
@@ -1045,15 +1045,15 @@
             <thead>
               <tr>
                 <th>ID (Hash Prefix)</th>
-                <th>Nama Token</th>
-                <th>Aplikasi</th>
-                <th>Dibuat Pada</th>
-                <th>Terakhir Digunakan</th>
-                <th style="text-align: right;">Aksi</th>
+                <th>Token Name</th>
+                <th>Application</th>
+                <th>Created At</th>
+                <th>Last Used</th>
+                <th style="text-align: right;">Actions</th>
               </tr>
             </thead>
             <tbody id="tokens-table-body">
-              <tr><td colspan="6" class="empty-state">Pilih aplikasi di atas untuk melihat token aktif.</td></tr>
+              <tr><td colspan="6" class="empty-state">Select an application above to view active tokens.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1064,23 +1064,23 @@
     <section id="section-audits" class="tab-content" style="display: none;">
       <div class="card">
         <div class="card-header">
-          <h2>Jejak Audit Aktivitas</h2>
-          <span class="count">100 riwayat terbaru</span>
+          <h2>Activity Audit Log</h2>
+          <span class="count">Last 100 entries</span>
         </div>
         <div class="table-responsive">
           <table>
             <thead>
               <tr>
-                <th>Waktu</th>
-                <th>Aktor</th>
-                <th>Tipe</th>
-                <th>Aksi</th>
+                <th>Time</th>
+                <th>Actor</th>
+                <th>Type</th>
+                <th>Action</th>
                 <th>Target</th>
-                <th>Detail</th>
+                <th>Details</th>
               </tr>
             </thead>
             <tbody id="audits-table-body">
-              <tr><td colspan="6" class="empty-state">Memuat riwayat audit...</td></tr>
+              <tr><td colspan="6" class="empty-state">Loading audit logs...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1091,18 +1091,18 @@
     <section id="section-doctor" class="tab-content" style="display: none;">
       <div class="card">
         <div class="card-header">
-          <h2>Diagnostik Sistem (Doctor)</h2>
+          <h2>System Diagnostics (Doctor)</h2>
           <div style="display: flex; gap: 8px; align-items: center;">
-            <span class="status-badge" id="doctor-overall-badge">Memeriksa...</span>
-            <button type="button" class="secondary" id="btn-run-doctor">Periksa Ulang</button>
+            <span class="status-badge" id="doctor-overall-badge">Checking...</span>
+            <button type="button" class="secondary" id="btn-run-doctor">Recheck</button>
           </div>
         </div>
         <div style="display: flex; gap: 16px; margin-bottom: 18px; font-size: 12.5px; flex-wrap: wrap;">
-          <span>Versi Server: <strong id="doctor-version">-</strong></span>
-          <span>Penggunaan RAM: <strong id="doctor-ram">-</strong></span>
+          <span>Server Version: <strong id="doctor-version">-</strong></span>
+          <span>RAM Usage: <strong id="doctor-ram">-</strong></span>
         </div>
         <div id="doctor-checks-container">
-          <div class="empty-state">Memeriksa kesehatan server...</div>
+          <div class="empty-state">Checking server health...</div>
         </div>
       </div>
     </section>
@@ -1118,14 +1118,14 @@
 
     // Ordered DeployStage steps definition
     const DEPLOY_STAGES = [
-      { id: 'extract', label: 'Ekstrak kode' },
+      { id: 'extract', label: 'Extract code' },
       { id: 'build', label: 'Build image' },
-      { id: 'services', label: 'Siapkan database' },
-      { id: 'start', label: 'Jalankan container' },
+      { id: 'services', label: 'Prepare services' },
+      { id: 'start', label: 'Start container' },
       { id: 'health', label: 'Health check' },
-      { id: 'cutover', label: 'Alihkan trafik' },
+      { id: 'cutover', label: 'Switch traffic' },
       { id: 'smoke', label: 'Smoke test' },
-      { id: 'cleanup', label: 'Bersihkan versi lama' }
+      { id: 'cleanup', label: 'Clean up' }
     ];
 
     // Helper: Escape HTML to avoid injection
@@ -1148,7 +1148,7 @@
       try {
         const d = new Date(isoStr);
         if (isNaN(d.getTime())) return String(isoStr);
-        return d.toLocaleString('id-ID', {
+        return d.toLocaleString('en-US', {
           year: 'numeric',
           month: 'short',
           day: 'numeric',
@@ -1169,7 +1169,7 @@
       
       let html = `<div style="font-weight: 600; margin-bottom: 2px;">${escapeHtml(message)}</div>`;
       if (fixText) {
-        html += `<div class="toast-fix-hint">Solusi: ${escapeHtml(fixText)}</div>`;
+        html += `<div class="toast-fix-hint">Fix: ${escapeHtml(fixText)}</div>`;
       }
       toast.innerHTML = html;
       container.appendChild(toast);
@@ -1232,7 +1232,7 @@
       try {
         res = await fetch(url, opts);
       } catch (netErr) {
-        showToast('Koneksi terputus: ' + netErr.message, 'Periksa apakah server Skoci sedang berjalan.', true);
+        showToast('Connection lost: ' + netErr.message, 'Check if the Skoci server is running.', true);
         throw netErr;
       }
 
@@ -1255,7 +1255,7 @@
 
       if (!json.success) {
         const err = json.error || {};
-        const msg = err.message || json.summary || 'Terjadi kesalahan sistem';
+        const msg = err.message || json.summary || 'System error occurred';
         const fix = err.fix || '';
         showToast(msg, fix, true);
         const errorObj = new Error(msg);
@@ -1272,7 +1272,7 @@
       document.getElementById('app-shell').style.display = 'none';
       document.getElementById('login-view').style.display = 'block';
       document.getElementById('sync-dot').className = 'dot disconnected';
-      document.getElementById('sync-label').textContent = 'Belum masuk';
+      document.getElementById('sync-label').textContent = 'Not logged in';
       if (activeEventSource) {
         activeEventSource.close();
         activeEventSource = null;
@@ -1314,7 +1314,7 @@
         const res = await apiFetch('/api/apps');
         const apps = res.data || [];
         allAppsCache = apps;
-        document.getElementById('apps-counter').textContent = `${apps.length} aplikasi`;
+        document.getElementById('apps-counter').textContent = `${apps.length} application${apps.length === 1 ? '' : 's'}`;
         const defApp = apps.find(a => a.is_default_app);
         document.getElementById('default-app-indicator').textContent = 'Default: ' + (defApp ? defApp.name : '-');
         
@@ -1325,8 +1325,8 @@
         if (apps.length === 0) {
           container.innerHTML = `
             <div class="empty-state">
-              Belum ada aplikasi yang terdaftar.<br>
-              Jalankan <code>skoci init</code> dan <code>skoci deploy</code> di direktori proyek Anda.
+              No registered applications yet.<br>
+              Run <code>skoci init</code> and <code>skoci deploy</code> in your project directory.
             </div>
           `;
           return;
@@ -1338,33 +1338,33 @@
           
           let envsHtml = '';
           if (envs.length === 0) {
-            envsHtml = `<div class="empty-state" style="padding: 14px;">Belum ada deployment di lingkungan manapun.</div>`;
+            envsHtml = `<div class="empty-state" style="padding: 14px;">No deployments in any environment yet.</div>`;
           } else {
             envsHtml = `<div class="env-grid">` + envs.map(env => {
               const isHealthy = env.healthy;
               const urls = env.urls || [];
               const urlsHtml = urls.length > 0 
                 ? urls.map(u => `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${escapeHtml(u)}</a>`).join('')
-                : '<span style="color: var(--text-dim);">Tidak ada domain terikat</span>';
+                : '<span style="color: var(--text-dim);">No bound domains</span>';
 
               return `
                 <div class="env-card">
                   <div class="env-card-head">
                     <strong style="text-transform: capitalize;">${escapeHtml(env.env)}</strong>
                     <span class="status-badge ${isHealthy ? 'healthy' : 'unhealthy'}">
-                      ● ${isHealthy ? 'Sehat' : 'Bermasalah'}
+                      ● ${isHealthy ? 'Healthy' : 'Unhealthy'}
                     </span>
                   </div>
                   <div class="env-prop-row">
-                    <span class="env-prop-label">Versi:</span>
+                    <span class="env-prop-label">Version:</span>
                     <code>${escapeHtml(env.version || '-')}</code>
                   </div>
                   <div class="env-prop-row">
-                    <span class="env-prop-label">Kontainer:</span>
+                    <span class="env-prop-label">Container:</span>
                     <span>${escapeHtml(env.container_status || '-')}</span>
                   </div>
                   <div class="env-prop-row">
-                    <span class="env-prop-label">Waktu:</span>
+                    <span class="env-prop-label">Time:</span>
                     <span>${escapeHtml(formatDateTime(env.deployed_at))}</span>
                   </div>
                   <div class="env-urls-list">
@@ -1388,8 +1388,8 @@
                   ${isDefault ? '<span class="tag highlight">Default App</span>' : ''}
                 </div>
                 <div class="app-actions">
-                  ${!isDefault ? `<button type="button" class="secondary" onclick="handleSetDefault('${escapeHtml(app.name)}')">Jadikan Default</button>` : ''}
-                  <button type="button" class="danger" onclick="handleDeleteApp('${escapeHtml(app.name)}')">Hapus Aplikasi</button>
+                  ${!isDefault ? `<button type="button" class="secondary" onclick="handleSetDefault('${escapeHtml(app.name)}')">Set as Default</button>` : ''}
+                  <button type="button" class="danger" onclick="handleDeleteApp('${escapeHtml(app.name)}')">Delete Application</button>
                 </div>
               </div>
               <div>${envsHtml}</div>
@@ -1401,8 +1401,8 @@
 
     async function handleRollback(appName, env) {
       const ok = await promptConfirm(
-        'Konfirmasi Rollback',
-        `Rollback lingkungan ${env} pada aplikasi '${appName}' ke versi stabil sebelumnya?`
+        'Confirm Rollback',
+        `Rollback environment ${env} of application '${appName}' to the previous stable version?`
       );
       if (!ok) return;
 
@@ -1411,7 +1411,7 @@
           method: 'POST',
           body: JSON.stringify({ app: appName, env: env })
         });
-        showToast(`Rollback dimulai untuk ${appName} (${env})`);
+        showToast(`Rollback started for ${appName} (${env})`);
         if (res.data && res.data.id) {
           switchTab('deployments');
           openDeploymentTimeline(res.data.id);
@@ -1427,7 +1427,7 @@
           method: 'PUT',
           body: JSON.stringify({ app: appName })
         });
-        showToast(`Aplikasi '${appName}' dijadikan default untuk trafik IP literal.`);
+        showToast(`Application '${appName}' set as default for literal IP traffic.`);
         loadApps();
         loadDoctor();
       } catch (err) {}
@@ -1435,8 +1435,8 @@
 
     async function handleDeleteApp(appName) {
       const ok = await promptConfirm(
-        'Hapus Aplikasi',
-        `Hapus aplikasi '${appName}' beserta seluruh kontainer dan rutenya? Volume database dan backup tetap disimpan.`
+        'Delete Application',
+        `Delete application '${appName}' and all its containers and routes? Database volumes and backups will be preserved.`
       );
       if (!ok) return;
 
@@ -1445,10 +1445,10 @@
           method: 'DELETE'
         });
         if (res.data && res.data.status === 'pending_approval') {
-          showToast(`Permintaan hapus '${appName}' memerlukan persetujuan.`);
+          showToast(`Delete request for '${appName}' requires approval.`);
           switchTab('approvals');
         } else {
-          showToast(`Aplikasi '${appName}' berhasil dihapus.`);
+          showToast(`Application '${appName}' deleted successfully.`);
           loadApps();
         }
       } catch (err) {}
@@ -1502,7 +1502,7 @@
         const tbody = document.getElementById('deployments-table-body');
 
         if (list.length === 0) {
-          tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Belum ada riwayat deployment.</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No deployment history yet.</td></tr>`;
           return;
         }
 
@@ -1566,7 +1566,7 @@
       } else if (info.status === 'failed') {
         document.getElementById('detail-progress-bar').style.width = '100%';
         document.getElementById('detail-progress-percent').textContent = '100%';
-        const err = info.error || { code: 'failed', message: 'Deployment gagal', fix: '' };
+        const err = info.error || { code: 'failed', message: 'Deployment failed', fix: '' };
         showDeploymentError(err);
         DEPLOY_STAGES.forEach(s => {
           if (stageStateMap[s.id] === 'running') {
@@ -1594,7 +1594,7 @@
       initStageSteps();
       document.getElementById('detail-progress-bar').style.width = '0%';
       document.getElementById('detail-progress-percent').textContent = '0%';
-      document.getElementById('detail-log-output').textContent = 'Menghubungkan ke stream...\n';
+      document.getElementById('detail-log-output').textContent = 'Connecting to stream...\n';
       document.getElementById('detail-result-box').style.display = 'none';
 
       // Start EventSource immediately
@@ -1653,7 +1653,7 @@
       // Append log or stage message to terminal
       if (event.message) {
         const logPre = document.getElementById('detail-log-output');
-        if (logPre.textContent === 'Menghubungkan ke stream...\n') {
+        if (logPre.textContent === 'Connecting to stream...\n') {
           logPre.textContent = '';
         }
         if (event.status === 'log') {
@@ -1676,7 +1676,7 @@
       if (event.stage === 'done') {
         if (event.status === 'failed' || event.error) {
           // Requirement 3: if status === 'failed' or error present -> show error + fix, never call renderAllStepsPassed
-          const err = event.error || { code: 'failed', message: event.message || 'Deployment gagal', fix: '' };
+          const err = event.error || { code: 'failed', message: event.message || 'Deployment failed', fix: '' };
           showDeploymentError(err);
           const badge = document.getElementById('detail-status-badge');
           badge.textContent = 'failed';
@@ -1720,11 +1720,11 @@
       const urlList = Array.isArray(urls) ? urls : [];
       const linksHtml = urlList.length > 0 
         ? urlList.map(u => `<div><a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer" style="font-weight: 600;">🔗 ${escapeHtml(u)}</a></div>`).join('')
-        : '<div>Deployment selesai tanpa domain publik.</div>';
+        : '<div>Deployment finished without public domains.</div>';
 
       box.innerHTML = `
         <div style="background: var(--success-bg); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 4px; padding: 12px; color: var(--text);">
-          <div style="color: var(--success); font-weight: 700; margin-bottom: 6px;">✓ Deployment Sukses!</div>
+          <div style="color: var(--success); font-weight: 700; margin-bottom: 6px;">✓ Deployment Successful!</div>
           <div style="font-size: 12.5px;">${linksHtml}</div>
         </div>
       `;
@@ -1735,9 +1735,9 @@
       box.style.display = 'block';
       box.innerHTML = `
         <div style="background: var(--error-bg); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 4px; padding: 12px; color: var(--text);">
-          <div style="color: var(--error); font-weight: 700; margin-bottom: 4px;">✗ Deployment Gagal: ${escapeHtml(err.code || 'Error')}</div>
+          <div style="color: var(--error); font-weight: 700; margin-bottom: 4px;">✗ Deployment Failed: ${escapeHtml(err.code || 'Error')}</div>
           <div style="font-size: 12px; margin-bottom: 6px;">${escapeHtml(err.message)}</div>
-          ${err.fix ? `<div style="font-size: 11.5px; font-family: var(--font-mono); background: #07090e; padding: 6px 8px; border-radius: 4px; color: #fca5a5;">Solusi: ${escapeHtml(err.fix)}</div>` : ''}
+          ${err.fix ? `<div style="font-size: 11.5px; font-family: var(--font-mono); background: #07090e; padding: 6px 8px; border-radius: 4px; color: #fca5a5;">Fix: ${escapeHtml(err.fix)}</div>` : ''}
         </div>
       `;
     }
@@ -1761,7 +1761,7 @@
 
         const container = document.getElementById('approvals-list-container');
         if (pending.length === 0) {
-          container.innerHTML = `<div class="empty-state">Tidak ada aksi sensitif yang menunggu persetujuan.</div>`;
+          container.innerHTML = `<div class="empty-state">No sensitive actions pending approval.</div>`;
           return;
         }
 
@@ -1775,15 +1775,15 @@
               <span style="font-size: 11px; color: var(--text-dim);">${escapeHtml(formatDateTime(item.created_at))}</span>
             </div>
             <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">
-              Diminta oleh: <code>${escapeHtml(item.requested_by)}</code>
+              Requested by: <code>${escapeHtml(item.requested_by)}</code>
             </div>
-            ${item.detail ? `<div style="font-size: 12px; margin-bottom: 6px;">Detail: <strong>${escapeHtml(item.detail)}</strong></div>` : ''}
+            ${item.detail ? `<div style="font-size: 12px; margin-bottom: 6px;">Details: <strong>${escapeHtml(item.detail)}</strong></div>` : ''}
             <div class="approval-reason-box">
               "${escapeHtml(item.reason)}"
             </div>
             <div style="display: flex; gap: 10px; margin-top: 10px;">
-              <button type="button" onclick="handleApprove('${escapeHtml(item.id)}')">Setujui</button>
-              <button type="button" class="danger" onclick="handleReject('${escapeHtml(item.id)}')">Tolak</button>
+              <button type="button" onclick="handleApprove('${escapeHtml(item.id)}')">Approve</button>
+              <button type="button" class="danger" onclick="handleReject('${escapeHtml(item.id)}')">Reject</button>
             </div>
           </div>
         `).join('');
@@ -1796,7 +1796,7 @@
           method: 'POST',
           body: JSON.stringify({ request_id: requestId })
         });
-        showToast('Permohonan berhasil disetujui');
+        showToast('Request approved successfully');
         if (res.data && res.data.deployment) {
           const depId = res.data.deployment.id;
           selectedDeploymentId = depId;
@@ -1814,7 +1814,7 @@
           method: 'POST',
           body: JSON.stringify({ request_id: requestId })
         });
-        showToast('Permohonan ditolak');
+        showToast('Request rejected');
         loadApprovals();
       } catch (err) {}
     }
@@ -1822,7 +1822,7 @@
     function updateTokenAppSelect(apps) {
       const select = document.getElementById('token-filter-app');
       const cur = select.value;
-      select.innerHTML = `<option value="">Pilih aplikasi...</option>` + apps.map(a => `
+      select.innerHTML = `<option value="">Select application...</option>` + apps.map(a => `
         <option value="${escapeHtml(a.name)}" ${a.name === cur ? 'selected' : ''}>${escapeHtml(a.name)}</option>
       `).join('');
     }
@@ -1843,13 +1843,13 @@
 
     async function loadTokensForApp(appName) {
       const tbody = document.getElementById('tokens-table-body');
-      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Memuat token untuk ${escapeHtml(appName)}...</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Loading tokens for ${escapeHtml(appName)}...</td></tr>`;
 
       try {
         const res = await apiFetch(`/api/tokens/${encodeURIComponent(appName)}`);
         const tokens = (res.data && res.data.tokens) || [];
         if (tokens.length === 0) {
-          tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Belum ada token agen untuk aplikasi '${escapeHtml(appName)}'.</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No agent tokens for application '${escapeHtml(appName)}' yet.</td></tr>`;
           return;
         }
 
@@ -1859,10 +1859,10 @@
             <td><strong>${escapeHtml(t.name)}</strong></td>
             <td>${escapeHtml(t.app)}</td>
             <td>${escapeHtml(formatDateTime(t.created_at))}</td>
-            <td>${t.last_used_at ? escapeHtml(formatDateTime(t.last_used_at)) : '<span style="color:var(--text-dim);">Belum pernah</span>'}</td>
+            <td>${t.last_used_at ? escapeHtml(formatDateTime(t.last_used_at)) : '<span style="color:var(--text-dim);">Never</span>'}</td>
             <td style="text-align: right;">
               <button type="button" class="danger" style="font-size: 11px; padding: 4px 8px;" onclick="handleRevokeToken('${escapeHtml(t.app)}', '${escapeHtml(t.name)}')">
-                Cabut
+                Revoke
               </button>
             </td>
           </tr>
@@ -1906,9 +1906,9 @@
       const valInput = document.getElementById('token-reveal-val');
       valInput.select();
       navigator.clipboard.writeText(valInput.value).then(() => {
-        showToast('Token disalin ke clipboard');
+        showToast('Token copied to clipboard');
       }).catch(() => {
-        showToast('Gagal menyalin token', '', true);
+        showToast('Failed to copy token', '', true);
       });
     });
 
@@ -1919,8 +1919,8 @@
 
     async function handleRevokeToken(appName, tokenName) {
       const ok = await promptConfirm(
-        'Cabut Token',
-        `Cabut akses token agen '${tokenName}' pada aplikasi '${appName}'? Agen tidak akan dapat melakukan deployment lagi menggunakan token ini.`
+        'Revoke Token',
+        `Revoke access for agent token '${tokenName}' on application '${appName}'? The agent will no longer be able to deploy using this token.`
       );
       if (!ok) return;
 
@@ -1928,7 +1928,7 @@
         await apiFetch(`/api/tokens/${encodeURIComponent(appName)}/${encodeURIComponent(tokenName)}`, {
           method: 'DELETE'
         });
-        showToast(`Token '${tokenName}' berhasil dicabut.`);
+        showToast(`Token '${tokenName}' revoked successfully.`);
         loadTokensForApp(appName);
       } catch (err) {}
     }
@@ -1940,7 +1940,7 @@
         const res = await apiFetch('/api/audits');
         const list = res.data || [];
         if (list.length === 0) {
-          tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Belum ada catatan aktivitas audit.</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No audit activity records yet.</td></tr>`;
           return;
         }
 
@@ -1970,16 +1970,16 @@
         document.getElementById('ram-indicator').textContent = `RAM: ${(doc.idle_ram_mb || 0).toFixed(1)} MB`;
 
         const overallBadge = document.getElementById('doctor-overall-badge');
-        overallBadge.textContent = doc.healthy ? '● Semua Sehat' : '○ Perlu Perhatian';
+        overallBadge.textContent = doc.healthy ? '● All Healthy' : '○ Needs Attention';
         overallBadge.className = 'status-badge ' + (doc.healthy ? 'healthy' : 'unhealthy');
 
         const dockerItem = (doc.checks || []).find(c => c.name.toLowerCase().includes('docker'));
         const dockerEl = document.getElementById('docker-indicator');
         if (dockerItem && dockerItem.passed) {
-          dockerEl.textContent = 'Docker: Tersambung';
+          dockerEl.textContent = 'Docker: Connected';
           dockerEl.className = 'tag success';
         } else {
-          dockerEl.textContent = 'Docker: Terkendala';
+          dockerEl.textContent = 'Docker: Issue Detected';
           dockerEl.className = 'tag warning';
         }
 
@@ -1991,7 +1991,7 @@
               <div class="doctor-head">
                 <strong>${escapeHtml(check.name)}</strong>
                 <span class="status-badge ${isPassed ? 'healthy' : 'unhealthy'}">
-                  ${isPassed ? '✓ Lolos' : '✗ Gagal'}
+                  ${isPassed ? '✓ Passed' : '✗ Failed'}
                 </span>
               </div>
               <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
@@ -1999,7 +1999,7 @@
               </div>
               ${check.fix ? `
                 <div class="doctor-fix-box">
-                  Solusi: ${escapeHtml(check.fix)}
+                  Fix: ${escapeHtml(check.fix)}
                 </div>
               ` : ''}
             </div>
@@ -2019,7 +2019,7 @@
       if (!token) return;
 
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Memverifikasi...';
+      submitBtn.textContent = 'Verifying...';
 
       try {
         const res = await fetch('/api/session', {
@@ -2035,18 +2035,18 @@
         const json = await res.json();
         if (json.success) {
           tokenInput.value = '';
-          showToast('Berhasil masuk ke dashboard');
+          showToast('Logged in to dashboard successfully');
           showMainAppShell();
           initDashboard();
         } else {
           const err = json.error || {};
-          showToast(err.message || 'Token tidak valid', err.fix || 'Periksa token di server dengan: sudo cat /etc/skoci/master_token', true);
+          showToast(err.message || 'Invalid token', err.fix || 'Check the token on the server with: sudo cat /etc/skoci/master_token', true);
         }
       } catch (netErr) {
-        showToast('Gagal menghubungi server', netErr.message, true);
+        showToast('Failed to connect to server', netErr.message, true);
       } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Masuk ke Dashboard';
+        submitBtn.textContent = 'Log in to Dashboard';
       }
     });
 
@@ -2055,7 +2055,7 @@
       try {
         await apiFetch('/api/session', { method: 'DELETE' });
       } catch (e) {}
-      showToast('Sesi telah ditutup');
+      showToast('Session closed');
       showLoginView();
     });
 
@@ -2087,7 +2087,7 @@
         const label = document.getElementById('sync-label');
         if (document.visibilityState === 'hidden') {
           dot.className = 'dot paused';
-          label.textContent = 'Sinkronisasi dijeda';
+          label.textContent = 'Sync paused';
         } else {
           dot.className = 'dot';
           label.textContent = 'Auto-sync (10s)';

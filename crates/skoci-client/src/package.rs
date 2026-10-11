@@ -23,16 +23,16 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     let skoci_yaml = dir.join("skoci.yaml");
     if !skoci_yaml.exists() {
         return Err(SkociError::config_invalid(
-            "File skoci.yaml tidak ditemukan di direktori proyek",
-            "Jalankan `skoci init` untuk membuat skoci.yaml terlebih dahulu",
+            "skoci.yaml file not found in project directory",
+            "Run `skoci init` to create skoci.yaml first",
         ));
     }
 
     let temp_path = std::env::temp_dir().join(format!("skoci-pack-{}.tar.gz", uuid::Uuid::new_v4()));
     let out_file = File::create(&temp_path).map_err(|e| {
         SkociError::internal(
-            format!("Gagal membuat file arsip sementara: {e}"),
-            "Periksa apakah direktori temp dapat ditulis",
+            format!("Failed to create temporary archive file: {e}"),
+            "Check if the temporary directory is writable",
         )
     })?;
 
@@ -60,8 +60,8 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     for entry in builder.build() {
         let entry = entry.map_err(|e| {
             SkociError::bad_request(
-                format!("Gagal memindai file proyek: {e}"),
-                "Periksa izin akses file dalam direktori proyek",
+                format!("Failed to scan project files: {e}"),
+                "Check file access permissions in the project directory",
             )
         })?;
 
@@ -71,7 +71,7 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
 
         let path = entry.path();
         let rel_path = path.strip_prefix(dir).map_err(|e| {
-            SkociError::internal(format!("Gagal menghitung path relatif: {e}"), "Coba deploy kembali")
+            SkociError::internal(format!("Failed to compute relative path: {e}"), "Try deploying again")
         })?;
 
         let rel_str = rel_path
@@ -82,8 +82,8 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
 
         let metadata = std::fs::symlink_metadata(path).map_err(|e| {
             SkociError::internal(
-                format!("Gagal membaca metadata {}: {e}", path.display()),
-                "Periksa izin file proyek",
+                format!("Failed to read metadata for {}: {e}", path.display()),
+                "Check project file permissions",
             )
         })?;
 
@@ -100,12 +100,12 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
             header.set_mode(0o777);
             let target = std::fs::read_link(path).map_err(|e| {
                 SkociError::bad_request(
-                    format!("Gagal membaca symlink {}: {e}", path.display()),
-                    "Pastikan symlink valid",
+                    format!("Failed to read symlink {}: {e}", path.display()),
+                    "Ensure symlink is valid",
                 )
             })?;
             tar.append_link(&mut header, &rel_str, &target).map_err(|e| {
-                SkociError::internal(format!("Gagal menambahkan symlink ke arsip: {e}"), "Coba deploy kembali")
+                SkociError::internal(format!("Failed to append symlink to archive: {e}"), "Try deploying again")
             })?;
             files_count += 1;
         } else if metadata.is_dir() {
@@ -118,7 +118,7 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
                 format!("{rel_str}/")
             };
             tar.append_data(&mut header, dir_name, std::io::empty()).map_err(|e| {
-                SkociError::internal(format!("Gagal menambahkan direktori ke arsip: {e}"), "Coba deploy kembali")
+                SkociError::internal(format!("Failed to append directory to archive: {e}"), "Try deploying again")
             })?;
         } else {
             header.set_entry_type(tar::EntryType::Regular);
@@ -139,27 +139,27 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
             header.set_mode(mode);
             let mut file = File::open(path).map_err(|e| {
                 SkociError::bad_request(
-                    format!("Gagal membuka file {}: {e}", path.display()),
-                    "Pastikan file dapat dibaca",
+                    format!("Failed to open file {}: {e}", path.display()),
+                    "Ensure the file is readable",
                 )
             })?;
             tar.append_data(&mut header, &rel_str, &mut file).map_err(|e| {
-                SkociError::internal(format!("Gagal menulis arsip tar: {e}"), "Coba deploy kembali")
+                SkociError::internal(format!("Failed to write tar archive: {e}"), "Try deploying again")
             })?;
             files_count += 1;
         }
     }
 
     let gz = tar.into_inner().map_err(|e| {
-        SkociError::internal(format!("Gagal menyelesaikan arsip tar: {e}"), "Coba deploy kembali")
+        SkociError::internal(format!("Failed to finalize tar archive: {e}"), "Try deploying again")
     })?;
 
     let file = gz.finish().map_err(|e| {
-        SkociError::internal(format!("Gagal mengompresi arsip gzip: {e}"), "Coba deploy kembali")
+        SkociError::internal(format!("Failed to compress gzip archive: {e}"), "Try deploying again")
     })?;
 
     let bytes = file.metadata().map_err(|e| {
-        SkociError::internal(format!("Gagal memeriksa ukuran arsip: {e}"), "Coba deploy kembali")
+        SkociError::internal(format!("Failed to check archive size: {e}"), "Try deploying again")
     })?.len();
 
     Ok(PackedContext {

@@ -163,15 +163,15 @@ impl ServiceManager {
         {
             let mut file = opts.open(&env_file_path).map_err(|e| {
                 SkociError::internal(
-                    format!("Gagal membuat env file: {e}"),
-                    "Periksa izin folder temp",
+                    format!("Failed to create env file: {e}"),
+                    "Check temp directory permissions",
                 )
             })?;
             file.write_all(env_content.as_bytes()).map_err(|e| {
                 let _ = std::fs::remove_file(&env_file_path);
                 SkociError::internal(
-                    format!("Gagal menulis env file: {e}"),
-                    "Periksa ruang disk temp",
+                    format!("Failed to write env file: {e}"),
+                    "Check temp disk space",
                 )
             })?;
         }
@@ -227,7 +227,7 @@ impl ServiceManager {
             .join("\n");
 
         Err(SkociError::docker_error(format!(
-            "Database '{}' gagal siap dalam 90 detik. Log container:\n{}",
+            "Database '{}' failed to become ready within 90 seconds. Container logs:\n{}",
             spec.service, logs
         )))
     }

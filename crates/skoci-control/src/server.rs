@@ -25,7 +25,7 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
     // Master token must be >= 32 characters
     if cfg.master_token.trim().len() < 32 {
         anyhow::bail!(
-            "SKOCI_MASTER_TOKEN wajib diisi dan memiliki panjang minimal 32 karakter (diberikan: {} karakter)",
+            "SKOCI_MASTER_TOKEN is required and must be at least 32 characters long (provided: {} characters)",
             cfg.master_token.trim().len()
         );
     }
@@ -33,7 +33,7 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
     let data_dir = cfg.data_dir.clone();
     fs::create_dir_all(&data_dir)
         .await
-        .with_context(|| format!("Gagal membuat data_dir di {}", data_dir.display()))?;
+        .with_context(|| format!("Failed to create data_dir at {}", data_dir.display()))?;
 
     fs::create_dir_all(data_dir.join("uploads")).await?;
     fs::create_dir_all(data_dir.join("builds")).await?;
@@ -41,12 +41,12 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
     fs::create_dir_all(data_dir.join("acme")).await?;
 
     let db = Database::open(data_dir.join("skoci.db"))
-        .context("Gagal menginisialisasi SQLite database")?;
+        .context("Failed to initialize SQLite database")?;
 
     let key_path = data_dir.join("node.key");
     let secret_cipher = Arc::new(
         SecretCipher::load_or_create(&key_path)
-            .context("Gagal memuat atau membuat node.key SecretCipher")?,
+            .context("Failed to load or create node.key SecretCipher")?,
     );
 
     let docker = DockerClient::new();
@@ -86,14 +86,14 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
                 tracing::info!(
                     app = %r.app,
                     env = %r.env,
-                    "Rute berhasil dipulihkan ke ProxyRouter"
+                    "Route successfully restored to ProxyRouter"
                 );
             } else {
                 tracing::warn!(
                     app = %r.app,
                     env = %r.env,
                     container = %r.container,
-                    "Container tidak berjalan, rute tidak dimasukkan ke proxy"
+                    "Container is not running, route not added to proxy"
                 );
             }
         }
@@ -161,9 +161,9 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
     let app = build_router(app_state);
     let listener = TcpListener::bind(cfg.bind)
         .await
-        .with_context(|| format!("Gagal bind kontrol API pada {}", cfg.bind))?;
+        .with_context(|| format!("Failed to bind control API on {}", cfg.bind))?;
 
-    tracing::info!("Skoci control plane aktif di http://{}", cfg.bind);
+    tracing::info!("Skoci control plane active at http://{}", cfg.bind);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

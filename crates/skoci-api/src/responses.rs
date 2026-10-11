@@ -52,16 +52,16 @@ impl DeployStage {
 
     pub fn label(&self) -> &'static str {
         match self {
-            DeployStage::Queued => "Antre",
-            DeployStage::Extract => "Ekstrak kode",
+            DeployStage::Queued => "Queued",
+            DeployStage::Extract => "Extract code",
             DeployStage::Build => "Build image",
-            DeployStage::Services => "Siapkan database",
-            DeployStage::Start => "Jalankan container",
+            DeployStage::Services => "Prepare services",
+            DeployStage::Start => "Start container",
             DeployStage::Health => "Health check",
-            DeployStage::Cutover => "Alihkan trafik",
+            DeployStage::Cutover => "Switch traffic",
             DeployStage::Smoke => "Smoke test",
-            DeployStage::Cleanup => "Bersihkan versi lama",
-            DeployStage::Done => "Selesai",
+            DeployStage::Cleanup => "Clean up",
+            DeployStage::Done => "Done",
         }
     }
 }

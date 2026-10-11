@@ -30,8 +30,8 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
     if !dest.exists() {
         fs::create_dir_all(dest).map_err(|e| {
             SkociError::bad_request(
-                format!("Gagal membuat direktori tujuan ekstraksi: {e}"),
-                "Periksa izin folder tujuan",
+                format!("Failed to create extraction destination directory: {e}"),
+                "Check destination directory permissions",
             )
         })?;
     }
@@ -44,15 +44,15 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
 
     let dest_canonical = dest.canonicalize().map_err(|e| {
         SkociError::bad_request(
-            format!("Gagal kanonikalisasi direktori tujuan: {e}"),
-            "Periksa path direktori tujuan",
+            format!("Failed to canonicalize destination directory: {e}"),
+            "Check destination directory path",
         )
     })?;
 
     let file = File::open(src).map_err(|e| {
         SkociError::bad_request(
-            format!("Gagal membuka file arsip tar.gz: {e}"),
-            "Pastikan file arsip ada dan dapat dibaca",
+            format!("Failed to open tar.gz archive file: {e}"),
+            "Ensure archive file exists and is readable",
         )
     })?;
 
@@ -62,16 +62,16 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
 
     let entries = archive.entries().map_err(|e| {
         SkociError::bad_request(
-            format!("Gagal membaca entri tar: {e}"),
-            "Pastikan file merupakan format .tar.gz yang valid",
+            format!("Failed to read tar entries: {e}"),
+            "Ensure file is a valid .tar.gz format",
         )
     })?;
 
     for entry_result in entries {
         let mut entry = entry_result.map_err(|e| {
             SkociError::bad_request(
-                format!("Format entri tar rusak: {e}"),
-                "Periksa integritas arsip tar",
+                format!("Corrupted tar entry format: {e}"),
+                "Check tar archive integrity",
             )
         })?;
 
@@ -79,23 +79,23 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
             .path()
             .map_err(|e| {
                 SkociError::bad_request(
-                    format!("Path dalam tar tidak valid: {e}"),
-                    "Periksa struktur path di dalam arsip",
+                    format!("Invalid path in tar: {e}"),
+                    "Check path structure in archive",
                 )
             })?
             .into_owned();
 
         if entry_path.is_absolute() {
             return Err(SkociError::bad_request(
-                format!("Path absolut tidak diizinkan: {}", entry_path.display()),
-                "Gunakan path relatif di dalam arsip",
+                format!("Absolute paths not allowed: {}", entry_path.display()),
+                "Use relative paths inside the archive",
             ));
         }
 
         if entry_path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(SkociError::bad_request(
-                format!("Path traversal ('..') tidak diizinkan: {}", entry_path.display()),
-                "Hapus traversal '..' dari path di dalam arsip",
+                format!("Path traversal ('..') not allowed: {}", entry_path.display()),
+                "Remove '..' traversal from path inside the archive",
             ));
         }
 
@@ -105,8 +105,8 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
         match entry_type {
             EntryType::Char | EntryType::Block | EntryType::Fifo => {
                 return Err(SkociError::bad_request(
-                    format!("Tipe file khusus ({:?}) tidak diizinkan di dalam arsip", entry_type),
-                    "Hapus device / fifo node dari arsip",
+                    format!("Special file type ({:?}) not allowed in archive", entry_type),
+                    "Remove device / fifo nodes from archive",
                 ));
             }
             _ => {}
@@ -117,8 +117,8 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
         if entry_type.is_dir() {
             fs::create_dir_all(&target_path).map_err(|e| {
                 SkociError::bad_request(
-                    format!("Gagal membuat subdirektori: {e}"),
-                    "Periksa izin penulisan",
+                    format!("Failed to create subdirectory: {e}"),
+                    "Check write permissions",
                 )
             })?;
             #[cfg(unix)]
@@ -131,19 +131,19 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
                 .link_name()
                 .map_err(|e| {
                     SkociError::bad_request(
-                        format!("Gagal membaca link target: {e}"),
-                        "Periksa symlink dalam arsip",
+                        format!("Failed to read link target: {e}"),
+                        "Check symlinks in archive",
                     )
                 })?
                 .ok_or_else(|| {
-                    SkociError::bad_request("Symlink tidak memiliki target", "Periksa integritas symlink")
+                    SkociError::bad_request("Symlink has no target", "Check symlink integrity")
                 })?
                 .into_owned();
 
             if link_target.is_absolute() {
                 return Err(SkociError::bad_request(
-                    format!("Target link absolut tidak diizinkan: {}", link_target.display()),
-                    "Gunakan target relatif di dalam arsip",
+                    format!("Absolute link targets not allowed: {}", link_target.display()),
+                    "Use relative targets inside the archive",
                 ));
             }
 
@@ -154,18 +154,18 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
             if !normalized.starts_with(&dest_canonical) {
                 return Err(SkociError::bad_request(
                     format!(
-                        "Target link meloloskan diri dari folder ekstraksi: {}",
+                        "Link target escapes extraction directory: {}",
                         link_target.display()
                     ),
-                    "Pastikan semua symlink tetap berada di dalam folder proyek",
+                    "Ensure all symlinks stay inside the project directory",
                 ));
             }
 
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
                     SkociError::bad_request(
-                        format!("Gagal membuat folder parent untuk link: {e}"),
-                        "Periksa izin folder",
+                        format!("Failed to create parent directory for link: {e}"),
+                        "Check directory permissions",
                     )
                 })?;
             }
@@ -178,8 +178,8 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
                     }
                     std::os::unix::fs::symlink(&link_target, &target_path).map_err(|e| {
                         SkociError::bad_request(
-                            format!("Gagal membuat symlink: {e}"),
-                            "Periksa izin pembuatan symlink",
+                            format!("Failed to create symlink: {e}"),
+                            "Check symlink creation permissions",
                         )
                     })?;
                 }
@@ -189,8 +189,8 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
                 }
                 fs::hard_link(&normalized, &target_path).map_err(|e| {
                     SkociError::bad_request(
-                        format!("Gagal membuat hardlink: {e}"),
-                        "Periksa target file untuk hardlink",
+                        format!("Failed to create hardlink: {e}"),
+                        "Check target file for hardlink",
                     )
                 })?;
             }
@@ -198,16 +198,16 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
                     SkociError::bad_request(
-                        format!("Gagal membuat folder parent untuk file: {e}"),
-                        "Periksa izin penulisan",
+                        format!("Failed to create parent directory for file: {e}"),
+                        "Check write permissions",
                     )
                 })?;
             }
 
             let mut out_file = File::create(&target_path).map_err(|e| {
                 SkociError::bad_request(
-                    format!("Gagal membuat file tujuan {}: {e}", target_path.display()),
-                    "Periksa izin penulisan",
+                    format!("Failed to create destination file {}: {e}", target_path.display()),
+                    "Check write permissions",
                 )
             })?;
 
@@ -215,7 +215,7 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
             loop {
                 let n = entry.read(&mut buf).map_err(|e| {
                     let _ = fs::remove_file(&target_path);
-                    SkociError::bad_request(format!("Gagal membaca isi file: {e}"), "Coba lagi")
+                    SkociError::bad_request(format!("Failed to read file contents: {e}"), "Try again")
                 })?;
                 if n == 0 {
                     break;
@@ -229,7 +229,7 @@ pub fn extract_tar_gz(src: &Path, dest: &Path, max_unpacked_bytes: u64) -> Skoci
                 use std::io::Write;
                 out_file.write_all(&buf[..n]).map_err(|e| {
                     let _ = fs::remove_file(&target_path);
-                    SkociError::bad_request(format!("Gagal menulis file: {e}"), "Cek disk space")
+                    SkociError::bad_request(format!("Failed to write file: {e}"), "Check disk space")
                 })?;
             }
 
@@ -321,7 +321,7 @@ mod tests {
 
         let err = extract_tar_gz(&tar_gz_path, &dest, 1024 * 1024).unwrap_err();
         assert_eq!(err.code, "bad_request");
-        assert!(err.message.contains("tidak diizinkan"));
+        assert!(err.message.contains("not allowed"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -338,7 +338,7 @@ mod tests {
 
         let err = extract_tar_gz(&tar_gz_path, &dest, 1024 * 1024).unwrap_err();
         assert_eq!(err.code, "bad_request");
-        assert!(err.message.contains("absolut"));
+        assert!(err.message.contains("Absolute"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -365,7 +365,7 @@ mod tests {
 
         let err = extract_tar_gz(&tar_gz_path, &dest, 1024 * 1024).unwrap_err();
         assert_eq!(err.code, "bad_request");
-        assert!(err.message.contains("meloloskan diri"));
+        assert!(err.message.contains("escapes"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

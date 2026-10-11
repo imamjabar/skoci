@@ -62,16 +62,16 @@ impl SkociError {
     pub fn payload_too_large(limit_mb: u64) -> Self {
         Self::new(
             "payload_too_large",
-            format!("Ukuran kode yang diunggah melebihi batas {limit_mb} MB"),
-            "Tambahkan folder besar (node_modules, dist, data) ke .dockerignore atau .gitignore",
+            format!("Uploaded code size exceeds the {limit_mb} MB limit"),
+            "Add large directories (node_modules, dist, data) to .dockerignore or .gitignore",
         )
     }
 
     pub fn rate_limited() -> Self {
         Self::new(
             "rate_limited",
-            "Terlalu banyak percobaan token yang salah dari alamat ini",
-            "Tunggu 1 menit lalu coba lagi dengan token yang benar",
+            "Too many invalid token attempts from this address",
+            "Wait 1 minute and try again with the correct token",
         )
     }
 
@@ -79,31 +79,31 @@ impl SkociError {
         Self::new(
             "build_failed",
             details,
-            "Baca log build di atas, perbaiki Dockerfile atau kode, lalu jalankan 'skoci deploy' lagi",
+            "Read the build log above, fix the Dockerfile or code, then run 'skoci deploy' again",
         )
     }
 
     pub fn secret_missing(name: &str) -> Self {
         Self::new(
             "secret_missing",
-            format!("Secret '{name}' belum diset"),
-            format!("skoci secret set {name} <nilai>"),
+            format!("Secret '{name}' is not set"),
+            format!("skoci secret set {name} <value>"),
         )
     }
 
     pub fn policy_violation(action: &str, env: &str) -> Self {
         Self::new(
             "policy_violation",
-            format!("Aksi '{action}' di environment '{env}' dilarang oleh kebijakan server Skoci"),
-            "Minta admin server menjalankan aksi ini",
+            format!("Action '{action}' in environment '{env}' is forbidden by Skoci server policy"),
+            "Ask a server admin to perform this action",
         )
     }
 
     pub fn approval_required(request_id: &str, action: &str) -> Self {
         Self::new(
             "approval_required",
-            format!("Aksi '{action}' memerlukan persetujuan manusia (ID: {request_id})"),
-            format!("Minta admin menyetujui lewat dashboard atau 'skoci approve {request_id}'"),
+            format!("Action '{action}' requires human approval (ID: {request_id})"),
+            format!("Ask an admin to approve via dashboard or 'skoci approve {request_id}'"),
         )
     }
 
@@ -111,39 +111,39 @@ impl SkociError {
         Self::new(
             "unauthorized",
             message,
-            "Set SKOCI_TOKEN ke token agen yang valid (skoci connect) atau login dashboard dengan master token",
+            "Set SKOCI_TOKEN to a valid agent token (skoci connect) or log in to the dashboard with the master token",
         )
     }
 
     pub fn scope_violation(token_app: &str, requested_app: &str) -> Self {
         Self::new(
             "scope_violation",
-            format!("Token ini hanya memiliki izin untuk aplikasi '{token_app}', bukan '{requested_app}'"),
-            format!("Gunakan token yang dibuat khusus untuk '{requested_app}'"),
+            format!("This token only has permission for app '{token_app}', not '{requested_app}'"),
+            format!("Use a token created specifically for '{requested_app}'"),
         )
     }
 
     pub fn app_not_found(app: &str) -> Self {
         Self::new(
             "app_not_found",
-            format!("Aplikasi '{app}' belum pernah di-deploy"),
-            "Jalankan 'skoci deploy' dari folder project",
+            format!("App '{app}' has never been deployed"),
+            "Run 'skoci deploy' from the project directory",
         )
     }
 
     pub fn health_check_failed(target: &str, details: &str) -> Self {
         Self::new(
             "health_check_failed",
-            format!("Health check gagal untuk {target}: {details}"),
-            "Pastikan aplikasi listen di 0.0.0.0 pada 'run.port' dan path 'run.health' membalas 2xx; cek 'skoci logs'",
+            format!("Health check failed for {target}: {details}"),
+            "Ensure the app listens on 0.0.0.0 at 'run.port' and 'run.health' responds with 2xx; check 'skoci logs'",
         )
     }
 
     pub fn smoke_test_failed(target: &str, details: &str) -> Self {
         Self::new(
             "smoke_test_failed",
-            format!("Smoke test gagal untuk {target}: {details}"),
-            "Periksa 'skoci logs' atau jalankan 'skoci rollback'",
+            format!("Smoke test failed for {target}: {details}"),
+            "Check 'skoci logs' or run 'skoci rollback'",
         )
     }
 
@@ -151,14 +151,14 @@ impl SkociError {
         Self::new(
             "docker_error",
             message,
-            "Pastikan Docker berjalan: 'sudo systemctl status docker' atau 'skoci doctor'",
+            "Ensure Docker is running: 'sudo systemctl status docker' or 'skoci doctor'",
         )
     }
 }
 
 impl fmt::Display for SkociError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] {} (Solusi: {})", self.code, self.message, self.fix)
+        write!(f, "[{}] {} (Fix: {})", self.code, self.message, self.fix)
     }
 }
 

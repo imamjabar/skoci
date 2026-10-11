@@ -32,7 +32,7 @@ else
   if command -v sudo >/dev/null 2>&1; then
     SUDO="sudo"
   else
-    echo -e "${RED}Error: Installer membutuhkan hak akses root atau sudo.${NC}" >&2
+    echo -e "${RED}Error: Installer requires root or sudo privileges.${NC}" >&2
     exit 1
   fi
 fi
@@ -53,7 +53,7 @@ while [ $# -gt 0 ]; do
         CLI_DOMAIN="$2"
         shift 2
       else
-        echo -e "${RED}Error: --domain membutuhkan nilai${NC}" >&2
+        echo -e "${RED}Error: --domain requires a value${NC}" >&2
         exit 1
       fi
       ;;
@@ -62,7 +62,7 @@ while [ $# -gt 0 ]; do
         CLI_EMAIL="$2"
         shift 2
       else
-        echo -e "${RED}Error: --email membutuhkan nilai${NC}" >&2
+        echo -e "${RED}Error: --email requires a value${NC}" >&2
         exit 1
       fi
       ;;
@@ -75,7 +75,7 @@ while [ $# -gt 0 ]; do
         CLI_VERSION="$2"
         shift 2
       else
-        echo -e "${RED}Error: --version membutuhkan nilai${NC}" >&2
+        echo -e "${RED}Error: --version requires a value${NC}" >&2
         exit 1
       fi
       ;;
@@ -84,7 +84,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     *)
-      echo -e "${RED}Error: Opsi tidak dikenal: $1${NC}" >&2
+      echo -e "${RED}Error: Unknown option: $1${NC}" >&2
       exit 1
       ;;
   esac
@@ -101,7 +101,7 @@ case "${OS}" in
     CLIENT_ONLY=1
     ;;
   *)
-    echo -e "${RED}Error: Sistem operasi '${OS}' tidak didukung.${NC}" >&2
+    echo -e "${RED}Error: Operating system '${OS}' is not supported.${NC}" >&2
     exit 1
     ;;
 esac
@@ -115,12 +115,12 @@ case "${ARCH}" in
     ARCH_NAME="aarch64"
     ;;
   *)
-    echo -e "${RED}Error: Arsitektur '${ARCH}' tidak didukung (hanya x86_64 dan aarch64).${NC}" >&2
+    echo -e "${RED}Error: Architecture '${ARCH}' is not supported (only x86_64 and aarch64).${NC}" >&2
     exit 1
     ;;
 esac
 
-echo -e "${GREEN}✓ Terdeteksi:${NC} ${OS_NAME} (${ARCH_NAME})"
+echo -e "${GREEN}✓ Detected:${NC} ${OS_NAME} (${ARCH_NAME})"
 
 # Helpers
 verify_checksum() {
@@ -130,7 +130,7 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 -c "$sum_file"
   else
-    echo "Peringatan: tidak ditemukan sha256sum/shasum; verifikasi dilewati." >&2
+    echo "Warning: sha256sum/shasum not found; verification skipped." >&2
     return 0
   fi
 }
@@ -143,9 +143,9 @@ trap cleanup EXIT
 
 build_from_source() {
   local target_dest="$1"
-  echo -e "\n${YELLOW}Mengompilasi Skoci dari source code (proses ini membutuhkan waktu ~4 menit)...${NC}"
+  echo -e "\n${YELLOW}Compiling Skoci from source (this takes ~4 minutes)...${NC}"
 
-  # Periksa binary lokal jika dijalankan dari repo lokal
+  # Check local binary if running from local repo
   local script_file="${BASH_SOURCE[0]:-}"
   local script_dir=""
   if [ -n "$script_file" ] && [ -f "$script_file" ]; then
@@ -153,19 +153,19 @@ build_from_source() {
   fi
 
   if [ -n "$script_dir" ] && [ -f "${script_dir}/target/release/skoci" ]; then
-    echo "Menggunakan binary lokal dari ${script_dir}/target/release/skoci"
+    echo "Using local binary from ${script_dir}/target/release/skoci"
     cp "${script_dir}/target/release/skoci" "$target_dest"
     return 0
   fi
 
   if [ "$OS_NAME" = "linux" ] && command -v apt-get >/dev/null 2>&1; then
-    echo "Memasang dependensi build via apt-get..."
+    echo "Installing build dependencies via apt-get..."
     $SUDO apt-get update -y
     $SUDO apt-get install -y build-essential pkg-config git curl
   fi
 
   if ! command -v cargo >/dev/null 2>&1; then
-    echo "Memasang Rust toolchain (minimal profile)..."
+    echo "Installing Rust toolchain (minimal profile)..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
     # shellcheck source=/dev/null
     source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
@@ -176,7 +176,7 @@ build_from_source() {
     src_dir="$script_dir"
   else
     src_dir="${TMP_DIR}/repo"
-    echo "Mengunduh kode sumber repositori Skoci..."
+    echo "Cloning Skoci repository source code..."
     git clone https://github.com/imamjabar/skoci.git "$src_dir"
   fi
 
@@ -203,22 +203,22 @@ DOWNLOAD_URL="https://github.com/imamjabar/skoci/releases/download/${TAG}/${ASSE
 SHA_URL="https://github.com/imamjabar/skoci/releases/download/${TAG}/${ASSET_NAME}.sha256"
 
 DOWNLOAD_OK=0
-echo -e "\n${BOLD}[1/4] Menyiapkan binary Skoci...${NC}"
-echo "Mengunduh ${ASSET_NAME} (${TAG})..."
+echo -e "\n${BOLD}[1/4] Preparing Skoci binary...${NC}"
+echo "Downloading ${ASSET_NAME} (${TAG})..."
 if curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/${ASSET_NAME}" 2>/dev/null && \
    curl -fsSL "$SHA_URL" -o "${TMP_DIR}/${ASSET_NAME}.sha256" 2>/dev/null; then
   cd "$TMP_DIR"
   if verify_checksum "${ASSET_NAME}.sha256"; then
-    echo -e "${GREEN}✓ Verifikasi SHA256 berhasil.${NC}"
+    echo -e "${GREEN}✓ SHA256 verification succeeded.${NC}"
     DOWNLOAD_OK=1
   else
-    echo -e "${YELLOW}Peringatan: Verifikasi SHA256 gagal.${NC}" >&2
+    echo -e "${YELLOW}Warning: SHA256 verification failed.${NC}" >&2
   fi
   cd - >/dev/null
 fi
 
 if [ "$DOWNLOAD_OK" -ne 1 ]; then
-  echo -e "${YELLOW}Release binary tidak tersedia di GitHub Releases. Beralih ke kompilasi source...${NC}"
+  echo -e "${YELLOW}Prebuilt binary not found on GitHub Releases. Falling back to building from source...${NC}"
   build_from_source "${TMP_DIR}/${ASSET_NAME}"
 fi
 
@@ -237,15 +237,15 @@ if [ "$CLIENT_ONLY" = "1" ]; then
   fi
 
   echo -e "\n${GREEN}${BOLD}==============================================================================${NC}"
-  echo -e "${GREEN}${BOLD}🎉 SKOCI CLIENT BERHASIL DIPASANG!${NC}"
+  echo -e "${GREEN}${BOLD}🎉 SKOCI CLIENT INSTALLED SUCCESSFULLY!${NC}"
   echo -e "${GREEN}${BOLD}==============================================================================${NC}"
-  echo -e "Binary terpasang di: ${BOLD}${INSTALL_DIR}/skoci${NC}"
-  echo -e "\n${BOLD}Langkah Selanjutnya:${NC}"
-  echo -e "1. Hubungkan ke server Skoci Anda:"
+  echo -e "Binary installed at: ${BOLD}${INSTALL_DIR}/skoci${NC}"
+  echo -e "\n${BOLD}Next Steps:${NC}"
+  echo -e "1. Connect to your Skoci server:"
   echo -e "   ${BOLD}skoci connect --server https://skoci.<base-domain> --token <token>${NC}"
-  echo -e "2. Masuk ke direktori repositori proyek Anda:"
+  echo -e "2. Navigate to your project repository:"
   echo -e "   ${BOLD}skoci init${NC}"
-  echo -e "3. Deploy aplikasi:"
+  echo -e "3. Deploy the application:"
   echo -e "   ${BOLD}skoci deploy${NC}"
   exit 0
 fi
@@ -255,22 +255,22 @@ INSTALL_DIR="/usr/local/bin"
 BIN_TARGET="${INSTALL_DIR}/skoci"
 $SUDO cp "${TMP_DIR}/${ASSET_NAME}" "${BIN_TARGET}"
 $SUDO chmod 0755 "${BIN_TARGET}"
-echo -e "${GREEN}✓ Binary terpasang di ${BIN_TARGET}${NC}"
+echo -e "${GREEN}✓ Binary installed at ${BIN_TARGET}${NC}"
 
 # Check / Install Docker Engine
-echo -e "\n${BOLD}[2/4] Memeriksa Docker Engine...${NC}"
+echo -e "\n${BOLD}[2/4] Checking Docker Engine...${NC}"
 if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker Engine tidak ditemukan. Mengunduh dan memasang Docker via get.docker.com..."
+  echo "Docker Engine not found. Installing Docker via get.docker.com..."
   curl -fsSL https://get.docker.com | $SUDO sh
 fi
 
 $SUDO systemctl start docker || true
 $SUDO systemctl enable docker || true
-echo -e "${GREEN}✓ Docker Engine aktif.${NC}"
+echo -e "${GREEN}✓ Docker Engine is active.${NC}"
 
 # Create System User & Groups
 if ! id -u skoci >/dev/null 2>&1; then
-  echo "Membuat pengguna sistem 'skoci'..."
+  echo "Creating system user 'skoci'..."
   $SUDO useradd --system --home /var/lib/skoci --shell /usr/sbin/nologin skoci
 fi
 $SUDO usermod -aG docker skoci
@@ -278,7 +278,7 @@ $SUDO usermod -aG docker skoci
 if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
   if id -u "$INVOKING_USER" >/dev/null 2>&1; then
     $SUDO usermod -aG skoci "$INVOKING_USER"
-    echo -e "${GREEN}✓ Menambahkan user '${INVOKING_USER}' ke grup 'skoci'.${NC}"
+    echo -e "${GREEN}✓ Added user '${INVOKING_USER}' to 'skoci' group.${NC}"
   fi
 fi
 
@@ -290,7 +290,7 @@ $SUDO chown -R skoci:skoci /var/lib/skoci
 $SUDO chmod 0750 /var/lib/skoci
 
 # Setup Master Token
-echo -e "\n${BOLD}[3/4] Konfigurasi Token & Jaringan...${NC}"
+echo -e "\n${BOLD}[3/4] Configuring Token & Network...${NC}"
 MASTER_TOKEN=""
 if $SUDO test -f /etc/skoci/master_token; then
   MASTER_TOKEN="$($SUDO cat /etc/skoci/master_token | tr -d '\r\n ')"
@@ -329,7 +329,7 @@ if [ -z "$PUBLIC_IP" ]; then
   fi
 fi
 if [ -z "$PUBLIC_IP" ]; then
-  echo -e "${RED}Error: IP publik server tidak terdeteksi. Jalankan ulang dengan --domain <domain-anda>.${NC}" >&2
+  echo -e "${RED}Error: Server public IP not detected. Re-run with --domain <your-domain>.${NC}" >&2
   exit 1
 fi
 
@@ -363,26 +363,26 @@ $SUDO chmod 0640 /etc/skoci/skoci.env
 if command -v ss >/dev/null 2>&1; then
   LISTENERS="$($SUDO ss -ltnp 2>/dev/null | grep -E ':(80|443)\b' | grep -v 'skoci' || true)"
   if [ -n "$LISTENERS" ]; then
-    echo -e "\n${YELLOW}⚠️ PERINGATAN: Port 80 atau 443 sedang digunakan oleh proses lain:${NC}"
+    echo -e "\n${YELLOW}⚠️ WARNING: Port 80 or 443 is in use by another process:${NC}"
     echo "$LISTENERS"
     if echo "$LISTENERS" | grep -q "docker-proxy"; then
       CONTAINERS_80="$($SUDO docker ps --filter publish=80 --format '{{.Names}}' 2>/dev/null || true)"
       CONTAINERS_443="$($SUDO docker ps --filter publish=443 --format '{{.Names}}' 2>/dev/null || true)"
       ALL_CONFLICT="$(echo -e "${CONTAINERS_80}\n${CONTAINERS_443}" | grep -v '^$' | sort -u || true)"
       if [ -n "$ALL_CONFLICT" ]; then
-        echo -e "\n${YELLOW}Kontainer Docker berikut memublikasikan port 80/443:${NC}"
+        echo -e "\n${YELLOW}The following Docker containers publish port 80/443:${NC}"
         for cname in $ALL_CONFLICT; do
-          echo -e "  - ${BOLD}$cname${NC} (Bebaskan dengan: ${BOLD}sudo docker rm -f $cname${NC})"
+          echo -e "  - ${BOLD}$cname${NC} (Free port with: ${BOLD}sudo docker rm -f $cname${NC})"
         done
       fi
     fi
-    echo -e "${YELLOW}Proxy Skoci tidak dapat mengikat port 80/443 sampai proses di atas dihentikan.${NC}"
-    echo -e "${YELLOW}Instalasi akan tetap dilanjutkan.${NC}\n"
+    echo -e "${YELLOW}Skoci proxy cannot bind to port 80/443 until the processes above are stopped.${NC}"
+    echo -e "${YELLOW}Installation will continue.${NC}\n"
   fi
 fi
 
 # 6. Setup Systemd Service
-echo -e "\n${BOLD}[4/4] Mengaktifkan Layanan Systemd...${NC}"
+echo -e "\n${BOLD}[4/4] Enabling Systemd Service...${NC}"
 if systemctl is-active --quiet skoci 2>/dev/null; then
   $SUDO systemctl stop skoci
 fi
@@ -421,18 +421,18 @@ $SUDO systemctl restart skoci
 
 # Firewall Configuration (UFW)
 if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qw "active"; then
-  echo "Mengonfigurasi UFW firewall..."
+  echo "Configuring UFW firewall..."
   $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
   $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
   if $SUDO ufw status 2>/dev/null | grep -q "8787"; then
-    echo -e "${YELLOW}Port 8787 tidak lagi dipublikasikan secara eksternal (hanya 127.0.0.1).${NC}"
-    echo -e "Hapus aturan lama: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
+    echo -e "${YELLOW}Port 8787 is no longer published externally (127.0.0.1 only).${NC}"
+    echo -e "Remove old rule: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
   fi
 fi
-echo -e "${YELLOW}PENTING: Pastikan port 80 dan 443 juga dibuka pada cloud firewall (misal Sumopod panel, AWS Security Group, Hetzner Firewall).${NC}"
+echo -e "${YELLOW}IMPORTANT: Ensure ports 80 and 443 are also open in your cloud firewall (e.g., Sumopod panel, AWS Security Group, Hetzner Firewall).${NC}"
 
 # Health Check Wait (up to 20s)
-echo "Menunggu layanan Skoci siap..."
+echo "Waiting for Skoci service to become ready..."
 HEALTHY=0
 for i in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1; then
@@ -443,15 +443,15 @@ for i in $(seq 1 20); do
 done
 
 if [ "$HEALTHY" -ne 1 ]; then
-  echo -e "${RED}❌ Skoci gagal merespons di http://127.0.0.1:8787/api/health setelah 20 detik.${NC}"
-  echo -e "Log service terakhir:"
+  echo -e "${RED}❌ Skoci failed to respond at http://127.0.0.1:8787/api/health after 20 seconds.${NC}"
+  echo -e "Recent service logs:"
   $SUDO journalctl -u skoci -n 50 --no-pager || true
   exit 1
 fi
 
 API_HTTPS_OK=0
 if [ "$TLS_MODE" = "acme" ]; then
-  echo "Menunggu sertifikat HTTPS untuk skoci.${BASE_DOMAIN} (maks 90 detik)..."
+  echo "Waiting for HTTPS certificate for skoci.${BASE_DOMAIN} (up to 90 seconds)..."
   for i in $(seq 1 45); do
     if curl -fsS --max-time 5 "https://skoci.${BASE_DOMAIN}/api/health" >/dev/null 2>&1; then
       API_HTTPS_OK=1
@@ -460,41 +460,41 @@ if [ "$TLS_MODE" = "acme" ]; then
     sleep 2
   done
   if [ "$API_HTTPS_OK" -ne 1 ]; then
-    echo -e "${YELLOW}⚠️ HTTPS untuk skoci.${BASE_DOMAIN} belum aktif.${NC}"
-    echo -e "${YELLOW}   Penyebab umum: port 80/443 belum dibuka di firewall cloud, port dipakai proses lain, atau limit Let's Encrypt untuk sslip.io.${NC}"
-    echo -e "${YELLOW}   Skoci akan terus mencoba di latar belakang. Cek dengan: sudo journalctl -u skoci -n 50 --no-pager${NC}"
-    echo -e "${YELLOW}   Sementara itu gunakan SSH tunnel (lihat di bawah). Domain sendiri: jalankan ulang installer dengan --domain <domain> --email <email>.${NC}"
+    echo -e "${YELLOW}⚠️ HTTPS for skoci.${BASE_DOMAIN} is not active yet.${NC}"
+    echo -e "${YELLOW}   Common causes: ports 80/443 not open in cloud firewall, port conflict, or Let's Encrypt rate limits for sslip.io.${NC}"
+    echo -e "${YELLOW}   Skoci will keep retrying in the background. Check logs with: sudo journalctl -u skoci -n 50 --no-pager${NC}"
+    echo -e "${YELLOW}   In the meantime, use an SSH tunnel (see below). Custom domain: re-run installer with --domain <domain> --email <email>.${NC}"
   fi
 fi
 
 echo -e "\n${GREEN}${BOLD}==============================================================================${NC}"
-echo -e "${GREEN}${BOLD}🎉 SKOCI SERVER BERHASIL DIPASANG!${NC}"
+echo -e "${GREEN}${BOLD}🎉 SKOCI SERVER INSTALLED SUCCESSFULLY!${NC}"
 echo -e "${GREEN}${BOLD}==============================================================================${NC}"
 if [ "$API_HTTPS_OK" = "1" ]; then
   echo -e "• ${BOLD}Dashboard & API:${NC}      https://skoci.${BASE_DOMAIN}"
 else
-  echo -e "• ${BOLD}Dashboard & API (SSH):${NC} Jalankan tunnel SSH:"
+  echo -e "• ${BOLD}Dashboard & API (SSH):${NC} Run SSH tunnel:"
   echo -e "                          ${BOLD}ssh -L 8787:127.0.0.1:8787 ${INVOKING_USER}@${PUBLIC_IP}${NC}"
-  echo -e "                          lalu buka di browser: ${BOLD}http://localhost:8787${NC}"
+  echo -e "                          then open in browser: ${BOLD}http://localhost:8787${NC}"
 fi
-echo -e "• ${BOLD}Base Domain Aplikasi:${NC} *.${BASE_DOMAIN}"
-echo -e "• ${BOLD}Master Token:${NC}         Tersimpan aman di /etc/skoci/master_token"
-echo -e "                          (Baca dengan: ${BOLD}sudo cat /etc/skoci/master_token${NC})"
-echo -e "\n${BOLD}Langkah Selanjutnya:${NC}"
-echo -e "1. Buat token untuk laptop/agen Anda (di server ini):"
-echo -e "   ${BOLD}sudo skoci token create --app <nama-app> --name laptop${NC}"
+echo -e "• ${BOLD}App Base Domain:${NC}      *.${BASE_DOMAIN}"
+echo -e "• ${BOLD}Master Token:${NC}         Stored securely at /etc/skoci/master_token"
+echo -e "                          (Read with: ${BOLD}sudo cat /etc/skoci/master_token${NC})"
+echo -e "\n${BOLD}Next Steps:${NC}"
+echo -e "1. Create a token for your laptop/agent (on this server):"
+echo -e "   ${BOLD}sudo skoci token create --app <app-name> --name laptop${NC}"
 if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
-  echo -e "   (Jika baru ditambahkan ke grup skoci, lakukan re-login/logout terlebih dahulu agar bisa menjalankan skoci tanpa sudo)"
+  echo -e "   (If newly added to the skoci group, re-login or logout first to run skoci without sudo)"
 fi
-echo -e "\n2. Pada laptop/komputer pengembang Anda:"
+echo -e "\n2. On your laptop/developer workstation:"
 if [ "$API_HTTPS_OK" = "1" ]; then
   echo -e "   ${BOLD}skoci connect --server https://skoci.${BASE_DOMAIN} --token <token>${NC}"
 else
-  echo -e "   Buka tunnel di terminal terpisah (biarkan tetap jalan):"
+  echo -e "   Open tunnel in a separate terminal (keep running):"
   echo -e "   ${BOLD}ssh -N -L 8787:127.0.0.1:8787 ${INVOKING_USER}@${PUBLIC_IP}${NC}"
   echo -e "   ${BOLD}skoci connect --server http://127.0.0.1:8787 --token <token>${NC}"
 fi
-echo -e "   Masuk ke repositori proyek:"
+echo -e "   Navigate to your project repository:"
 echo -e "   ${BOLD}skoci init${NC}"
 echo -e "   ${BOLD}skoci deploy${NC}"
-echo -e "\n${GREEN}Selesai! Aplikasi Anda siap dideploy.${NC}"
+echo -e "\n${GREEN}Done! Your app is ready to deploy.${NC}"

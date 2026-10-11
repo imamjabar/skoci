@@ -1,16 +1,16 @@
-# Agen Coding Sebagai Operator (Agent-Native Architecture)
+# AI Coding Agents as Primary Operators (Agent-Native Architecture)
 
-Alat deploy tradisional (seperti Coolify dan Dokploy) dirancang untuk diklik manusia melalui form antarmuka web, sementara integrasi agen AI hanyalah pelengkap eksternal.
+Traditional deployment platforms (like Coolify and Dokploy) are designed for humans clicking through web forms, treating AI agents as external add-ons.
 
-**Skoci dirancang sejak hari pertama dengan prinsip: Agen AI yang men-deploy dan memantau, Manusia yang memvalidasi dan menyetujui.**
+**Skoci is designed from day one around the principle: AI agents deploy and monitor, humans validate and approve.**
 
 ---
 
-## 1. Integrasi MCP (Model Context Protocol)
+## 1. MCP (Model Context Protocol) Integration
 
-Skoci menyediakan server MCP bawaan yang berkomunikasi melalui standar `stdio` JSON-RPC 2.0.
+Skoci ships with a built-in MCP server that communicates over JSON-RPC 2.0 via standard input/output (`stdio`).
 
-### A. Konfigurasi Claude Code (`.mcp.json` atau `~/.claude.json`)
+### A. Claude Code Configuration (`.mcp.json` or `~/.claude.json`)
 ```json
 {
   "mcpServers": {
@@ -26,7 +26,7 @@ Skoci menyediakan server MCP bawaan yang berkomunikasi melalui standar `stdio` J
 }
 ```
 
-### B. Konfigurasi OMP (`~/.omp/agent/config.yml` atau `.omp/mcp.json`)
+### B. OMP Configuration (`~/.omp/agent/config.yml` or `.omp/mcp.json`)
 ```json
 {
   "mcpServers": {
@@ -42,75 +42,75 @@ Skoci menyediakan server MCP bawaan yang berkomunikasi melalui standar `stdio` J
 }
 ```
 
-### C. Penggunaan Tanpa Konfigurasi MCP (Auto-Detect via `.env.skoci`)
-Jika Anda telah menjalankan `skoci connect`, berkas `.env.skoci` di direktori proyek akan otomatis dibaca oleh `skoci mcp` tanpa perlu mendefinisikan environment variable manual.
+### C. Zero-Config Mode (Auto-Detect via `.env.skoci`)
+If you have run `skoci connect`, the `.env.skoci` file in your project directory is automatically loaded by `skoci mcp` without needing manual environment variables.
 
 ---
 
-## 2. Daftar Tool MCP yang Tersedia
+## 2. Available MCP Tools
 
-Semua tool dihasilkan dari satu sumber kebenaran API (`skoci-api`), menjamin paritas 100% dengan CLI:
+All tools are derived from a single API source of truth (`skoci-api`), guaranteeing 100% parity with the CLI:
 
-| Nama Tool | Fungsi | Parameter |
+| Tool Name | Purpose | Parameters |
 | :--- | :--- | :--- |
-| `skoci_init` | Mendeteksi framework & membuat `skoci.yaml` | `app`, `path` |
-| `skoci_deploy` | Mengunggah, mengompilasi, & cutover | `app`, `env` (`preview`/`production`), `commit` |
-| `skoci_status` | Memeriksa kondisi kontainer & kesehatan | `app` |
-| `skoci_logs` | Mengambil log terbaru (secret disamarkan) | `app`, `tail` |
-| `skoci_secret_set` | Menyimpan secret terenkripsi ChaCha20 | `app`, `key`, `value` |
-| `skoci_secret_list` | Melihat daftar nama kunci secret | `app` |
-| `skoci_promote` | Mengajukan izin promosi ke production | `app`, `reason` |
-| `skoci_rollback` | Kembali ke versi stabil sebelumnya | `app`, `target_version` |
-| `skoci_doctor` | Memeriksa RAM idle (<20MB) & daemon | *(tanpa parameter)* |
-| `skoci_db_backup` | Memicu snapshot backup database | `app`, `service` |
-| `skoci_db_restore` | Meminta pemulihan database (butuh approval) | `app`, `service`, `backup_id` |
+| `skoci_init` | Detect framework & create `skoci.yaml` | `app`, `path` |
+| `skoci_deploy` | Upload, compile image, & cutover | `app`, `env` (`preview`/`production`), `commit` |
+| `skoci_status` | Inspect container health & status | `app` |
+| `skoci_logs` | Retrieve recent logs (secrets redacted) | `app`, `tail` |
+| `skoci_secret_set` | Store ChaCha20 encrypted secret | `app`, `key`, `value` |
+| `skoci_secret_list` | List secret key names | `app` |
+| `skoci_promote` | Request production promotion approval | `app`, `reason` |
+| `skoci_rollback` | Revert to previous working version | `app`, `target_version` |
+| `skoci_doctor` | Inspect idle RAM (<20 MB) & daemons | *(none)* |
+| `skoci_db_backup` | Trigger database backup snapshot | `app`, `service` |
+| `skoci_db_restore` | Request database restore (requires approval) | `app`, `service`, `backup_id` |
 
 ---
 
-## 3. Batas Keamanan Tool (Strict Human Exclusion)
+## 3. Tool Safety Boundaries (Strict Human Exclusion)
 
-Aksi persetujuan (`approve`) **secara sengaja DIKECUALIKAN dari definisi tool agen**:
-1. Agen **TIDAK BISA** menyetujui permintaannya sendiri. Persetujuan promosi production mutlak berada di tangan operator manusia via Dashboard atau token master.
-2. Jika agen mencoba memanggil endpoint persetujuan (`/api/approve`), sistem akan menolak dengan error `unauthorized`.
+The approval action (`approve`) is **intentionally EXCLUDED from the agent tool definition**:
+1. Agents **CANNOT** approve their own requests. Production promotions and restores strictly require human operator authorization via the Dashboard or master token.
+2. If an agent attempts to invoke the approval endpoint (`/api/approve`), the system rejects the request with an `unauthorized` error.
 
 ---
 
-## 4. Standar Kode Keluar (Exit Codes)
+## 4. Standard Exit Codes
 
-Skoci mengembalikan kode keluar yang konsisten untuk automasi agen:
+Skoci returns consistent exit codes for agent automation:
 
-| Exit Code | Nama | Deskripsi | Tindakan Agen |
+| Exit Code | Name | Description | Agent Action |
 | :---: | :--- | :--- | :--- |
-| `0` | `Success` | Perintah berhasil tuntas dieksekusi. | Lanjutkan alur kerja berikutnya. |
-| `1` | `General Error` | Kegagalan build, health check timeout, atau validasi config. | Baca kolom `fix` pada error JSON dan perbaiki masalahnya. |
-| `2` | `Approval Pending` | Aksi membutuhkan persetujuan manusia (`promote`, `db restore`). | Catat `request_id`, laporkan kepada manusia untuk disetujui di dashboard. |
-| `3` | `Auth Error` | `unauthorized`, `scope_violation`, atau `rate_limited`. | Periksa token dan cakupan hak akses aplikasi. |
+| `0` | `Success` | Command completed successfully. | Proceed to next workflow step. |
+| `1` | `General Error` | Build failure, health check timeout, or invalid configuration. | Inspect the `fix` field in the JSON error and remediate. |
+| `2` | `Approval Pending` | Action requires human approval (`promote`, `db restore`). | Note the `request_id` and ask human to approve in the dashboard. |
+| `3` | `Auth Error` | `unauthorized`, `scope_violation`, or `rate_limited`. | Check token and application scope permissions. |
 
 ---
 
-## 5. Penanganan Error `{code, message, fix}`
+## 5. Error Handling: `{code, message, fix}`
 
-Setiap kali terjadi galat, Skoci mengembalikan format terstruktur yang dapat dipahami langsung oleh model LLM:
+Whenever an error occurs, Skoci returns structured JSON that can be consumed directly by LLMs:
 
 ```json
 {
   "success": false,
   "error": {
     "code": "secret_missing",
-    "message": "Secret 'DATABASE_URL' belum diset",
+    "message": "Secret 'DATABASE_URL' is not set",
     "fix": "skoci secret set DATABASE_URL <value>"
   },
-  "summary": "secret_missing: Secret 'DATABASE_URL' belum diset"
+  "summary": "secret_missing: Secret 'DATABASE_URL' is not set"
 }
 ```
 
-Agen membaca kolom `fix` dan dapat langsung mengeksekusi instruksi perbaikan tanpa menebak penyebab kegagalan.
+The agent reads the `fix` field and executes the suggested fix directly without guessing.
 
 ---
 
-## 6. Aturan Inti untuk Agen Coding
+## 6. Core Rules for Coding Agents
 
-1. **Gunakan `--json`:** Selalu sertakan flag `--json` untuk menghasilkan keluaran yang terstruktur.
-2. **Jangan Minta SSH:** Setelah server terpasang, agen tidak boleh meminta atau menjalankan akses SSH. Semua interaksi berjalan via REST API/MCP.
-3. **Jangan Cetak Token:** Jangan pernah menampilkan atau menulis token rahasia ke log percakapan.
-4. **Baca Rekomendasi `fix`:** Ketika terjadi galat, ikuti instruksi yang tertera pada kolom `fix`.
+1. **Always use `--json`:** Ensure outputs are structured and machine-parsable.
+2. **Never request SSH:** After initial server installation, never ask for or run SSH commands. Use the REST API / MCP tools.
+3. **Never print tokens:** Do not output secret tokens into chat context or repository files.
+4. **Follow `fix` guidance:** When an error occurs, inspect and execute the remedy in `error.fix`.

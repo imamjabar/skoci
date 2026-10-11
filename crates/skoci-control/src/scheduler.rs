@@ -20,8 +20,8 @@ impl CronExpr {
         let fields: Vec<&str> = expr.split_whitespace().collect();
         if fields.len() != 5 {
             return Err(SkociError::bad_request(
-                format!("Cron expression '{}' tidak valid (harus 5 field)", expr),
-                "Gunakan format cron 5 field: menit jam hari_bulan bulan hari_minggu",
+                format!("Cron expression '{}' is invalid (must have 5 fields)", expr),
+                "Use 5-field cron format: minute hour day_of_month month day_of_week",
             ));
         }
 
@@ -70,12 +70,12 @@ fn parse_field(raw: &str, min: u32, max: u32) -> SkociResult<HashSet<u32>> {
         } else if let Some(step_str) = part.strip_prefix("*/") {
             let step: u32 = step_str.parse().map_err(|_| {
                 SkociError::bad_request(
-                    format!("Nilai step '{}' tidak valid", part),
-                    "Periksa ekspresi cron",
+                    format!("Cron step value '{}' is invalid", part),
+                    "Check cron expression",
                 )
             })?;
             if step == 0 {
-                return Err(SkociError::bad_request("Step cron tidak boleh 0", "Gunakan step >= 1"));
+                return Err(SkociError::bad_request("Cron step cannot be 0", "Use step >= 1"));
             }
             let mut v = min;
             while v <= max {
@@ -84,15 +84,15 @@ fn parse_field(raw: &str, min: u32, max: u32) -> SkociResult<HashSet<u32>> {
             }
         } else if let Some((start_str, end_str)) = part.split_once('-') {
             let start: u32 = start_str.parse().map_err(|_| {
-                SkociError::bad_request(format!("Rentang cron '{}' tidak valid", part), "Periksa ekspresi cron")
+                SkociError::bad_request(format!("Cron range '{}' is invalid", part), "Check cron expression")
             })?;
             let end: u32 = end_str.parse().map_err(|_| {
-                SkociError::bad_request(format!("Rentang cron '{}' tidak valid", part), "Periksa ekspresi cron")
+                SkociError::bad_request(format!("Cron range '{}' is invalid", part), "Check cron expression")
             })?;
             if start > end || start < min || end > max {
                 return Err(SkociError::bad_request(
-                    format!("Rentang cron '{part}' di luar batas {min}..={max}"),
-                    "Periksa ekspresi cron",
+                    format!("Cron range '{part}' out of bounds {min}..={max}"),
+                    "Check cron expression",
                 ));
             }
             for v in start..=end {
@@ -100,12 +100,12 @@ fn parse_field(raw: &str, min: u32, max: u32) -> SkociResult<HashSet<u32>> {
             }
         } else {
             let val: u32 = part.parse().map_err(|_| {
-                SkociError::bad_request(format!("Nilai cron '{}' tidak valid", part), "Periksa ekspresi cron")
+                SkociError::bad_request(format!("Cron value '{}' is invalid", part), "Check cron expression")
             })?;
             if val < min || val > max {
                 return Err(SkociError::bad_request(
-                    format!("Nilai cron '{val}' di luar batas {min}..={max}"),
-                    "Periksa ekspresi cron",
+                    format!("Cron value '{val}' out of bounds {min}..={max}"),
+                    "Check cron expression",
                 ));
             }
             set.insert(val);
@@ -116,7 +116,7 @@ fn parse_field(raw: &str, min: u32, max: u32) -> SkociResult<HashSet<u32>> {
 }
 
 pub async fn start_backup_scheduler(state: AppState) {
-    tracing::info!("Backup scheduler aktif");
+    tracing::info!("Backup scheduler active");
     let mut last_minute: Option<u32> = None;
 
     loop {
@@ -136,7 +136,7 @@ pub async fn start_backup_scheduler(state: AppState) {
                                     tracing::info!(
                                         app = %app,
                                         service = %svc_name,
-                                        "Menjalankan scheduled backup database"
+                                        "Running scheduled database backup"
                                     );
                                     let bm = state.backup_manager.clone();
                                     let app_clone = app.clone();
@@ -151,7 +151,7 @@ pub async fn start_backup_scheduler(state: AppState) {
                                                     backup_id = %resp.backup_id,
                                                     app = %app_clone,
                                                     service = %svc_clone,
-                                                    "Scheduled backup berhasil"
+                                                    "Scheduled backup succeeded"
                                                 );
                                                 let _ = bm.prune(&app_clone, &svc_clone, keep);
                                             }
@@ -160,7 +160,7 @@ pub async fn start_backup_scheduler(state: AppState) {
                                                     app = %app_clone,
                                                     service = %svc_clone,
                                                     error = %e.message,
-                                                    "Scheduled backup gagal"
+                                                    "Scheduled backup failed"
                                                 );
                                             }
                                         }
