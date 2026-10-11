@@ -1,4 +1,7 @@
-use crate::router::{clean_hostname, is_dns_name, ProxyRouter, Resolution};
+use crate::router::{
+    clean_hostname, decide_routing_authority, is_dns_name, ProxyRouter, Resolution,
+    RoutingAuthorityError,
+};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
@@ -19,6 +22,111 @@ use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_CONCURRENT_CONNECTIONS: usize = 4096;
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+const UPGRADE_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_TOTAL_ACME_STATES: usize = 50;
+const MAX_ACME_NEW_PER_HOUR: usize = 10;
+
+fn ensure_acme_cache_dir(dir: &std::path::Path) {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    if let Err(e) = builder.create(dir) {
+        tracing::warn!("Failed to create ACME cache dir {dir:?}: {e}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
+async fn copy_bidirectional_with_idle_timeout<A, B>(
+    a: A,
+    b: B,
+    idle_timeout: Duration,
+) -> Result<(), std::io::Error>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut a_read, mut a_write) = tokio::io::split(a);
+    let (mut b_read, mut b_write) = tokio::io::split(b);
+
+    let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
+
+    let act_a = activity_tx.clone();
+    let mut a_to_b = tokio::spawn(async move {
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = match a_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return Err(e),
+            };
+            b_write.write_all(&buf[..n]).await?;
+            let _ = act_a.send(());
+        }
+        b_write.shutdown().await
+    });
+
+    let act_b = activity_tx;
+    let mut b_to_a = tokio::spawn(async move {
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = match b_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return Err(e),
+            };
+            a_write.write_all(&buf[..n]).await?;
+            let _ = act_b.send(());
+        }
+        a_write.shutdown().await
+    });
+
+    let idle_watch = async move {
+        loop {
+            tokio::select! {
+                res = activity_rx.changed() => {
+                    if res.is_err() {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep(idle_timeout) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "idle timeout"));
+                }
+            }
+        }
+        Ok(())
+    };
+    tokio::pin!(idle_watch);
+
+    tokio::select! {
+        res = &mut a_to_b => {
+            b_to_a.abort();
+            res.map_err(std::io::Error::other)?
+        }
+        res = &mut b_to_a => {
+            a_to_b.abort();
+            res.map_err(std::io::Error::other)?
+        }
+        res = &mut idle_watch => {
+            a_to_b.abort();
+            b_to_a.abort();
+            res
+        }
+    }
+}
 
 static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -195,7 +303,16 @@ impl ResolvesServerCert for SniCertResolver {
 }
 
 pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
+    start_proxy_with_header_timeout(cfg, router, DEFAULT_HEADER_READ_TIMEOUT).await
+}
+
+pub async fn start_proxy_with_header_timeout(
+    cfg: ProxyConfig,
+    router: ProxyRouter,
+    header_read_timeout: Duration,
+) -> ProxyStatus {
     let status = ProxyStatus::new();
+    let conn_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
     let mut http_connector = HttpConnector::new();
     http_connector.set_connect_timeout(Some(Duration::from_secs(5)));
@@ -212,9 +329,18 @@ pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
             let router_clone = router.clone();
             let client_clone = client.clone();
             let status_clone = status.clone();
+            let sem_clone = conn_semaphore.clone();
 
             tokio::spawn(async move {
-                run_http_listener(http_listener, router_clone, client_clone, status_clone).await;
+                run_http_listener(
+                    http_listener,
+                    router_clone,
+                    client_clone,
+                    status_clone,
+                    sem_clone,
+                    header_read_timeout,
+                )
+                .await;
             });
         }
         Err(e) => {
@@ -225,6 +351,7 @@ pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
     }
 
     if let Some(acme_settings) = cfg.acme {
+        ensure_acme_cache_dir(&acme_settings.cache_dir);
         status.set_tls_enabled(true);
 
         let resolvers: Arc<RwLock<HashMap<String, Arc<ResolvesServerCertAcme>>>> =
@@ -276,6 +403,7 @@ pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
                 let router_clone = router.clone();
                 let client_clone = client.clone();
                 let status_clone = status.clone();
+                let sem_clone = conn_semaphore.clone();
 
                 tokio::spawn(async move {
                     run_https_listener(
@@ -284,6 +412,8 @@ pub async fn start_proxy(cfg: ProxyConfig, router: ProxyRouter) -> ProxyStatus {
                         router_clone,
                         client_clone,
                         status_clone,
+                        sem_clone,
+                        header_read_timeout,
                     )
                     .await;
                 });
@@ -309,6 +439,8 @@ async fn run_acme_manager(
 ) {
     let mut gen_rx = router.subscribe_generation();
     let mut active_hosts: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+    let mut recent_starts: std::collections::VecDeque<tokio::time::Instant> =
+        std::collections::VecDeque::new();
 
     loop {
         let hosts = router.all_dns_hosts().await;
@@ -327,8 +459,33 @@ async fn run_acme_manager(
             status.remove_certificate(&h);
         }
 
+        let one_hour_ago = tokio::time::Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(tokio::time::Instant::now);
+        while let Some(&t) = recent_starts.front() {
+            if t < one_hour_ago {
+                recent_starts.pop_front();
+            } else {
+                break;
+            }
+        }
+
         for host in hosts {
             if active_hosts.contains_key(&host) {
+                continue;
+            }
+
+            if active_hosts.len() >= MAX_TOTAL_ACME_STATES {
+                tracing::warn!(
+                    "Skipping ACME issuance for {host}: capacity limit reached ({MAX_TOTAL_ACME_STATES} active states)"
+                );
+                continue;
+            }
+
+            if recent_starts.len() >= MAX_ACME_NEW_PER_HOUR {
+                tracing::warn!(
+                    "Skipping ACME issuance for {host}: hourly rate limit reached ({MAX_ACME_NEW_PER_HOUR} new issuances per hour)"
+                );
                 continue;
             }
 
@@ -374,6 +531,7 @@ async fn run_acme_manager(
                 }
             });
 
+            recent_starts.push_back(tokio::time::Instant::now());
             active_hosts.insert(host, join_handle.abort_handle());
         }
 
@@ -388,12 +546,26 @@ async fn run_http_listener(
     router: ProxyRouter,
     client: Arc<Client<HttpConnector, Incoming>>,
     status: ProxyStatus,
+    conn_semaphore: Arc<tokio::sync::Semaphore>,
+    header_read_timeout: Duration,
 ) {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::debug!("HTTP accept error: {e}");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
+
+        let permit = match conn_semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!(
+                    "Max concurrent connections ({MAX_CONCURRENT_CONNECTIONS}) reached, dropping HTTP connection from {peer_addr}"
+                );
+                drop(stream);
                 continue;
             }
         };
@@ -404,6 +576,7 @@ async fn run_http_listener(
         let status_clone = status.clone();
 
         tokio::spawn(async move {
+            let _permit = permit;
             let service = service_fn(move |req: Request<Incoming>| {
                 let router_inner = router_clone.clone();
                 let client_inner = client_clone.clone();
@@ -413,6 +586,7 @@ async fn run_http_listener(
                         req,
                         peer_addr.ip(),
                         "http",
+                        None,
                         router_inner,
                         client_inner,
                         status_inner,
@@ -421,7 +595,17 @@ async fn run_http_listener(
                 }
             });
 
-            let builder = Builder::new(TokioExecutor::new());
+            let mut builder = Builder::new(TokioExecutor::new());
+            builder
+                .http1()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(header_read_timeout);
+            builder
+                .http2()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .keep_alive_interval(Duration::from_secs(30))
+                .keep_alive_timeout(Duration::from_secs(10));
+
             if let Err(e) = builder.serve_connection_with_upgrades(io, service).await {
                 tracing::debug!("HTTP connection closed: {e}");
             }
@@ -435,12 +619,26 @@ async fn run_https_listener(
     router: ProxyRouter,
     client: Arc<Client<HttpConnector, Incoming>>,
     status: ProxyStatus,
+    conn_semaphore: Arc<tokio::sync::Semaphore>,
+    header_read_timeout: Duration,
 ) {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::debug!("HTTPS accept error: {e}");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
+
+        let permit = match conn_semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!(
+                    "Max concurrent connections ({MAX_CONCURRENT_CONNECTIONS}) reached, dropping HTTPS connection from {peer_addr}"
+                );
+                drop(stream);
                 continue;
             }
         };
@@ -451,10 +649,20 @@ async fn run_https_listener(
         let status_clone = status.clone();
 
         tokio::spawn(async move {
-            let tls_stream = match tls_acceptor.accept(stream).await {
-                Ok(s) => s,
-                Err(e) => {
+            let _permit = permit;
+            let tls_stream = match tokio::time::timeout(
+                TLS_HANDSHAKE_TIMEOUT,
+                tls_acceptor.accept(stream),
+            )
+            .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
                     tracing::debug!("TLS handshake failed from {peer_addr}: {e}");
+                    return;
+                }
+                Err(_) => {
+                    tracing::debug!("TLS handshake timed out from {peer_addr}");
                     return;
                 }
             };
@@ -463,16 +671,24 @@ async fn run_https_listener(
                 return;
             }
 
+            let sni = tls_stream
+                .get_ref()
+                .1
+                .server_name()
+                .map(|s| s.to_string());
+
             let io = TokioIo::new(tls_stream);
             let service = service_fn(move |req: Request<Incoming>| {
                 let router_inner = router_clone.clone();
                 let client_inner = client_clone.clone();
                 let status_inner = status_clone.clone();
+                let sni_inner = sni.clone();
                 async move {
                     handle_proxy_request(
                         req,
                         peer_addr.ip(),
                         "https",
+                        sni_inner,
                         router_inner,
                         client_inner,
                         status_inner,
@@ -481,7 +697,17 @@ async fn run_https_listener(
                 }
             });
 
-            let builder = Builder::new(TokioExecutor::new());
+            let mut builder = Builder::new(TokioExecutor::new());
+            builder
+                .http1()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(header_read_timeout);
+            builder
+                .http2()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .keep_alive_interval(Duration::from_secs(30))
+                .keep_alive_timeout(Duration::from_secs(10));
+
             if let Err(e) = builder.serve_connection_with_upgrades(io, service).await {
                 tracing::debug!("HTTPS connection closed: {e}");
             }
@@ -509,21 +735,56 @@ async fn handle_proxy_request(
     mut req: Request<Incoming>,
     peer_ip: IpAddr,
     proto: &'static str,
+    sni: Option<String>,
     router: ProxyRouter,
     client: Arc<Client<HttpConnector, Incoming>>,
     status: ProxyStatus,
 ) -> Result<Response<ProxyBody>, std::convert::Infallible> {
-    let host_hdr = req
-        .headers()
-        .get(hyper::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let host = clean_hostname(&host_hdr);
+    let uri_auth = req.uri().authority().map(|a| a.as_str());
+    let host_hdr = match req.headers().get(hyper::header::HOST) {
+        Some(v) => match v.to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(full_body("400 Bad Request: Invalid Host header\n"))
+                    .unwrap());
+            }
+        },
+        None => None,
+    };
+
+    let is_https = proto == "https";
+    let routing_decision = match decide_routing_authority(
+        uri_auth,
+        host_hdr,
+        is_https,
+        sni.as_deref(),
+    ) {
+        Ok(d) => d,
+        Err(RoutingAuthorityError::BadRequest(msg)) => {
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(full_body(format!("400 Bad Request: {msg}\n")))
+                .unwrap());
+        }
+        Err(RoutingAuthorityError::MisdirectedRequest(msg)) => {
+            return Ok(Response::builder()
+                .status(StatusCode::MISDIRECTED_REQUEST)
+                .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(full_body(format!("421 Misdirected Request: {msg}\n")))
+                .unwrap());
+        }
+    };
+
+    let host = routing_decision.clean_host;
+    let forward_host = routing_decision.forward_host;
 
     if proto == "http" && is_dns_name(&host) && status.has_issued_cert(&host) {
         let pq = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
-        let location = format!("https://{host_hdr}{pq}");
+        let location = format!("https://{host}{pq}");
         return Ok(Response::builder()
             .status(StatusCode::PERMANENT_REDIRECT)
             .header(hyper::header::LOCATION, location)
@@ -538,7 +799,7 @@ async fn handle_proxy_request(
         if let Resolution::Control(_) = resolution {
             if status.tls_enabled() {
                 let pq = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
-                let location = format!("https://{host_hdr}{pq}");
+                let location = format!("https://{host}{pq}");
                 return Ok(Response::builder()
                     .status(StatusCode::PERMANENT_REDIRECT)
                     .header(hyper::header::LOCATION, location)
@@ -630,7 +891,11 @@ async fn handle_proxy_request(
         }
     }
 
-    let host_val = if host_hdr.is_empty() { "localhost" } else { &host_hdr };
+    let host_val = if forward_host.is_empty() {
+        "localhost"
+    } else {
+        &forward_host
+    };
     if let Ok(hv) = hyper::header::HeaderValue::from_str(host_val) {
         fwd_headers.insert(hyper::header::HOST, hv);
     }
@@ -706,12 +971,16 @@ async fn handle_proxy_request(
             tokio::spawn(async move {
                 match tokio::join!(client_upgrade, server_upgrade) {
                     (Ok(client_io), Ok(server_io)) => {
-                        let mut client_io = TokioIo::new(client_io);
-                        let mut server_io = TokioIo::new(server_io);
-                        if let Err(e) =
-                            tokio::io::copy_bidirectional(&mut client_io, &mut server_io).await
+                        let client_io = TokioIo::new(client_io);
+                        let server_io = TokioIo::new(server_io);
+                        if let Err(e) = copy_bidirectional_with_idle_timeout(
+                            client_io,
+                            server_io,
+                            UPGRADE_IDLE_TIMEOUT,
+                        )
+                        .await
                         {
-                            tracing::debug!("Upgrade bidirectional copy error: {e}");
+                            tracing::debug!("Upgrade tunnel closed: {e}");
                         }
                     }
                     (Err(e), _) => tracing::error!("Client upgrade error: {e}"),

@@ -118,13 +118,25 @@ Aturan Operasional:
 
 ## Keamanan
 
-* **Bebas Injeksi Shell:** Perintah Docker dan sistem dijalankan sebagai vektor argumen (`tokio::process::Command`); input dari user atau agen tidak pernah disisipkan ke string shell.
-* **Scoped Token Terisolasi:** Token agen (`sk_agent_<app>_*`) disimpan sebagai hash SHA-256; batasan aplikasi diverifikasi di SQLite.
+* **Bebas Injeksi Shell:** Perintah Docker dan sistem dijalankan sebagai vektor argumen terstruktur (`tokio::process::Command`); input dari user atau agen tidak pernah disisipkan ke string shell.
+* **Scoped Token Terisolasi & Input via Stdin:** Token agen (`sk_agent_<app>_*`) disimpan sebagai hash SHA-256; batasan aplikasi ditegakkan di SQLite. Token dan secret dapat dialirkan via stdin untuk mencegah kebocoran pada daftar proses (`ps`, `/proc`) atau riwayat shell.
 * **Kebijakan Tanpa SSH:** Tidak ada private key SSH yang disimpan pada workstation pengembang atau lingkungan agen.
-* **Enkripsi Secret:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600`, dan disamarkan sebagai `[REDACTED]` di log.
-* **Isolasi Kontrol Lokal:** Control plane mengikat interface `127.0.0.1:8787`, hanya dapat diakses melalui reverse proxy TLS atau tunnel SSH.
-* **Gerbang Persetujuan Manusia:** Rilis produksi, pemulihan database, dan penghapusan aplikasi mewajibkan persetujuan manusia.
-* **Log Audit:** Setiap operasi yang mengubah state dicatat beserta aktornya (`admin` atau `agent:<app>/<token>#<id>`); token mentah tidak pernah disimpan.
+* **Enkripsi Secret & Sanitasi Environment:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600` yang langsung dihapus, dan disamarkan sebagai `[REDACTED]` di log. Berkas `.env.skoci` pada client dibatasi pada allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), dan subprocess dijalankan dengan environment yang bersih.
+* **Deny List Pengemasan:** Perintah deploy secara otomatis mengecualikan berkas sensitif (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`), dan kompresi arsip menggunakan izin privat `0600`.
+* **Isolasi Kontrol Lokal & Binding HTTPS SNI:** API hanya mengikat `127.0.0.1:8787`. Pada listener HTTPS publik, header `:authority`/`Host` wajib cocok dengan TLS SNI (mencegah domain fronting dengan HTTP `421 Misdirected Request`).
+* **Proteksi Kepemilikan Host:** Domain kustom dan auto-host dipartisi secara ketat; klaim silang atau pembajakan host antar-aplikasi ditolak.
+* **Gerbang Persetujuan Manusia & Pinning ID Image:** Rilis produksi, pemulihan database, dan operasi destruktif mewajibkan persetujuan manusia yang dikunci pada image ID Docker yang tidak dapat diubah (mencegah manipulasi TOCTOU).
+* **Hardening Systemd:** Layanan server diamankan dengan `UMask=0077`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`, `RestrictNamespaces=true`, dan `LimitNOFILE=65536`.
+* **Log Audit & Provenance Build:** Setiap operasi mutasi dicatat pada log audit append-only. Binary rilis resmi dilengkapi atestasi provenance GitHub Actions (`gh attestation verify`).
+
+### Risiko Residual
+
+* **Grup Docker ≈ Root:** Akses ke `/var/run/docker.sock` setara dengan hak akses root di Linux; Skoci memperketat proses server, namun akses soket Docker tetap berprivilese setara root.
+* **Jaringan Outbound Kontainer Terbuka:** Kontainer mengeksekusi kode user/agen di dalam sandbox Docker standar dengan koneksi keluar internet yang tidak dibatasi.
+* **Klaim Domain Kustom First-Come:** Agen dapat mendaftarkan domain kustom apa pun yang belum digunakan oleh aplikasi lain pada server tersebut.
+* **Checksum Rilis dari Asal yang Sama:** Berkas checksum rilis berada pada rilis GitHub yang sama dengan binary; verifikasi keaslian dan integritas menggunakan `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
+* **Isolasi Docker Server Tunggal:** Isolasi mengandalkan namespace dan cgroup kernel Linux bawaan Docker tanpa virtualisasi microVM perangkat keras.
+* **Batas Kecepatan ACME & sslip.io:** Penyediaan TLS otomatis untuk subdomain `*.sslip.io` berbagi kuota global Let's Encrypt dengan semua pengguna publik `sslip.io`. Gunakan domain kustom untuk keandalan produksi.
 
 ---
 

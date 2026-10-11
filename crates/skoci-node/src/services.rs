@@ -187,6 +187,7 @@ impl ServiceManager {
             ],
             memory_limit,
             cpu_limit: None,
+            pids_limit: None,
             network: Some(net_name),
             network_aliases: vec![spec.service.to_string()],
             volumes: vec![(vol_name, mount_path.to_string())],
@@ -226,9 +227,19 @@ impl ServiceManager {
             .unwrap_or_default()
             .join("\n");
 
-        Err(SkociError::docker_error(format!(
+        Err(Self::format_readiness_error(spec, &logs))
+    }
+
+    pub fn format_readiness_error(spec: &ServiceSpec<'_>, logs: &str) -> SkociError {
+        let secrets = vec![
+            spec.password.to_string(),
+            Self::connection_url(spec),
+        ];
+        let redacted_logs = crate::secret::redact(logs, &secrets);
+
+        SkociError::docker_error(format!(
             "Database '{}' failed to become ready within 90 seconds. Container logs:\n{}",
-            spec.service, logs
-        )))
+            spec.service, redacted_logs
+        ))
     }
 }

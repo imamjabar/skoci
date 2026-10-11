@@ -10,12 +10,40 @@ pub struct PackedContext {
     pub path: PathBuf,
     pub files: usize,
     pub bytes: u64,
+    pub excluded_sensitive: Vec<String>,
 }
 
 impl Drop for PackedContext {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+pub fn is_sensitive_entry(name: &str, is_dir: bool) -> bool {
+    if is_dir && (name == ".aws" || name == ".ssh" || name == ".docker" || name == ".gnupg") {
+        return true;
+    }
+    if name == ".aws" || name == ".ssh" || name == ".docker" || name == ".gnupg" {
+        return true;
+    }
+    if name == ".npmrc" || name == ".pypirc" || name == ".netrc" || name == ".git-credentials" {
+        return true;
+    }
+    if name.ends_with(".pem") || name.ends_with(".key") {
+        return true;
+    }
+    if name.starts_with("id_rsa") || name.starts_with("id_ed25519") || name.starts_with("id_ecdsa") {
+        return true;
+    }
+    if name == ".env" {
+        return true;
+    }
+    if let Some(rest) = name.strip_prefix(".env.") {
+        if rest != "example" && rest != "sample" && rest != "template" {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
@@ -29,32 +57,59 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     }
 
     let temp_path = std::env::temp_dir().join(format!("skoci-pack-{}.tar.gz", uuid::Uuid::new_v4()));
-    let out_file = File::create(&temp_path).map_err(|e| {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let out_file = opts.open(&temp_path).map_err(|e| {
         SkociError::internal(
             format!("Failed to create temporary archive file: {e}"),
             "Check if the temporary directory is writable",
         )
     })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = out_file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
 
     let gz = GzEncoder::new(out_file, Compression::default());
     let mut tar = tar::Builder::new(gz);
     tar.mode(tar::HeaderMode::Deterministic);
+
+    let excluded_sensitive = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let excluded_clone = std::sync::Arc::clone(&excluded_sensitive);
+    let base_dir = dir.to_path_buf();
 
     let mut builder = WalkBuilder::new(dir);
     builder
         .hidden(false)
         .require_git(false)
         .add_custom_ignore_filename(".dockerignore")
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             if entry.depth() > 0 {
-                let name = entry.file_name();
+                let name = entry.file_name().to_string_lossy();
                 if name == ".git" || name == ".env.skoci" || name == ".skoci" {
+                    return false;
+                }
+                let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+                if is_sensitive_entry(&name, is_dir) {
+                    if let Ok(rel) = entry.path().strip_prefix(&base_dir) {
+                        let rel_str = rel
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("/");
+                    excluded_clone.lock().push(rel_str);
+                    }
                     return false;
                 }
             }
             true
         });
-
     let mut files_count = 0usize;
 
     for entry in builder.build() {
@@ -162,10 +217,15 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
         SkociError::internal(format!("Failed to check archive size: {e}"), "Try deploying again")
     })?.len();
 
+    let mut excluded = excluded_sensitive.lock().clone();
+    excluded.sort();
+    excluded.dedup();
+
     Ok(PackedContext {
         path: temp_path,
         files: files_count,
         bytes,
+        excluded_sensitive: excluded,
     })
 }
 
@@ -256,6 +316,111 @@ mod tests {
         drop(packed);
         assert!(!archive_path.exists(), "Temp archive should be deleted on drop");
 
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_sensitive_exclusions_and_archive_mode() {
+        let temp = std::env::temp_dir().join(format!("skoci-test-sensitive-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).unwrap();
+
+        std::fs::write(temp.join("skoci.yaml"), "app: secure-app\nversion: 1\n").unwrap();
+
+        // Sensitive files that must be excluded
+        std::fs::write(temp.join(".env"), "SECRET=1").unwrap();
+        std::fs::write(temp.join(".env.production"), "SECRET=2").unwrap();
+        std::fs::write(temp.join(".env.local"), "SECRET=3").unwrap();
+        std::fs::write(temp.join("cert.pem"), "cert").unwrap();
+        std::fs::write(temp.join("app.key"), "key").unwrap();
+        std::fs::write(temp.join("id_rsa"), "privkey").unwrap();
+        std::fs::write(temp.join("id_rsa.pub"), "pubkey").unwrap();
+        std::fs::write(temp.join("id_ed25519"), "privkey").unwrap();
+        std::fs::write(temp.join("id_ecdsa"), "privkey").unwrap();
+        std::fs::write(temp.join(".npmrc"), "//registry=token").unwrap();
+        std::fs::write(temp.join(".pypirc"), "token").unwrap();
+        std::fs::write(temp.join(".netrc"), "token").unwrap();
+        std::fs::write(temp.join(".git-credentials"), "creds").unwrap();
+
+        // Sensitive directories
+        let aws_dir = temp.join(".aws");
+        std::fs::create_dir_all(&aws_dir).unwrap();
+        std::fs::write(aws_dir.join("credentials"), "secret").unwrap();
+
+        let ssh_dir = temp.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        std::fs::write(ssh_dir.join("id_rsa"), "secret").unwrap();
+
+        let docker_dir = temp.join(".docker");
+        std::fs::create_dir_all(&docker_dir).unwrap();
+        std::fs::write(docker_dir.join("config.json"), "secret").unwrap();
+
+        let gnupg_dir = temp.join(".gnupg");
+        std::fs::create_dir_all(&gnupg_dir).unwrap();
+        std::fs::write(gnupg_dir.join("secring.gpg"), "secret").unwrap();
+
+        // Safe example/template env files that MUST be included
+        std::fs::write(temp.join(".env.example"), "FOO=BAR").unwrap();
+        std::fs::write(temp.join(".env.sample"), "FOO=BAR").unwrap();
+        std::fs::write(temp.join(".env.template"), "FOO=BAR").unwrap();
+
+        let packed = pack_context(&temp).unwrap();
+        let archive_path = packed.path.clone();
+        assert!(archive_path.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = archive_path.metadata().unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600, "Archive must be created mode 0600");
+        }
+
+        assert!(packed.excluded_sensitive.contains(&".env".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".env.production".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".env.local".to_string()));
+        assert!(packed.excluded_sensitive.contains(&"cert.pem".to_string()));
+        assert!(packed.excluded_sensitive.contains(&"app.key".to_string()));
+        assert!(packed.excluded_sensitive.contains(&"id_rsa".to_string()));
+        assert!(packed.excluded_sensitive.contains(&"id_rsa.pub".to_string()));
+        assert!(packed.excluded_sensitive.contains(&"id_ed25519".to_string()));
+        assert!(packed.excluded_sensitive.contains(&"id_ecdsa".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".npmrc".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".pypirc".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".netrc".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".git-credentials".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".aws".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".ssh".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".docker".to_string()));
+        assert!(packed.excluded_sensitive.contains(&".gnupg".to_string()));
+
+        // Verify archive contents
+        let file = File::open(&archive_path).unwrap();
+        let gz = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            entries.push(entry.path().unwrap().to_string_lossy().to_string());
+        }
+
+        // Allowed templates must be present
+        assert!(entries.contains(&".env.example".to_string()));
+        assert!(entries.contains(&".env.sample".to_string()));
+        assert!(entries.contains(&".env.template".to_string()));
+
+        // Excluded files must NOT be in the archive
+        assert!(!entries.contains(&".env".to_string()));
+        assert!(!entries.contains(&".env.production".to_string()));
+        assert!(!entries.contains(&".env.local".to_string()));
+        assert!(!entries.contains(&"cert.pem".to_string()));
+        assert!(!entries.contains(&"app.key".to_string()));
+        assert!(!entries.contains(&"id_rsa".to_string()));
+        assert!(!entries.contains(&".aws".to_string()));
+        assert!(!entries.contains(&".aws/credentials".to_string()));
+        assert!(!entries.contains(&".ssh".to_string()));
+        assert!(!entries.contains(&".ssh/id_rsa".to_string()));
+
+        drop(packed);
         let _ = std::fs::remove_dir_all(&temp);
     }
 }

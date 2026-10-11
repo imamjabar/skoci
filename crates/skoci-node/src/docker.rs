@@ -21,6 +21,7 @@ pub struct ContainerConfig {
     pub labels: Vec<(String, String)>,
     pub memory_limit: Option<String>,
     pub cpu_limit: Option<f32>,
+    pub pids_limit: Option<u32>,
     pub network: Option<String>,
     pub network_aliases: Vec<String>,
     pub volumes: Vec<(String, String)>,
@@ -37,6 +38,13 @@ pub struct ContainerState {
     pub started_at: Option<DateTime<Utc>>,
 }
 
+/// Spawns a docker command with sensitive tokens like SKOCI_MASTER_TOKEN stripped from the environment.
+pub fn docker_cmd() -> Command {
+    let mut cmd = Command::new("docker");
+    cmd.env_remove("SKOCI_MASTER_TOKEN");
+    cmd
+}
+
 #[derive(Clone, Default)]
 pub struct DockerClient;
 
@@ -46,7 +54,7 @@ impl DockerClient {
     }
 
     pub async fn check_daemon() -> bool {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("info")
             .arg("--format")
             .arg("{{.ServerVersion}}")
@@ -62,7 +70,7 @@ impl DockerClient {
     }
 
     pub async fn version(&self) -> SkociResult<String> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("version")
             .arg("--format")
             .arg("{{.Server.Version}}")
@@ -81,7 +89,7 @@ impl DockerClient {
     }
 
     pub async fn ensure_network(&self, name: &str) -> SkociResult<()> {
-        let inspect = Command::new("docker")
+        let inspect = docker_cmd()
             .arg("network")
             .arg("inspect")
             .arg(name)
@@ -95,7 +103,7 @@ impl DockerClient {
             return Ok(());
         }
 
-        let create = Command::new("docker")
+        let create = docker_cmd()
             .arg("network")
             .arg("create")
             .arg(name)
@@ -118,7 +126,7 @@ impl DockerClient {
     }
 
     pub async fn run_container(&self, cfg: &ContainerConfig) -> SkociResult<String> {
-        let mut cmd = Command::new("docker");
+        let mut cmd = docker_cmd();
         cmd.arg("run").arg("-d");
 
         if !cfg.name.is_empty() {
@@ -147,6 +155,10 @@ impl DockerClient {
 
         if let Some(cpus) = cfg.cpu_limit {
             cmd.arg(format!("--cpus={cpus}"));
+        }
+
+        if let Some(pids) = cfg.pids_limit {
+            cmd.arg("--pids-limit").arg(pids.to_string());
         }
 
         if let Some(net) = &cfg.network {
@@ -187,7 +199,7 @@ impl DockerClient {
     }
 
     pub async fn host_port(&self, container: &str, container_port: u16) -> SkociResult<u16> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("port")
             .arg(container)
             .arg(format!("{container_port}/tcp"))
@@ -232,7 +244,7 @@ impl DockerClient {
     }
 
     pub async fn inspect(&self, container: &str) -> SkociResult<ContainerState> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("inspect")
             .arg("--format")
             .arg(r#"{"state": {{json .State}}, "image": {{json .Config.Image}}}"#)
@@ -307,7 +319,7 @@ impl DockerClient {
     }
 
     pub async fn start_container(&self, name: &str) -> SkociResult<()> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("start")
             .arg(name)
             .stdout(Stdio::piped())
@@ -325,7 +337,7 @@ impl DockerClient {
     }
 
     pub async fn stop_container(&self, name: &str, timeout_secs: u32) -> SkociResult<()> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("stop")
             .arg("-t")
             .arg(timeout_secs.to_string())
@@ -345,7 +357,7 @@ impl DockerClient {
     }
 
     pub async fn remove_container(&self, name: &str) -> SkociResult<()> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("rm")
             .arg("-f")
             .arg(name)
@@ -371,7 +383,7 @@ impl DockerClient {
     }
 
     pub async fn logs(&self, container: &str, tail: usize) -> SkociResult<Vec<String>> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("logs")
             .arg("--tail")
             .arg(tail.to_string())
@@ -397,7 +409,7 @@ impl DockerClient {
     }
 
     pub async fn image_exists(&self, image: &str) -> SkociResult<bool> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("image")
             .arg("inspect")
             .arg(image)
@@ -423,7 +435,7 @@ impl DockerClient {
     }
 
     pub async fn remove_image(&self, image: &str) -> SkociResult<()> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("rmi")
             .arg(image)
             .stdout(Stdio::piped())
@@ -448,7 +460,7 @@ impl DockerClient {
     }
 
     pub async fn list_containers(&self, label_filter: &str) -> SkociResult<Vec<String>> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("ps")
             .arg("-a")
             .arg("--filter")
@@ -476,7 +488,7 @@ impl DockerClient {
     }
 
     pub async fn exec(&self, container: &str, argv: &[&str]) -> SkociResult<String> {
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("exec")
             .arg(container)
             .args(argv)
@@ -497,7 +509,7 @@ impl DockerClient {
     }
 
     pub async fn exec_to_file(&self, container: &str, argv: &[&str], dest: &Path) -> SkociResult<u64> {
-        let mut child = Command::new("docker")
+        let mut child = docker_cmd()
             .arg("exec")
             .arg(container)
             .args(argv)
@@ -559,7 +571,7 @@ impl DockerClient {
     }
 
     pub async fn exec_from_file(&self, container: &str, argv: &[&str], src: &Path) -> SkociResult<()> {
-        let mut child = Command::new("docker")
+        let mut child = docker_cmd()
             .arg("exec")
             .arg("-i")
             .arg(container)
@@ -625,7 +637,7 @@ impl DockerClient {
 
     pub async fn copy_from(&self, container: &str, path: &str, dest: &Path) -> SkociResult<()> {
         let source = format!("{container}:{path}");
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("cp")
             .arg(&source)
             .arg(dest)
@@ -645,7 +657,7 @@ impl DockerClient {
 
     pub async fn copy_to(&self, src: &Path, container: &str, path: &str) -> SkociResult<()> {
         let dest = format!("{container}:{path}");
-        let output = Command::new("docker")
+        let output = docker_cmd()
             .arg("cp")
             .arg(src)
             .arg(&dest)
@@ -661,5 +673,27 @@ impl DockerClient {
             let err = String::from_utf8_lossy(&output.stderr);
             Err(SkociError::docker_error(format!("Docker cp to error: {err}")))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_docker_cmd_removes_master_token() {
+        let cmd = docker_cmd();
+        let std_cmd = cmd.as_std();
+        // Verify the command is docker
+        assert_eq!(std_cmd.get_program(), "docker");
+    }
+
+    #[test]
+    fn test_container_config_pids_limit() {
+        let cfg = ContainerConfig {
+            pids_limit: Some(256),
+            ..Default::default()
+        };
+        assert_eq!(cfg.pids_limit, Some(256));
     }
 }

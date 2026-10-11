@@ -16,4 +16,5 @@ flate2 = { workspace = true }
 ignore = { workspace = true }
 futures-util = { workspace = true }
 uuid = { workspace = true }
+parking_lot = { workspace = true }
 tokio-util = { workspace = true }

@@ -225,7 +225,8 @@ fn test_dockerignore() {
     assert!(ignore.contains("__pycache__"));
     assert!(ignore.contains("*.log"));
     assert!(ignore.contains(".DS_Store"));
-    assert!(!ignore.contains("skoci.yaml"));
+    assert!(ignore.contains("skoci.yaml"));
+    assert!(ignore.contains("*.key"));
 }
 
 #[test]

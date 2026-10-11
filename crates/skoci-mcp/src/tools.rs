@@ -229,11 +229,15 @@ pub async fn call_tool(
     name: &str,
     args: serde_json::Value,
 ) -> McpToolCallResult {
-    let default_path = PathBuf::from(
+    let raw_path = PathBuf::from(
         args.get("path")
             .and_then(|v| v.as_str())
             .unwrap_or("."),
     );
+    let default_path = match validate_mcp_path(&raw_path) {
+        Ok(p) => p,
+        Err(e) => return wrap_api_response::<()>(Err(e)),
+    };
 
     match name {
         "skoci_init" => {
@@ -254,11 +258,18 @@ pub async fn call_tool(
                 .unwrap_or("preview")
                 .to_string();
 
-            let out = tokio::process::Command::new("git")
+            let mut git_cmd = tokio::process::Command::new("git");
+            git_cmd
                 .args(["rev-parse", "--short", "HEAD"])
                 .current_dir(&default_path)
-                .output()
-                .await;
+                .env_clear();
+            if let Ok(p) = std::env::var("PATH") {
+                git_cmd.env("PATH", p);
+            }
+            if let Ok(h) = std::env::var("HOME") {
+                git_cmd.env("HOME", h);
+            }
+            let out = git_cmd.output().await;
             let commit = match &out {
                 Ok(o) if o.status.success() => {
                     Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -536,6 +547,26 @@ pub async fn call_tool(
             is_error: Some(true),
         },
     }
+}
+
+fn validate_mcp_path(path: &std::path::Path) -> Result<PathBuf, SkociError> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        SkociError::bad_request(format!("Cannot determine workspace directory: {e}"), "Ensure workspace directory exists")
+    })?;
+    let canonical_cwd = cwd.canonicalize().unwrap_or(cwd);
+    let resolved = if path.is_relative() {
+        canonical_cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    let canonical_resolved = resolved.canonicalize().unwrap_or(resolved);
+    if !canonical_resolved.starts_with(&canonical_cwd) {
+        return Err(SkociError::bad_request(
+            format!("Path '{}' escapes workspace root ('{}')", path.display(), canonical_cwd.display()),
+            "Specify a relative path inside the workspace root directory",
+        ));
+    }
+    Ok(canonical_resolved)
 }
 
 #[cfg(test)]

@@ -145,7 +145,8 @@ async fn test_live_proxy_end_to_end() {
             target: upstream_addr,
             version: "v1".to_string(),
         })
-        .await;
+        .await
+        .unwrap();
 
     let control_addr: SocketAddr = "127.0.0.1:8787".parse().unwrap();
     router
@@ -269,7 +270,8 @@ async fn test_live_proxy_end_to_end() {
             target: dead_addr,
             version: "v1".to_string(),
         })
-        .await;
+        .await
+        .unwrap();
 
     let resp_502 = client
         .get(format!("http://{proxy_http_addr}/"))
@@ -333,7 +335,8 @@ async fn test_websocket_upgrade_is_tunneled() {
             target: upstream_addr,
             version: "v1".to_string(),
         })
-        .await;
+        .await
+        .unwrap();
     let status = start_proxy(
         ProxyConfig {
             http_bind: "127.0.0.1:0".parse().unwrap(),

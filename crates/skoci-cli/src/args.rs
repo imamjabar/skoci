@@ -7,8 +7,8 @@ pub enum Commands {
     Connect {
         #[arg(long)]
         server: String,
-        #[arg(long)]
-        token: String,
+        #[arg(long, help = "Authentication token (reads from SKOCI_TOKEN or stdin if omitted)")]
+        token: Option<String>,
         #[arg(long, help = "Allow unencrypted HTTP connection to non-localhost hosts")]
         insecure: bool,
     },
@@ -134,7 +134,7 @@ pub enum SecretCommands {
     #[command(about = "Set secret for application")]
     Set {
         key: String,
-        value: String,
+        value: Option<String>,
     },
     #[command(about = "List application secret key names")]
     List,

@@ -37,9 +37,31 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
 
     fs::create_dir_all(data_dir.join("uploads")).await?;
     fs::create_dir_all(data_dir.join("builds")).await?;
+    fs::create_dir_all(data_dir.join("envfiles")).await?;
     fs::create_dir_all(data_dir.join("backups")).await?;
-    fs::create_dir_all(data_dir.join("acme")).await?;
+    let acme_dir = data_dir.join("acme");
+    fs::create_dir_all(&acme_dir).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&acme_dir, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700));
+    }
 
+    // Clean up stale files from previous runs
+    for dir_name in ["uploads", "builds", "envfiles"] {
+        let p = data_dir.join(dir_name);
+        if let Ok(mut entries) = fs::read_dir(&p).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+                if is_dir {
+                    let _ = fs::remove_dir_all(entry.path()).await;
+                } else {
+                    let _ = fs::remove_file(entry.path()).await;
+                }
+            }
+        }
+    }
     let db = Database::open(data_dir.join("skoci.db"))
         .context("Failed to initialize SQLite database")?;
 
@@ -82,7 +104,7 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
                     target,
                     version: r.version.clone(),
                 };
-                router.upsert_route(route).await;
+                let _ = router.upsert_route(route).await;
                 tracing::info!(
                     app = %r.app,
                     env = %r.env,
@@ -143,8 +165,8 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
         service_manager,
         backup_manager,
         proxy_status: Some(proxy_status),
+        upload_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
     };
-
     // Eviction task for JobRegistry
     let jobs_clone = jobs.clone();
     tokio::spawn(async move {

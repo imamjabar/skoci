@@ -393,10 +393,8 @@ pub async fn run_command(
 
     match cmd {
         Commands::Connect { server, token: conn_token, insecure } => {
-            let server_lower = server.to_lowercase();
-            if server_lower.starts_with("http://")
-                && !server_lower.contains("localhost")
-                && !server_lower.contains("127.0.0.1")
+            if server.to_lowercase().starts_with("http://")
+                && !crate::env::is_local_url(&server)
                 && !insecure
             {
                 let err = SkociError::bad_request(
@@ -409,22 +407,80 @@ pub async fn run_command(
                 return 1;
             }
 
-            let env_content = format!("SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n", server, conn_token);
-            if let Err(e) = std::fs::write(".env.skoci", &env_content) {
-                let err = SkociError::internal(
-                    format!("Failed to write .env.skoci: {e}"),
-                    "Check write permissions in the current directory",
-                );
+            let resolved_token = match conn_token {
+                Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+                _ => match std::env::var("SKOCI_TOKEN") {
+                    Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+                    _ => {
+                        use std::io::{BufRead, IsTerminal, Write};
+                        if std::io::stdin().is_terminal() {
+                            eprint!("Enter token: ");
+                            let _ = std::io::stderr().flush();
+                        }
+                        let mut line = String::new();
+                        let _ = std::io::stdin().lock().read_line(&mut line);
+                        let trimmed = line.trim().to_string();
+                        if trimmed.is_empty() {
+                            let err = SkociError::bad_request(
+                                "Token cannot be empty",
+                                "Provide --token <token>, set SKOCI_TOKEN, or enter via stdin",
+                            );
+                            output::print_error(&err, json);
+                            return 1;
+                        }
+                        trimmed
+                    }
+                },
+            };
+
+            let target_path = Path::new(".env.skoci");
+            if target_path.exists() || target_path.is_symlink() {
+                if let Ok(meta) = std::fs::symlink_metadata(target_path) {
+                    if meta.file_type().is_symlink() || !meta.is_file() {
+                        let err = SkociError::bad_request(
+                            ".env.skoci is a symlink or special file",
+                            "Remove the symlink before connecting: rm .env.skoci",
+                        );
+                        output::print_error(&err, json);
+                        return 1;
+                    }
+                }
+            }
+
+            let env_content = format!("SKOCI_SERVER_URL={}\nSKOCI_TOKEN={}\n", server, resolved_token);
+            let tmp_path = format!(".env.skoci.tmp.{}", uuid::Uuid::new_v4().simple());
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut tmp_file = match opts.open(&tmp_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    let err = SkociError::internal(
+                        format!("Failed to create temporary config file: {e}"),
+                        "Check write permissions in current directory",
+                    );
+                    output::print_error(&err, json);
+                    return 1;
+                }
+            };
+            use std::io::Write;
+            if let Err(e) = tmp_file.write_all(env_content.as_bytes()) {
+                let _ = std::fs::remove_file(&tmp_path);
+                let err = SkociError::internal(format!("Failed to write config: {e}"), "Retry");
                 output::print_error(&err, json);
                 return 1;
             }
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(".env.skoci", std::fs::Permissions::from_mode(0o600));
+            drop(tmp_file);
+            if let Err(e) = std::fs::rename(&tmp_path, target_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                let err = SkociError::internal(format!("Failed to save .env.skoci: {e}"), "Retry");
+                output::print_error(&err, json);
+                return 1;
             }
-
             let gitignore_path = Path::new(".gitignore");
             let (needs_entry, add_newline) = if gitignore_path.exists() {
                 let content = std::fs::read_to_string(gitignore_path).unwrap_or_default();
@@ -445,7 +501,7 @@ pub async fn run_command(
                 }
             }
 
-            let test_client = SkociClient::new(&server, Some(conn_token));
+            let test_client = SkociClient::new(&server, Some(resolved_token));
             match test_client.doctor().await {
                 Ok(resp) => {
                     if !resp.success {
@@ -517,11 +573,17 @@ pub async fn run_command(
             let commit_val = match commit {
                 Some(c) => Some(c),
                 None => {
-                    let out = tokio::process::Command::new("git")
-                        .args(["rev-parse", "--short", "HEAD"])
+                    let mut cmd = tokio::process::Command::new("git");
+                    cmd.args(["rev-parse", "--short", "HEAD"])
                         .current_dir(&path)
-                        .output()
-                        .await;
+                        .env_clear();
+                    if let Ok(p) = std::env::var("PATH") {
+                        cmd.env("PATH", p);
+                    }
+                    if let Ok(h) = std::env::var("HOME") {
+                        cmd.env("HOME", h);
+                    }
+                    let out = cmd.output().await;
                     match &out {
                         Ok(o) if o.status.success() => {
                             Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -721,10 +783,32 @@ pub async fn run_command(
 
             match action {
                 SecretCommands::Set { key, value } => {
+                    let resolved_value = match value {
+                        Some(v) if !v.is_empty() => v,
+                        _ => {
+                            use std::io::{BufRead, IsTerminal, Write};
+                            if std::io::stdin().is_terminal() {
+                                eprint!("Enter secret value: ");
+                                let _ = std::io::stderr().flush();
+                            }
+                            let mut line = String::new();
+                            let _ = std::io::stdin().lock().read_line(&mut line);
+                            let trimmed = line.trim_end_matches(['\r', '\n']).to_string();
+                            if trimmed.is_empty() {
+                                let err = SkociError::bad_request(
+                                    "Secret value cannot be empty",
+                                    "Provide value as argument or via stdin: echo -n 'val' | skoci secret set KEY",
+                                );
+                                output::print_error(&err, json);
+                                return 1;
+                            }
+                            trimmed
+                        }
+                    };
                     let req = SecretSetRequest {
                         app: app_name.clone(),
                         key: key.clone(),
-                        value,
+                        value: resolved_value,
                     };
                     match client.secret_set(req).await {
                         Ok(resp) => {

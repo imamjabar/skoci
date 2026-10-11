@@ -3,6 +3,9 @@ use skoci_api::models::{SkociConfig, MAX_APP_NAME_LEN};
 use std::collections::HashSet;
 use std::path::Path;
 
+pub const MAX_DOMAINS_PER_ENV: usize = 5;
+pub const RESERVED_APP_NAMES: &[&str] = &["skoci", "api", "www", "admin", "dashboard"];
+
 pub struct ConfigLoader;
 
 impl ConfigLoader {
@@ -44,6 +47,30 @@ impl ConfigLoader {
                 return Err(SkociError::config_invalid(
                     "App name 'app' cannot be empty",
                     "Specify an app name in skoci.yaml (e.g. 'belajar-paper')",
+                ));
+            }
+            if RESERVED_APP_NAMES.contains(&cfg.app.as_str()) {
+                return Err(SkociError::config_invalid(
+                    format!("App name '{}' is reserved", cfg.app),
+                    "Choose an app name not in the reserved list (skoci, api, www, admin, dashboard)",
+                ));
+            }
+            if cfg.app.ends_with("-preview") {
+                return Err(SkociError::config_invalid(
+                    format!("App name '{}' cannot end with '-preview'", cfg.app),
+                    "Remove the '-preview' suffix from the app name",
+                ));
+            }
+            if cfg.app.contains("--") {
+                return Err(SkociError::config_invalid(
+                    format!("App name '{}' cannot contain consecutive hyphens ('--')", cfg.app),
+                    "Replace '--' with a single hyphen '-'",
+                ));
+            }
+            if cfg.app.ends_with('-') {
+                return Err(SkociError::config_invalid(
+                    format!("App name '{}' cannot end with a hyphen", cfg.app),
+                    "Remove the trailing hyphen from the app name",
                 ));
             }
             if cfg.app.len() > MAX_APP_NAME_LEN {
@@ -98,6 +125,27 @@ impl ConfigLoader {
         }
 
         let mut seen_domains = HashSet::new();
+        if cfg.domains.len() > MAX_DOMAINS_PER_ENV {
+            return Err(SkociError::config_invalid(
+                format!(
+                    "Too many domains specified ({} domains, maximum {})",
+                    cfg.domains.len(),
+                    MAX_DOMAINS_PER_ENV
+                ),
+                "Reduce the number of domains in 'domains' to 5 or fewer",
+            ));
+        }
+        if cfg.preview_domains.len() > MAX_DOMAINS_PER_ENV {
+            return Err(SkociError::config_invalid(
+                format!(
+                    "Too many preview domains specified ({} domains, maximum {})",
+                    cfg.preview_domains.len(),
+                    MAX_DOMAINS_PER_ENV
+                ),
+                "Reduce the number of preview domains in 'preview_domains' to 5 or fewer",
+            ));
+        }
+
         for domain in &cfg.domains {
             if !is_valid_hostname(domain) {
                 return Err(SkociError::config_invalid(
@@ -127,17 +175,32 @@ impl ConfigLoader {
             }
         }
 
-        for key in cfg.env.public.keys() {
-            if !is_valid_env_key(key) {
+        for (key, val) in &cfg.env.public {
+            if !is_valid_env_key(key) || key.contains('\r') || key.contains('\n') || key.contains('\0') {
                 return Err(SkociError::config_invalid(
                     format!("Public env name '{key}' is invalid"),
-                    "Use uppercase letters like 'API_URL' or 'NODE_ENV'",
+                    "Use uppercase letters and underscores like 'API_URL' or 'NODE_ENV'",
                 ));
             }
             if key.starts_with("SKOCI_") {
                 return Err(SkociError::config_invalid(
                     format!("Public env name '{key}' cannot start with 'SKOCI_'"),
                     "Names starting with 'SKOCI_' are reserved for the Skoci system",
+                ));
+            }
+            if val.contains('\r') || val.contains('\n') || val.contains('\0') {
+                return Err(SkociError::config_invalid(
+                    format!("Public env value for '{key}' contains invalid characters (newline or null byte)"),
+                    "Remove carriage returns, newlines, and null bytes from env values",
+                ));
+            }
+            if val.len() > 4096 {
+                return Err(SkociError::config_invalid(
+                    format!(
+                        "Public env value for '{key}' exceeds maximum length of 4096 bytes ({} bytes)",
+                        val.len()
+                    ),
+                    "Keep public env values under 4096 bytes",
                 ));
             }
         }
@@ -168,9 +231,9 @@ impl ConfigLoader {
             if !is_valid_service_name(name) {
                 return Err(SkociError::config_invalid(
                     format!(
-                        "Service name '{name}' is invalid (must be 1-20 characters, start with lowercase letter, only lowercase letters, numbers, and '-')",
+                        "Service name '{name}' is invalid (must be 1-20 characters, start with lowercase letter, only lowercase letters and numbers, no hyphens)",
                     ),
-                    "Use a service name like 'db', 'cache', or 'queue'",
+                    "Use a service name like 'db', 'cache', or 'queue1'",
                 ));
             }
             if svc.version.trim().is_empty() {
@@ -184,6 +247,45 @@ impl ConfigLoader {
                     return Err(SkociError::config_invalid(
                         format!("Memory value for service '{name}' ('{mem}') is invalid"),
                         "Use a number followed by b, k, m, or g (e.g. '256m' or '1g')",
+                    ));
+                }
+            }
+            if let Some(backup) = &svc.backup {
+                if !(1..=30).contains(&backup.keep) {
+                    return Err(SkociError::config_invalid(
+                        format!(
+                            "Backup keep count '{}' for service '{name}' is invalid (must be between 1 and 30)",
+                            backup.keep
+                        ),
+                        "Specify a keep count between 1 and 30 (e.g. 'keep: 7')",
+                    ));
+                }
+                let fields: Vec<&str> = backup.schedule.split_whitespace().collect();
+                if fields.len() != 5 {
+                    return Err(SkociError::config_invalid(
+                        format!(
+                            "Backup schedule '{}' for service '{name}' is invalid (must have 5 fields)",
+                            backup.schedule
+                        ),
+                        "Use 5-field cron format: minute hour day_of_month month day_of_week (e.g. '0 2 * * *')",
+                    ));
+                }
+                let min: u32 = fields[0].parse().map_err(|_| {
+                    SkociError::config_invalid(
+                        format!(
+                            "Backup schedule minute '{}' for service '{name}' must be a single integer 0-59 to ensure at most hourly backups",
+                            fields[0]
+                        ),
+                        "Specify an exact minute number like '0' in '0 2 * * *'",
+                    )
+                })?;
+                if min > 59 {
+                    return Err(SkociError::config_invalid(
+                        format!(
+                            "Backup schedule minute '{}' for service '{name}' is out of range (must be 0-59)",
+                            min
+                        ),
+                        "Specify a minute between 0 and 59",
                     ));
                 }
             }
@@ -227,6 +329,12 @@ impl ConfigLoader {
 
 pub fn is_valid_app_name(name: &str) -> bool {
     if name.is_empty() || name.len() > MAX_APP_NAME_LEN {
+        return false;
+    }
+    if RESERVED_APP_NAMES.contains(&name) {
+        return false;
+    }
+    if name.contains("--") || name.ends_with('-') || name.ends_with("-preview") {
         return false;
     }
     let mut chars = name.chars();
@@ -299,7 +407,7 @@ pub fn is_safe_relative_path(p: &str) -> bool {
     true
 }
 
-fn is_valid_service_name(name: &str) -> bool {
+pub fn is_valid_service_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 20 {
         return false;
     }
@@ -308,7 +416,7 @@ fn is_valid_service_name(name: &str) -> bool {
         Some(c) => c.is_ascii_lowercase(),
         None => false,
     };
-    first && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    first && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 fn is_valid_memory_spec(mem: &str) -> bool {

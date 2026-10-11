@@ -5,13 +5,14 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   build-release:
     name: Build (${{ matrix.asset }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -32,42 +33,66 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
       - name: Build binary
         run: cargo build --release -p skoci --locked --target ${{ matrix.target }}
 
-      - name: Package asset & checksum
+      - name: Package asset
         run: |
           cp "target/${{ matrix.target }}/release/skoci" "${{ matrix.asset }}"
           strip "${{ matrix.asset }}" || true
-          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          files: |
-            ${{ matrix.asset }}
-            ${{ matrix.asset }}.sha256
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
-  upload-installer:
-    name: Upload Installer
+  publish:
+    name: Publish Release
+    needs: build-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Upload install.sh
-        uses: softprops/action-gh-release@v2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          files: install.sh
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: 'dist/skoci-*'
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist
+          for f in skoci-*; do
+            if [ -f "$f" ]; then
+              sha256sum "$f" > "${f}.sha256"
+            fi
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          files: |
+            dist/skoci-*
+            install.sh

@@ -130,18 +130,97 @@ pub fn render_doctor(doctor: &DoctorResponse) {
     }
 }
 
+pub fn sanitize_log_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\x1b' {
+            i += 1;
+            if i >= chars.len() {
+                break;
+            }
+            match chars[i] {
+                '[' => {
+                    i += 1;
+                    while i < chars.len() {
+                        let c = chars[i];
+                        if (c as u32) >= 0x40 && (c as u32) <= 0x7e {
+                            i += 1;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                ']' => {
+                    i += 1;
+                    while i < chars.len() {
+                        if chars[i] == '\x07' {
+                            i += 1;
+                            break;
+                        }
+                        if chars[i] == '\x1b' && i + 1 < chars.len() && chars[i + 1] == '\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                '(' | ')' | '*' | '+' => {
+                    i += 2;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        } else {
+            let u = ch as u32;
+            if ch == '\t' {
+                out.push(ch);
+            } else if (u < 0x20) || u == 0x7f || (0x80..=0x9f).contains(&u) {
+                // Strip C0 and C1 control character
+            } else {
+                out.push(ch);
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
 pub fn render_logs(logs: &LogsResponse) {
     println!("App Logs: {} ({}) Container: {}", logs.app, logs.env, logs.container);
     println!("{}", "-".repeat(70));
     for line in &logs.lines {
-        println!("{}", line);
+        println!("{}", sanitize_log_line(line));
     }
 
     if !logs.error_summary.is_empty() {
         println!("\nError Summary ({} lines):", logs.error_summary.len());
         println!("{}", "-".repeat(70));
         for err_line in &logs.error_summary {
-            println!("  [!] {}", err_line);
+            println!("  [!] {}", sanitize_log_line(err_line));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_log_line() {
+        let raw = "\x1b[31;1mError:\x1b[0m \x1b]52;c;evil\x07failed to connect\r\x1b[2Kspoofed line\twith tab\x00\x08\u{0084}";
+        let clean = sanitize_log_line(raw);
+        assert!(!clean.contains("\x1b"));
+        assert!(!clean.contains("\x07"));
+        assert!(!clean.contains("\r"));
+        assert!(!clean.contains("\x00"));
+        assert!(!clean.contains("\x08"));
+        assert!(!clean.contains('\u{0084}'));
+        assert!(clean.contains("Error: "));
+        assert!(clean.contains("failed to connect"));
+        assert!(clean.contains("spoofed line\twith tab"));
     }
 }

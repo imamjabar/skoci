@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
             public_ip,
         } => {
             let master_token = std::env::var("SKOCI_MASTER_TOKEN").unwrap_or_default();
+            std::env::remove_var("SKOCI_MASTER_TOKEN");
             let base_domain = base_domain.filter(|d| !d.trim().is_empty());
             let api_domain = api_domain
                 .filter(|d| !d.trim().is_empty())

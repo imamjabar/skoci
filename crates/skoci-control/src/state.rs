@@ -24,4 +24,5 @@ pub struct AppState {
     pub backup_manager: Arc<BackupManager>,
     /// None only in tests that build the router without starting the proxy.
     pub proxy_status: Option<ProxyStatus>,
+    pub upload_semaphore: Arc<tokio::sync::Semaphore>,
 }

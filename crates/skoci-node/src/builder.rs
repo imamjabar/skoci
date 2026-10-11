@@ -3,7 +3,6 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncBufReadExt;
-use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
@@ -23,7 +22,7 @@ impl ImageBuilder {
         opts: &BuildOptions,
         log: UnboundedSender<String>,
     ) -> SkociResult<()> {
-        let mut cmd = Command::new("docker");
+        let mut cmd = crate::docker::docker_cmd();
         cmd.env("DOCKER_BUILDKIT", "1");
         cmd.arg("build");
         cmd.arg("--progress=plain");

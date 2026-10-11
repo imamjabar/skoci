@@ -108,6 +108,42 @@ fn test_service_manager_url_and_password() {
     );
 }
 
+#[test]
+fn test_readiness_failure_redacts_password_and_url() {
+    let cfg = ServiceConfig {
+        engine: DatabaseEngine::Postgres,
+        version: "16".to_string(),
+        memory: None,
+        backup: None,
+    };
+    let spec = ServiceSpec {
+        app: "test-app",
+        service: "db",
+        cfg: &cfg,
+        password: "supersecretpassword123",
+    };
+
+    let url = ServiceManager::connection_url(&spec);
+    let sample_logs = format!(
+        "2026-10-11T12:00:00Z FATAL: password authentication failed for user \"skoci\" with password \"supersecretpassword123\"\nConnected to {url}\nFailed to connect"
+    );
+
+    let err = ServiceManager::format_readiness_error(&spec, &sample_logs);
+    assert!(!err.message.contains("supersecretpassword123"));
+    assert!(!err.message.contains(&url));
+    assert!(err.message.contains("[REDACTED]"));
+    assert!(err.message.contains("Database 'db' failed to become ready"));
+}
+
+#[test]
+fn test_container_config_pids_limit() {
+    let cfg = ContainerConfig {
+        pids_limit: Some(512),
+        ..Default::default()
+    };
+    assert_eq!(cfg.pids_limit, Some(512));
+}
+
 #[tokio::test]
 #[ignore = "Requires running Docker daemon"]
 async fn test_docker_daemon_integration() {

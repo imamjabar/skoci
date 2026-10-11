@@ -118,13 +118,25 @@ Operational Rules:
 
 ## Security
 
-* **No Shell Injection:** Docker and system commands run as argument vectors (`tokio::process::Command`); user or agent input is never interpolated into a shell string.
-* **Isolated Scoped Tokens:** Agent tokens (`sk_agent_<app>_*`) are hashed with SHA-256; app boundaries are verified in SQLite.
+* **No Shell Injection:** Docker and system commands run as structured argument vectors (`tokio::process::Command`); user or agent input is never interpolated into a shell string.
+* **Isolated Scoped Tokens & Stdin Entry:** Agent tokens (`sk_agent_<app>_*`) are hashed with SHA-256; app boundaries are enforced in SQLite. Tokens and secrets can be piped via stdin to prevent leaking into process listings (`ps`, `/proc`) or shell history.
 * **Zero-SSH Policy:** No private SSH keys stored in developer environments or agent contexts.
-* **Encrypted Secrets:** Encrypted with ChaCha20-Poly1305 on the node, passed via ephemeral `0600` env-files, and masked as `[REDACTED]` in logs.
-* **Local Control Plane:** API binds strictly to `127.0.0.1:8787`, exposed only through the TLS reverse proxy or SSH tunnels.
-* **Human Approval Gates:** Production releases, database restorations, and deletions enforce human sign-off.
-* **Audit Log:** Every mutating operation is recorded with actor attribution (`admin` or `agent:<app>/<token>#<id>`); raw tokens are never stored.
+* **Encrypted Secrets & Cleaned Envs:** Secrets are encrypted with ChaCha20-Poly1305 on the node, injected via ephemeral `0600` env files unlinked immediately, and masked as `[REDACTED]` in logs. Client `.env.skoci` is restricted to an allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), and spawned subprocesses run with sanitized environments.
+* **Packaging Deny List:** `skoci deploy` excludes sensitive files (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`) by default, and uploads use private `0600` temporary archives.
+* **Local Control Plane & HTTPS SNI Binding:** API binds strictly to `127.0.0.1:8787`. On public HTTPS, requests enforce strict TLS SNI matching against `:authority`/`Host` headers (rejecting mismatches with `421 Misdirected Request`).
+* **Host Ownership Protection:** Custom domains and auto hosts are strictly partitioned; cross-app host collisions or hijacking are rejected.
+* **Human Approval Gates & Image ID Pinning:** Production releases, database restorations, and destructive operations enforce human sign-off pinned to immutable Docker image IDs (preventing TOCTOU tampering).
+* **Systemd Hardening:** Service runs under a sandboxed unit with `UMask=0077`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`, `RestrictNamespaces=true`, and `LimitNOFILE=65536`.
+* **Audit Log & Build Provenance:** Mutating operations are recorded in an append-only audit log. Official release binaries provide GitHub Actions build provenance attestations (`gh attestation verify`).
+
+### Residual Risks
+
+* **Docker Group ≈ Root:** Access to `/var/run/docker.sock` is root-equivalent on Linux; Skoci hardens process execution, but Docker socket privileges remain root-level.
+* **Unrestricted Container Outbound Network:** Containers execute user/agent code inside standard Docker sandboxes with unrestricted outbound internet connectivity.
+* **First-Come Custom Domains:** An agent can claim any custom domain not yet registered by another application on the instance.
+* **Same-Origin Release Checksums:** Release checksums are hosted alongside binary assets; verify provenance with `gh attestation verify skoci-linux-x86_64 --repo imamjabar/skoci`.
+* **Single-Server Docker Isolation:** Isolation relies on Linux kernel namespaces and cgroups (Docker defaults) without hardware microVM isolation.
+* **ACME & sslip.io Rate Limits:** Automatic TLS for `*.sslip.io` subdomains shares global Let's Encrypt rate limits across all users of `sslip.io`. Use custom domains for production reliability.
 
 ---
 

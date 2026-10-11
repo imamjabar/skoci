@@ -15,11 +15,39 @@ pub mod session;
 pub mod status;
 pub mod tokens;
 
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request};
+use axum::http::header::HeaderName;
+use axum::http::HeaderValue;
+use axum::middleware::{from_fn, Next};
+use axum::response::Response;
 use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::state::AppState;
+
+async fn security_headers_middleware(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        ),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    res
+}
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -72,5 +100,6 @@ pub fn build_router(state: AppState) -> Router {
         // Audits & Doctor
         .route("/api/audits", get(audits::handle_list_audits))
         .route("/api/doctor", get(doctor::handle_doctor))
+        .layer(from_fn(security_headers_middleware))
         .with_state(state)
 }

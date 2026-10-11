@@ -130,8 +130,8 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 -c "$sum_file"
   else
-    echo "Warning: sha256sum/shasum not found; verification skipped." >&2
-    return 0
+    echo -e "${RED}Error: Neither sha256sum nor shasum found; cannot verify release integrity.${NC}" >&2
+    return 1
   fi
 }
 
@@ -176,8 +176,8 @@ build_from_source() {
     src_dir="$script_dir"
   else
     src_dir="${TMP_DIR}/repo"
-    echo "Cloning Skoci repository source code..."
-    git clone https://github.com/imamjabar/skoci.git "$src_dir"
+    echo "Cloning Skoci repository source code (${TAG})..."
+    git clone --depth 1 --branch "$TAG" https://github.com/imamjabar/skoci.git "$src_dir"
   fi
 
   (
@@ -195,31 +195,41 @@ if [ -n "$CLI_VERSION" ] && [ "$CLI_VERSION" != "latest" ]; then
 else
   TAG="$(curl -fsSI "https://github.com/imamjabar/skoci/releases/latest" 2>/dev/null | grep -i "^location:" | sed -E 's/.*tag\/(.*)/\1/' | tr -d '\r\n ' || true)"
   if [ -z "$TAG" ]; then
-    TAG="v0.1.0"
+    echo -e "${RED}Error: Failed to determine latest release tag from GitHub.${NC}" >&2
+    echo "Check your internet connection or specify a version explicitly: --version <tag>" >&2
+    exit 1
   fi
 fi
 
 DOWNLOAD_URL="https://github.com/imamjabar/skoci/releases/download/${TAG}/${ASSET_NAME}"
 SHA_URL="https://github.com/imamjabar/skoci/releases/download/${TAG}/${ASSET_NAME}.sha256"
 
-DOWNLOAD_OK=0
 echo -e "\n${BOLD}[1/4] Preparing Skoci binary...${NC}"
 echo "Downloading ${ASSET_NAME} (${TAG})..."
-if curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/${ASSET_NAME}" 2>/dev/null && \
-   curl -fsSL "$SHA_URL" -o "${TMP_DIR}/${ASSET_NAME}.sha256" 2>/dev/null; then
-  cd "$TMP_DIR"
-  if verify_checksum "${ASSET_NAME}.sha256"; then
-    echo -e "${GREEN}✓ SHA256 verification succeeded.${NC}"
-    DOWNLOAD_OK=1
-  else
-    echo -e "${YELLOW}Warning: SHA256 verification failed.${NC}" >&2
-  fi
-  cd - >/dev/null
-fi
 
-if [ "$DOWNLOAD_OK" -ne 1 ]; then
-  echo -e "${YELLOW}Prebuilt binary not found on GitHub Releases. Falling back to building from source...${NC}"
+ASSET_HTTP_CODE="$(curl -sSL -w "%{http_code}" -o "${TMP_DIR}/${ASSET_NAME}" "$DOWNLOAD_URL" || true)"
+
+if [ "$ASSET_HTTP_CODE" = "404" ]; then
+  echo -e "${YELLOW}Prebuilt binary not found on GitHub Releases (HTTP 404). Falling back to building from source...${NC}"
   build_from_source "${TMP_DIR}/${ASSET_NAME}"
+elif [ "$ASSET_HTTP_CODE" = "200" ]; then
+  SHA_HTTP_CODE="$(curl -sSL -w "%{http_code}" -o "${TMP_DIR}/${ASSET_NAME}.sha256" "$SHA_URL" || true)"
+  if [ "$SHA_HTTP_CODE" != "200" ]; then
+    echo -e "${RED}Error: Failed to download checksum file for ${ASSET_NAME} (HTTP ${SHA_HTTP_CODE}).${NC}" >&2
+    exit 1
+  fi
+
+  (
+    cd "$TMP_DIR"
+    if ! verify_checksum "${ASSET_NAME}.sha256"; then
+      echo -e "${RED}Error: SHA256 verification failed for ${ASSET_NAME}. Aborting.${NC}" >&2
+      exit 1
+    fi
+  )
+  echo -e "${GREEN}✓ SHA256 verification succeeded.${NC}"
+else
+  echo -e "${RED}Error: Failed to download ${ASSET_NAME} (HTTP ${ASSET_HTTP_CODE}).${NC}" >&2
+  exit 1
 fi
 
 # 4. Install Binary for Client-Only (macOS or --client-only)
@@ -242,7 +252,8 @@ if [ "$CLIENT_ONLY" = "1" ]; then
   echo -e "Binary installed at: ${BOLD}${INSTALL_DIR}/skoci${NC}"
   echo -e "\n${BOLD}Next Steps:${NC}"
   echo -e "1. Connect to your Skoci server:"
-  echo -e "   ${BOLD}skoci connect --server https://skoci.<base-domain> --token <token>${NC}"
+  echo -e "   ${BOLD}skoci connect --server https://skoci.<base-domain>${NC}"
+  echo -e "   (Paste token when prompted, or pass via stdin: ${BOLD}echo \"\$TOKEN\" | skoci connect --server ...${NC})"
   echo -e "2. Navigate to your project repository:"
   echo -e "   ${BOLD}skoci init${NC}"
   echo -e "3. Deploy the application:"
@@ -400,12 +411,21 @@ Type=simple
 User=skoci
 Group=skoci
 SupplementaryGroups=docker
+UMask=0077
+LimitNOFILE=65536
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
 ReadWritePaths=/var/lib/skoci
 EnvironmentFile=/etc/skoci/skoci.env
 ExecStart=/usr/local/bin/skoci server --data-dir /var/lib/skoci --bind 127.0.0.1:8787
@@ -489,11 +509,13 @@ if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
 fi
 echo -e "\n2. On your laptop/developer workstation:"
 if [ "$API_HTTPS_OK" = "1" ]; then
-  echo -e "   ${BOLD}skoci connect --server https://skoci.${BASE_DOMAIN} --token <token>${NC}"
+  echo -e "   ${BOLD}skoci connect --server https://skoci.${BASE_DOMAIN}${NC}"
+  echo -e "   (Paste token when prompted, or pass via stdin)"
 else
   echo -e "   Open tunnel in a separate terminal (keep running):"
   echo -e "   ${BOLD}ssh -N -L 8787:127.0.0.1:8787 ${INVOKING_USER}@${PUBLIC_IP}${NC}"
-  echo -e "   ${BOLD}skoci connect --server http://127.0.0.1:8787 --token <token>${NC}"
+  echo -e "   ${BOLD}skoci connect --server http://127.0.0.1:8787${NC}"
+  echo -e "   (Paste token when prompted, or pass via stdin)"
 fi
 echo -e "   Navigate to your project repository:"
 echo -e "   ${BOLD}skoci init${NC}"

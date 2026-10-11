@@ -3,6 +3,8 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub const MAX_SESSIONS: usize = 1_000;
+
 #[derive(Clone)]
 pub struct SessionStore {
     sessions: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
@@ -21,6 +23,13 @@ impl SessionStore {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.sessions.read().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sessions.read().is_empty()
+    }
     pub fn create_session(&self) -> (String, DateTime<Utc>) {
         use rand::RngCore;
         let mut bytes = [0u8; 32];
@@ -30,8 +39,16 @@ impl SessionStore {
 
         let mut lock = self.sessions.write();
         self.cleanup_expired_locked(&mut lock);
+        if lock.len() >= MAX_SESSIONS {
+            let oldest_key = lock
+                .iter()
+                .min_by_key(|(_, expires)| **expires)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                lock.remove(&k);
+            }
+        }
         lock.insert(id.clone(), expires_at);
-
         (id, expires_at)
     }
 

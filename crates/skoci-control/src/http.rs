@@ -47,13 +47,6 @@ impl FromRequestParts<AppState> for AuthSubject {
     ) -> Result<Self, Self::Rejection> {
         let peer_ip = extract_ip(parts);
 
-        // Check if peer IP is currently rate limited
-        if let Err(err) = state.rate_limiter.check(peer_ip) {
-            let status = StatusCode::from_u16(err.http_status())
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS);
-            return Err((status, Json(ApiResponse::<()>::err(err))).into_response());
-        }
-
         // 1. Try Bearer token
         if let Some(auth_header) = parts.headers.get("authorization").and_then(|v| v.to_str().ok()) {
             let token = if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
@@ -67,9 +60,13 @@ impl FromRequestParts<AppState> for AuthSubject {
             match auth::authenticate_token(&state.db, &state.config.master_token, token) {
                 Ok(subject) => return Ok(AuthSubject(subject)),
                 Err(err) => {
+                    let is_blocked = state.rate_limiter.check(peer_ip).is_err();
                     state.rate_limiter.record_failure(peer_ip);
-                    let status = StatusCode::from_u16(err.http_status())
-                        .unwrap_or(StatusCode::UNAUTHORIZED);
+                    let status = if is_blocked {
+                        StatusCode::TOO_MANY_REQUESTS
+                    } else {
+                        StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::UNAUTHORIZED)
+                    };
                     return Err((status, Json(ApiResponse::<()>::err(err))).into_response());
                 }
             }
@@ -83,6 +80,26 @@ impl FromRequestParts<AppState> for AuthSubject {
                         && parts.method != axum::http::Method::HEAD
                         && parts.method != axum::http::Method::OPTIONS
                     {
+                        if let Some(origin_str) = parts.headers.get("origin").and_then(|v| v.to_str().ok()) {
+                            let origin_host = if let Some(stripped) = origin_str.strip_prefix("https://") {
+                                stripped
+                            } else if let Some(stripped) = origin_str.strip_prefix("http://") {
+                                stripped
+                            } else {
+                                origin_str
+                            };
+                            let origin_host = origin_host.trim_end_matches('/');
+                            let host_str = parts.headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("");
+                            if !origin_host.eq_ignore_ascii_case(host_str) {
+                                let err = SkociError::forbidden(
+                                    format!("Origin '{origin_str}' does not match Host '{host_str}'"),
+                                    "Cross-origin requests with dashboard session are not allowed",
+                                );
+                                let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::FORBIDDEN);
+                                return Err((status, Json(ApiResponse::<()>::err(err))).into_response());
+                            }
+                        }
+
                         let csrf = parts
                             .headers
                             .get("x-skoci-dashboard")
@@ -103,14 +120,23 @@ impl FromRequestParts<AppState> for AuthSubject {
                     let err = SkociError::unauthorized(
                         "Dashboard session is invalid or expired",
                     );
-                    let status = StatusCode::from_u16(err.http_status())
-                        .unwrap_or(StatusCode::UNAUTHORIZED);
+                    let status = if state.rate_limiter.check(peer_ip).is_err() {
+                        StatusCode::TOO_MANY_REQUESTS
+                    } else {
+                        StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::UNAUTHORIZED)
+                    };
                     return Err((status, Json(ApiResponse::<()>::err(err))).into_response());
                 }
             }
         }
 
-        // Neither credential provided
+        // Neither credential provided: check rate limit first, then 401
+        if let Err(err) = state.rate_limiter.check(peer_ip) {
+            let status = StatusCode::from_u16(err.http_status())
+                .unwrap_or(StatusCode::TOO_MANY_REQUESTS);
+            return Err((status, Json(ApiResponse::<()>::err(err))).into_response());
+        }
+
         let err = SkociError::unauthorized(
             "Authentication required. Provide a Bearer token or log in to the dashboard",
         );

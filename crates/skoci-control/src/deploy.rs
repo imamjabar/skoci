@@ -214,6 +214,15 @@ async fn execute_pipeline(
                 )
             })?;
 
+            if let Ok(meta) = std::fs::symlink_metadata(&config_path) {
+                if meta.file_type().is_symlink() || !meta.is_file() {
+                    return Err(SkociError::config_invalid(
+                        "skoci.yaml must be a regular file, not a symlink",
+                        "Replace the symlink with a regular skoci.yaml file",
+                    ));
+                }
+            }
+
             let cfg = ConfigLoader::parse_config(&config_content)?;
             if cfg.app != opts.app {
                 return Err(SkociError::config_invalid(
@@ -223,6 +232,38 @@ async fn execute_pipeline(
                     ),
                     "Adjust 'app' in skoci.yaml or deploy target",
                 ));
+            }
+
+            let requested_hosts = compute_hosts(&state.config.base_domain, &cfg, &opts.env);
+            for h in &requested_hosts {
+                if let Some(api_d) = &state.config.api_domain {
+                    if h.eq_ignore_ascii_case(api_d) {
+                        return Err(SkociError::forbidden(
+                            format!("Hostname '{h}' is reserved for the Skoci control API"),
+                            "Remove this domain from skoci.yaml domains/preview_domains",
+                        ));
+                    }
+                }
+                if let Some(base_d) = &state.config.base_domain {
+                    let base_suffix = format!(".{base_d}");
+                    let auto_prod = format!("{}.{base_d}", cfg.app).to_lowercase();
+                    let auto_prev = format!("{}-preview.{base_d}", cfg.app).to_lowercase();
+                    if h.ends_with(&base_suffix) && h != &auto_prod && h != &auto_prev {
+                        return Err(SkociError::forbidden(
+                            format!("Hostname '{h}' uses the base domain but does not match this app's auto-hostnames"),
+                            format!("Use auto-hostnames '{auto_prod}' or '{auto_prev}', or configure a custom domain"),
+                        ));
+                    }
+                }
+                let routes = state.db.list_routes()?;
+                for r in routes {
+                    if r.app != opts.app && r.hosts.iter().any(|existing| existing.eq_ignore_ascii_case(h)) {
+                        return Err(SkociError::conflict(
+                            format!("Hostname '{h}' is already owned by app '{}'", r.app),
+                            "Choose a different domain name in skoci.yaml",
+                        ));
+                    }
+                }
             }
 
             // Validate required secrets
@@ -443,10 +484,11 @@ async fn execute_pipeline(
     state.docker.ensure_network(&network_name).await?;
 
     // Create env file
-    fs::create_dir_all(&build_dir).await.map_err(|e| {
-        SkociError::internal(format!("Failed to create build directory: {e}"), "Try again")
+    let envfiles_dir = state.config.data_dir.join("envfiles");
+    fs::create_dir_all(&envfiles_dir).await.map_err(|e| {
+        SkociError::internal(format!("Failed to create envfiles directory: {e}"), "Try again")
     })?;
-    let env_file_path = build_dir.join(".skoci.env");
+    let env_file_path = envfiles_dir.join(format!("{}.env", opts.deployment_id));
 
     let mut env_lines = Vec::new();
 
@@ -530,13 +572,14 @@ async fn execute_pipeline(
             ("skoci.env".to_string(), opts.env.clone()),
             ("skoci.version".to_string(), opts.version.clone()),
         ],
-        memory_limit: cfg.run.memory.clone(),
+        memory_limit: cfg.run.memory.clone().or_else(|| Some("1g".to_string())),
         cpu_limit: cfg.run.cpus,
         network: Some(network_name.clone()),
         network_aliases: vec![],
         volumes: vec![],
         restart_policy: Some("unless-stopped".to_string()),
         command: vec![],
+        pids_limit: Some(1024),
     };
 
     if let Some(live) = state.router.get_route(&format!("{}:{}", opts.app, opts.env)).await {
@@ -658,7 +701,7 @@ async fn execute_pipeline(
         version: opts.version.clone(),
     };
 
-    let prev_route = state.router.upsert_route(route).await;
+    let prev_route = state.router.upsert_route(route).await?;
 
     let route_rec = RouteRecord {
         app: opts.app.clone(),

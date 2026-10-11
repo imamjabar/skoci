@@ -82,6 +82,7 @@ async fn setup_test_state(max_upload_mb: u64) -> (AppState, TestDir) {
         service_manager,
         backup_manager,
         proxy_status: None,
+        upload_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
     };
 
     (state, temp_dir)

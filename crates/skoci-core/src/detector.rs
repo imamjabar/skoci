@@ -377,7 +377,7 @@ COPY . .
 RUN npm run build
 
 FROM nginx:1.27-alpine
-RUN printf 'server {{\n    listen 80;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {{\n        access_log off;\n        return 200 '\''ok'\'';\n    }}\n    location / {{\n        try_files $uri $uri.html $uri/ /index.html =404;\n    }}\n}}\n' > /etc/nginx/conf.d/default.conf
+RUN printf 'server {{\n    listen 80;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {{\n        access_log off;\n        return 200 '\''ok'\'';\n    }}\n    location ~ /\\. {{\n        deny all;\n        return 404;\n    }}\n    location / {{\n        try_files $uri $uri.html $uri/ /index.html =404;\n    }}\n}}\n' > /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/{out_dir} /usr/share/nginx/html
 RUN chmod -R a+rX /usr/share/nginx/html
 EXPOSE 80
@@ -387,7 +387,7 @@ CMD ["nginx", "-g", "daemon off;"]
             }
             Framework::Static => Some(
 r#"FROM nginx:1.27-alpine
-RUN printf 'server {\n    listen 80;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {\n        access_log off;\n        return 200 '\''ok'\'';\n    }\n    location / {\n        try_files $uri $uri.html $uri/ =404;\n    }\n}\n' > /etc/nginx/conf.d/default.conf
+RUN printf 'server {\n    listen 80;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {\n        access_log off;\n        return 200 '\''ok'\'';\n    }\n    location ~ /\\. {\n        deny all;\n        return 404;\n    }\n    location / {\n        try_files $uri $uri.html $uri/ =404;\n    }\n}\n' > /etc/nginx/conf.d/default.conf
 COPY . /usr/share/nginx/html
 RUN chmod -R a+rX /usr/share/nginx/html
 EXPOSE 80
@@ -465,6 +465,8 @@ RUN sed -ri -e 's!/var/www/!/var/www/html/public!g' /etc/apache2/apache2.conf /e
                 };
                 Some(format!(
 r#"FROM php:8.3-apache
+# Everything in the build context is copied below; keep secrets out of it (.dockerignore).
+# Serve only the public/ directory (DocumentRoot) so project files stay unreachable over HTTP.
 {apache_conf}RUN a2enmod rewrite
 COPY . /var/www/html/
 EXPOSE 80
@@ -475,7 +477,7 @@ EXPOSE 80
     }
 
     pub fn dockerignore() -> &'static str {
-        ".git\n.env*\n.skoci\nnode_modules\ntarget\n__pycache__\n*.log\n.DS_Store\n"
+        ".git\n.env*\n.skoci\nskoci.yaml\nDockerfile\n.dockerignore\n*.pem\n*.key\nid_rsa*\nid_ed25519*\n.npmrc\n.pypirc\n.netrc\n.aws\n.ssh\nnode_modules\ntarget\n__pycache__\n*.log\n.DS_Store\n"
     }
 }
 
