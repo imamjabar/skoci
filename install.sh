@@ -495,7 +495,7 @@ echo -e "${YELLOW}IMPORTANT: Ensure ports 80, 443, and 8443 are also open in you
 # Health Check Wait (up to 20s)
 echo "Waiting for Skoci service to become ready..."
 HEALTHY=0
-for i in $(seq 1 20); do
+for _ in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1; then
     HEALTHY=1
     break
@@ -514,7 +514,7 @@ API_HTTPS_OK=0
 if [ -n "$BASE_DOMAIN" ]; then
   if [ "$TLS_MODE" = "acme" ]; then
     echo "Waiting for HTTPS certificate for skoci.${BASE_DOMAIN} (up to 90 seconds)..."
-    for i in $(seq 1 45); do
+    for _ in $(seq 1 45); do
       if curl -fsS --max-time 5 "https://skoci.${BASE_DOMAIN}/api/health" >/dev/null 2>&1; then
         API_HTTPS_OK=1
         break
@@ -531,7 +531,7 @@ if [ -n "$BASE_DOMAIN" ]; then
 else
   echo "Waiting for pinned control TLS endpoint (up to 20 seconds)..."
   CONTROL_TLS_OK=0
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     # -k is acceptable here because this is a loopback probe for liveness only, not an authentication path.
     if curl -k -fsS --max-time 5 "https://127.0.0.1:8443/api/health" >/dev/null 2>&1; then
       CONTROL_TLS_OK=1
