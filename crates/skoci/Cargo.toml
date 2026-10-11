@@ -1,0 +1,26 @@
+[package]
+name = "skoci"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "skoci"
+path = "src/main.rs"
+
+[dependencies]
+skoci-api = { workspace = true }
+skoci-core = { workspace = true }
+skoci-proxy = { workspace = true }
+skoci-node = { workspace = true }
+skoci-control = { workspace = true }
+skoci-client = { workspace = true }
+skoci-cli = { workspace = true }
+skoci-mcp = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }

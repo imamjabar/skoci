@@ -1,0 +1,11 @@
+version: 1
+preview:
+  deploy: auto
+  rollback: auto
+  db_restore: approve
+  delete: approve
+production:
+  deploy: approve
+  rollback: auto
+  db_restore: approve
+  delete: approve

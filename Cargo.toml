@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/skoci-api",
+    "crates/skoci-core",
+    "crates/skoci-proxy",
+    "crates/skoci-node",
+    "crates/skoci-control",
+    "crates/skoci-client",
+    "crates/skoci-cli",
+    "crates/skoci-mcp",
+    "crates/skoci",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Imam Jabar <imam@zen.ai.id>"]
+license = "Apache-2.0"
+repository = "https://github.com/zen-ai/skoci"
+homepage = "https://zen.ai.id/skoci"
+readme = "README.md"
+
+[workspace.dependencies]
+# Internal workspace crates
+skoci-api = { path = "crates/skoci-api", version = "0.1.0" }
+skoci-core = { path = "crates/skoci-core", version = "0.1.0" }
+skoci-proxy = { path = "crates/skoci-proxy", version = "0.1.0" }
+skoci-node = { path = "crates/skoci-node", version = "0.1.0" }
+skoci-control = { path = "crates/skoci-control", version = "0.1.0" }
+skoci-client = { path = "crates/skoci-client", version = "0.1.0" }
+skoci-cli = { path = "crates/skoci-cli", version = "0.1.0" }
+skoci-mcp = { path = "crates/skoci-mcp", version = "0.1.0" }
+
+# Common async & network
+tokio = { version = "1.40", features = ["full"] }
+hyper = { version = "1.4", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# CLI & UX
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Logging & Telemetry
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Storage & Crypto
+rusqlite = { version = "0.32", features = ["bundled"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+parking_lot = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+libc = "0.2"
+
+# Error & Utility
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = "0.1"

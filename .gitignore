@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+Cargo.lock
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+.notes
+.notes.md
+.plan.md
+plan.md
+REFERENCES/
+REFERENCES

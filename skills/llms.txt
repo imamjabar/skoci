@@ -1,0 +1,39 @@
+# Skoci — Ultra-lightweight Agent-Native Deployment Platform
+> Self-hosted deploy platform: AI agents deploy, humans validate via dashboard, apps run on user VPS.
+
+## Key Facts
+- Single Rust binary (<20MB idle RAM target)
+- Zero shell string interpolation (safe against prompt injection)
+- CLI & MCP tools return structured JSON with {code, message, fix} error format
+- Secrets are encrypted at rest with node keys and never returned to model context
+- Production actions require human approval
+
+## Agent Workflow
+1. Initialize: `skoci init` detects framework, creates `skoci.yaml` & `Dockerfile`
+2. Configure: Add domain and environment variable names (not secret values)
+3. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
+4. Deploy to Preview: `skoci deploy --env preview`
+5. Verify: Check health check & smoke test in output
+6. Request Production Promotion: `skoci promote "<reason>"` (returns request ID for human approval)
+7. Check Status & Logs: `skoci status` and `skoci logs`
+
+## CLI Commands
+- `skoci init [--app <name>]`
+- `skoci deploy [--env preview|production] [--force]`
+- `skoci status [<app>]`
+- `skoci logs [<app>] [--tail 100]`
+- `skoci secret set <KEY> <VALUE>`
+- `skoci secret list`
+- `skoci rollback [<version>]`
+- `skoci promote "<reason>"`
+- `skoci doctor`
+- `skoci db backup <service>`
+- `skoci db restore <service> <backup_id>`
+
+## MCP Tools
+MCP server provides:
+- `skoci_init`, `skoci_deploy`, `skoci_status`, `skoci_logs`
+- `skoci_secret_set`, `skoci_secret_list`
+- `skoci_rollback`, `skoci_promote`, `skoci_doctor`
+- `skoci_db_backup`, `skoci_db_restore`
+Note: `approve` and `upgrade` are strictly restricted to humans.

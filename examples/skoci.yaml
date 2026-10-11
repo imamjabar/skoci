@@ -1,0 +1,26 @@
+version: 1
+app: toko
+server: vps-a
+build:
+  mode: server          # server (default) | local
+  dockerfile: Dockerfile
+run:
+  port: 3000
+  health: /healthz
+  memory: 256m
+domains:
+  - toko.example.com
+env:
+  public:
+    - NODE_ENV
+  secrets:
+    - DATABASE_URL
+    - API_KEY
+services:
+  db:
+    engine: postgres
+    version: "16"
+    backup:
+      schedule: "0 2 * * *"
+      keep: 7
+      to: local
