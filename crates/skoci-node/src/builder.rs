@@ -97,6 +97,13 @@ impl ImageBuilder {
             Ok(())
         } else {
             let details = last_lines.into_iter().collect::<Vec<_>>().join("\n");
+            if details.to_ascii_lowercase().contains("no space left on device") {
+                return Err(SkociError::new(
+                    "build_failed",
+                    details,
+                    "The server disk is full. Free space with: sudo docker builder prune -af && sudo docker image prune -f, then deploy again",
+                ));
+            }
             Err(SkociError::build_failed(details))
         }
     }

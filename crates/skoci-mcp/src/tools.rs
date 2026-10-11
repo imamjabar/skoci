@@ -238,7 +238,7 @@ pub async fn call_tool(
     match name {
         "skoci_init" => {
             let app = args.get("app").and_then(|v| v.as_str());
-            let res = skoci_cli::init_project(&default_path, app).map(|(r, _)| r);
+            let res = skoci_cli::init_project(&default_path, app);
             wrap_api_response(res.map(|r| ApiResponse::ok(r, "Project successfully initialized")))
         }
 

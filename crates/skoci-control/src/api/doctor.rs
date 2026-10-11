@@ -34,6 +34,25 @@ pub async fn handle_doctor(
         },
     });
 
+    let buildx_ok = tokio::process::Command::new("docker")
+        .args(["buildx", "version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    checks.push(DoctorCheck {
+        name: "docker_buildx".to_string(),
+        passed: buildx_ok,
+        message: if buildx_ok {
+            "Docker buildx plugin is installed".to_string()
+        } else {
+            "Docker buildx plugin is missing; image builds will fail".to_string()
+        },
+        fix: (!buildx_ok).then(|| "Install it: sudo apt-get install -y docker-buildx-plugin".to_string()),
+    });
+
     // 2. Proxy HTTP listening
     let probe_addr = SocketAddr::from(([127, 0, 0, 1], state.config.http_bind.port()));
     let http_ok = matches!(
@@ -123,13 +142,34 @@ pub async fn handle_doctor(
         },
         fix: if !writable {
             Some(format!(
-                "Check data directory permissions: sudo chown -R $USER '{}'",
+                "Fix ownership: sudo chown -R skoci:skoci '{}'",
                 state.config.data_dir.display()
             ))
         } else {
             None
         },
     });
+
+    match free_disk_bytes(&state.config.data_dir) {
+        Some(free) => {
+            let free_gb = free as f64 / 1_073_741_824.0;
+            let ok = free_gb >= MIN_FREE_DISK_GB;
+            checks.push(DoctorCheck {
+                name: "disk_space".to_string(),
+                passed: ok,
+                message: format!("{free_gb:.1} GB free on the data disk"),
+                fix: (!ok).then(|| {
+                    "Builds need space. Free some with: sudo docker builder prune -af && sudo docker image prune -f".to_string()
+                }),
+            });
+        }
+        None => checks.push(DoctorCheck {
+            name: "disk_space".to_string(),
+            passed: false,
+            message: "Could not read free disk space".to_string(),
+            fix: Some("Check the disk with: df -h".to_string()),
+        }),
+    }
 
     // 5. SQLite PRAGMA quick_check
     let db_ok = state.db.quick_check().unwrap_or(false);
@@ -173,6 +213,23 @@ pub async fn handle_doctor(
         idle_ram_mb: ram_mb,
         checks,
     }))
+}
+
+const MIN_FREE_DISK_GB: f64 = 2.0;
+
+fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: c_path is a valid NUL-terminated string and stat points to writable memory.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: statvfs returned 0, so the struct is initialized.
+    let stat = unsafe { stat.assume_init() };
+    #[allow(clippy::unnecessary_cast)]
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
 fn get_idle_ram_mb() -> f32 {

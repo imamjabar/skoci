@@ -9,6 +9,8 @@ pub struct InitResponse {
     pub app_name: String,
     /// Files that already existed and were left untouched.
     pub skipped_files: Vec<String>,
+    /// Detector hints the user or agent should read before deploying (e.g. chosen health path).
+    pub notes: Vec<String>,
 }
 
 /// Returned immediately when a deploy, rollback or promotion job is queued.

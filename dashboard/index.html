@@ -1557,12 +1557,6 @@
         document.getElementById('detail-progress-percent').textContent = '100%';
         const urls = (info.evidence && info.evidence.urls) ? info.evidence.urls : [];
         showDeploymentResult(urls);
-        DEPLOY_STAGES.forEach(s => {
-          if (!stageStateMap[s.id] || stageStateMap[s.id] === 'pending' || stageStateMap[s.id] === 'running') {
-            stageStateMap[s.id] = 'ok';
-          }
-        });
-        renderStageSteps();
       } else if (info.status === 'failed') {
         document.getElementById('detail-progress-bar').style.width = '100%';
         document.getElementById('detail-progress-percent').textContent = '100%';
@@ -1692,12 +1686,15 @@
           const badge = document.getElementById('detail-status-badge');
           badge.textContent = 'live';
           badge.className = 'status-badge healthy';
+          const anyStepReported = DEPLOY_STAGES.some(s => stageStateMap[s.id] && stageStateMap[s.id] !== 'pending');
           DEPLOY_STAGES.forEach(s => {
-            if (!stageStateMap[s.id] || stageStateMap[s.id] === 'pending' || stageStateMap[s.id] === 'running') {
-              stageStateMap[s.id] = 'ok';
-            }
+            if (stageStateMap[s.id] === 'running') stageStateMap[s.id] = 'ok';
           });
           renderStageSteps();
+          if (!anyStepReported) {
+            const logPre = document.getElementById('detail-log-output');
+            logPre.textContent += 'Step-by-step details are kept for 10 minutes after a deployment finishes.\n';
+          }
           if (event.result && event.result.urls) {
             showDeploymentResult(event.result.urls);
           }

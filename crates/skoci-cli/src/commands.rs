@@ -55,7 +55,7 @@ pub fn resolve_app(provided: Option<String>) -> SkociResult<String> {
     resolve_app_in(Path::new("."), provided.as_deref())
 }
 
-pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> SkociResult<(InitResponse, Vec<String>)> {
+pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> SkociResult<InitResponse> {
     let path = path.as_ref();
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|e| {
@@ -153,15 +153,13 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
         let _ = writeln!(f, ".env.skoci");
     }
 
-    Ok((
-        InitResponse {
-            detected_framework: detection.framework.name().to_string(),
-            created_files,
-            app_name,
-            skipped_files,
-        },
-        detection.notes,
-    ))
+    Ok(InitResponse {
+        detected_framework: detection.framework.name().to_string(),
+        created_files,
+        app_name,
+        skipped_files,
+        notes: detection.notes,
+    })
 }
 
 fn step_number(stage: DeployStage) -> Option<usize> {
@@ -475,7 +473,7 @@ pub async fn run_command(
 
         Commands::Init { app, path } => {
             match init_project(&path, app.as_deref()) {
-                Ok((res, notes)) => {
+                Ok(res) => {
                     if json {
                         output::print_json(&ApiResponse::ok(res, "Project successfully initialized"));
                     } else {
@@ -485,15 +483,16 @@ pub async fn run_command(
                         if !res.skipped_files.is_empty() {
                             println!("Files skipped (exist): {}", res.skipped_files.join(", "));
                         }
-                        if !notes.is_empty() {
+                        if !res.notes.is_empty() {
                             println!("\nNotes:");
-                            for note in &notes {
+                            for note in &res.notes {
                                 println!("  • {}", note);
                             }
                         }
-                        println!("  1. Review and adjust skoci.yaml if needed");
-                        println!("  2. Run `skoci connect --server <url> --token <token>` to connect to VPS");
-                        println!("  3. Run `skoci deploy` to launch application");
+                        println!("\nNext steps:");
+                        println!("  1. Review skoci.yaml (port, health path, domains)");
+                        println!("  2. Connect once: skoci connect --server <url> --token <token>");
+                        println!("  3. Deploy: skoci deploy");
                     }
                     0
                 }

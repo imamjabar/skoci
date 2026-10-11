@@ -302,3 +302,67 @@ async fn test_live_proxy_end_to_end() {
         "body was: {text_403}, expected to contain: {expected_msg}"
     );
 }
+
+#[tokio::test]
+async fn test_websocket_upgrade_is_tunneled() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut s, _) = upstream.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let mut req = Vec::new();
+        while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).await.unwrap();
+            req.extend_from_slice(&buf[..n]);
+        }
+        let head = String::from_utf8_lossy(&req).to_ascii_lowercase();
+        assert!(head.contains("upgrade: websocket"));
+        s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+            .await
+            .unwrap();
+        let n = s.read(&mut buf).await.unwrap();
+        s.write_all(&buf[..n]).await.unwrap();
+    });
+
+    let router = ProxyRouter::new();
+    router
+        .upsert_route(Route {
+            app: "ws".to_string(),
+            env: "production".to_string(),
+            hosts: vec!["ws.local".to_string()],
+            target: upstream_addr,
+            version: "v1".to_string(),
+        })
+        .await;
+    let status = start_proxy(
+        ProxyConfig {
+            http_bind: "127.0.0.1:0".parse().unwrap(),
+            https_bind: "127.0.0.1:0".parse().unwrap(),
+            acme: None,
+        },
+        router,
+    )
+    .await;
+    let proxy_addr = status.http_addr().unwrap();
+
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    client
+        .write_all(b"GET /socket HTTP/1.1\r\nHost: ws.local\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let mut resp = Vec::new();
+    while !resp.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = client.read(&mut buf).await.unwrap();
+        assert!(n > 0, "proxy closed the connection before answering the upgrade");
+        resp.extend_from_slice(&buf[..n]);
+    }
+    assert!(String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 101"));
+
+    client.write_all(b"frame-bytes").await.unwrap();
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), client.read(&mut buf))
+        .await
+        .expect("echo through the upgraded tunnel")
+        .unwrap();
+    assert_eq!(&buf[..n], b"frame-bytes");
+}
