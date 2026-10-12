@@ -157,6 +157,7 @@ Operational Rules:
 5. Production deployments require genuine custom domains (magic DNS *.sslip.io is rejected). Verify DNS before deploying with `skoci domain check <host>`.
 6. Treat `degraded` deployments as a failure to investigate: check logs with `skoci logs --tail 100 --json` and never promote a degraded version.
 7. Never print, log, or commit tokens (`sk_agent_*`, `sk_master_*`).
+```
 
 ---
 

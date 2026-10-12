@@ -44,6 +44,9 @@ skoci server setup --host <server-public-ip> --user root \
 | `--ssh-copy-id` | Install your SSH public key on a password-only VPS (generates `~/.ssh/id_ed25519` if you have no key), instead of failing. |
 | `--harden-ssh` | Writes `/etc/ssh/sshd_config.d/00-skoci-harden.conf` disabling password and keyboard-interactive auth and setting `PermitRootLogin prohibit-password`. It sorts ahead of distro drop-ins such as `50-cloud-init.conf` because `sshd` keeps the first value it reads; validated with `sshd -t`, re-checked with `sshd -T`, reverted on failure, and skipped when the account has no `authorized_keys`. |
 | `--setup-ufw` | Allows the SSH port, 80, 443 and 8443, then enables `ufw` with default deny incoming. Skipped with instructions if `ufw` is not installed. |
+| `--port <n>` | SSH port of the target host (default `22`). Also used for the firewall rule written by `--setup-ufw`. |
+| `--ssh-key <path>` | SSH private key to authenticate with, instead of your agent's default identity. |
+| `--yes` / `-y` | Do not prompt for confirmation; required when running setup from a script or an agent. |
 
 ### Option B: 1-Line Command on the Server
 Alternatively, log in to your Linux server terminal and run:

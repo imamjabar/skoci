@@ -39,3 +39,6 @@ jobs:
           if command -v shellcheck >/dev/null 2>&1; then
             shellcheck install.sh
           fi
+
+      - name: Documentation gate
+        run: python3 scripts/check_docs.py

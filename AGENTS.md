@@ -27,3 +27,9 @@
    - Async runtime: Tokio.
    - Error handling: `thiserror` in libraries, structured `SkociError` in `skoci-api`.
    - Keep crate boundaries clean and dependencies minimal.
+
+6. **Documentation Ships With the Release:**
+   - `README.md` and `README.id.md` MUST be updated in every release; the Indonesian file mirrors the English one heading for heading.
+   - A new or changed CLI flag or subcommand is not done until it appears in the READMEs, `docs/`, or `skills/llms.txt`.
+   - Version samples in `docs/` track the workspace version in `Cargo.toml`.
+   - `scripts/check_docs.py` enforces all of the above on every push; the release workflow additionally runs it with `--since <previous tag>` and refuses to build a tag whose READMEs are unchanged.
