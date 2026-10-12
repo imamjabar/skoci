@@ -50,6 +50,7 @@ MAGIC_DNS=0
 HARDEN_SSH=0
 SETUP_UFW=0
 CLI_SSH_PORT=""
+ALLOW_MAGIC_DNS_PRODUCTION=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain)
@@ -108,6 +109,10 @@ while [ $# -gt 0 ]; do
         exit 1
       fi
       ;;
+    --allow-magic-dns-production)
+      ALLOW_MAGIC_DNS_PRODUCTION=1
+      shift
+      ;;
     -h|--help)
       echo "Usage: install.sh [options]"
       echo ""
@@ -121,6 +126,7 @@ while [ $# -gt 0 ]; do
       echo "  --harden-ssh        Harden SSH daemon (disable password auth)"
       echo "  --setup-ufw         Configure and enable UFW firewall"
       echo "  --ssh-port <port>   SSH port for firewall rules and hardening"
+      echo "  --allow-magic-dns-production  Allow magic-DNS hostnames in production"
       echo "  -h, --help          Show this help message"
       exit 0
       ;;
@@ -437,6 +443,10 @@ ENV_CONTENT="${ENV_CONTENT}
 SKOCI_TLS=${TLS_MODE}
 SKOCI_PUBLIC_IP=${PUBLIC_IP}
 SKOCI_CONTROL_TLS_BIND=0.0.0.0:8443"
+if [ "$ALLOW_MAGIC_DNS_PRODUCTION" = "1" ]; then
+  ENV_CONTENT="${ENV_CONTENT}
+SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true"
+fi
 
 echo "$ENV_CONTENT" | $SUDO tee /etc/skoci/skoci.env >/dev/null
 if [ -n "$CLI_EMAIL" ]; then
@@ -694,6 +704,9 @@ if [ -n "$PIN" ]; then
 fi
 echo -e "• ${BOLD}Master Token:${NC}         Stored securely at /etc/skoci/master_token"
 echo -e "                          (Read with: ${BOLD}sudo cat /etc/skoci/master_token${NC})"
+if [ "$ALLOW_MAGIC_DNS_PRODUCTION" = "1" ]; then
+  echo -e "• ${YELLOW}Warning:${NC}              Magic-DNS hostnames are allowed in production (--allow-magic-dns-production enabled)"
+fi
 
 if [ -n "$PIN" ]; then
   echo -e "\n${BLUE}${BOLD}┌────────────────────────────────────────────────────────────────────────────┐${NC}"
@@ -726,7 +739,4 @@ echo -e "   Navigate to your project repository:"
 echo -e "   ${BOLD}skoci init${NC}"
 echo -e "   ${BOLD}skoci deploy${NC}"
 
-echo -e "\n${BOLD}Tip (Zero-SSH Setup):${NC}"
-echo -e "   Alternatively, install and connect automatically from your laptop:"
-echo -e "   ${BOLD}skoci server setup --host ${PUBLIC_IP} --user ${INVOKING_USER}${NC}"
 echo -e "\n${GREEN}Done! Your app is ready to deploy.${NC}"

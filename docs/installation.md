@@ -47,6 +47,7 @@ skoci server setup --host <server-public-ip> --user root \
 | `--port <n>` | SSH port of the target host (default `22`). Also used for the firewall rule written by `--setup-ufw`. |
 | `--ssh-key <path>` | SSH private key to authenticate with, instead of your agent's default identity. |
 | `--yes` / `-y` | Do not prompt for confirmation; required when running setup from a script or an agent. |
+| `--allow-magic-dns-production` | Operator override: write `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` to `/etc/skoci/skoci.env` to allow `sslip.io` hostnames for production deploys without editing files over SSH. Prints a warning during setup because magic-DNS hostnames are refused by default in production. |
 
 ### Option B: 1-Line Command on the Server
 Alternatively, log in to your Linux server terminal and run:
@@ -67,7 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 | `--domain <domain>` | *(empty)* | Base domain for routing apps (`*.domain`) and the dashboard (`skoci.domain`). |
 | `--email <email>` | *(empty)* | Contact email for Let's Encrypt ACME certificate registration. |
 | `--no-tls` | *(ACME TLS enabled)* | Disable automatic HTTPS (serve plain HTTP only). |
-| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.4.4`). |
+| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.4.5`). |
+| `--allow-magic-dns-production` | *(disabled)* | Operator override: allow magic-DNS hostnames in production by writing `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` to `/etc/skoci/skoci.env`. |
 | `--client-only` | *(false on Linux)* | Install client binary only without server daemon (default on macOS). |
 
 > **Why is Magic DNS (`sslip.io`) opt-in only?**  
@@ -79,7 +81,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 1. **Docker Engine:** Installed automatically via official `get.docker.com` script if not already present.
 2. **System User `skoci`:** Runs under a non-root system user `skoci` added to the `docker` group.
 3. **Data Directories & TLS Keys:**
-   - `/etc/skoci` (permissions `0750`, owned by `root:skoci`) for environment configuration and server settings.
+   - `/etc/skoci` (permissions `0750`, owned by `root:skoci`) for environment configuration and server settings. Server daemon settings are stored in `/etc/skoci/skoci.env` (read by systemd). Boolean values in `/etc/skoci/skoci.env` (such as `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION` and `SKOCI_ACME_STAGING`) accept `true/false`, `1/0`, `yes/no`, and `on/off` (case-insensitive).
    - `/var/lib/skoci` (permissions `0750`, owned by `skoci:skoci`) for SQLite database `skoci.db`, node encryption key, and backups.
    - `/var/lib/skoci/tls/control.key` (permissions `0600`) and `/var/lib/skoci/tls/control.pin` (permissions `0644`) for the stable SPKI-pinned TLS control identity.
 4. **Master Admin Token:** Stored securely at `/etc/skoci/master_token` (permissions `0640`). Never printed casually to standard output.
@@ -136,7 +138,7 @@ Example output:
 ```json
 {
   "healthy": true,
-  "version": "0.4.4",
+  "version": "0.4.5",
   "idle_ram_mb": 11.4,
   "checks": [
     { "name": "docker_daemon", "passed": true, "message": "Docker Engine is active" },

@@ -71,6 +71,7 @@ Useful setup flags for provisioning a fresh server:
 * `--ssh-copy-id`: install your SSH public key on a password-only VPS (generates `~/.ssh/id_ed25519` if you have no key), instead of failing.
 * `--harden-ssh`: writes `/etc/ssh/sshd_config.d/00-skoci-harden.conf` disabling password and keyboard-interactive auth and setting `PermitRootLogin prohibit-password`. The file sorts ahead of distro drop-ins such as `50-cloud-init.conf`, because `sshd` keeps the first value it reads. Validated with `sshd -t` and re-checked with `sshd -T` before reload, reverted if either fails, and skipped entirely when the account has no `authorized_keys`.
 * `--setup-ufw`: allows the SSH port, 80, 443 and 8443, then enables `ufw` with default deny incoming. Skipped with instructions if `ufw` is not installed.
+* `--allow-magic-dns-production`: writes `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` to `/etc/skoci/skoci.env` so the operator can demo production deployments on `sslip.io` hostnames without hand-editing configuration over SSH. Prints a warning during setup because magic-DNS hostnames are refused by default in production (the zone owner can obtain valid certificates for that hostname, and all users share Let's Encrypt rate limits).
 
 Or install directly on your 64-bit Linux server terminal (ensure ports **80**, **443**, and **8443** are open in your firewall):
 ```bash
@@ -97,8 +98,11 @@ Profiles are saved in `~/.config/skoci/servers.json` (0600) and `.skoci/env` (06
 Inside your project repository:
 ```bash
 skoci init
+skoci validate
 skoci deploy --env preview
 ```
+`skoci init` determines the default app name from project manifests (`package.json` `name` stripping `@scope/`, `Cargo.toml` `[package] name`, `pyproject.toml` `[project]`/`[tool.poetry] name`), falling back to the directory name. The final name is validated upfront (1–40 lowercase alphanumeric characters and hyphens), failing at `init` with actionable remediation rather than at deploy time as `scope_violation`.
+
 `skoci init` keeps your project root clean — everything it generates lives in `.skoci/`:
 ```
 your-project/
@@ -110,7 +114,9 @@ your-project/
     ├── ignore        # upload filter; your .dockerignore is used when this is absent
     └── env           # server URL, token, pin (0600, never uploaded)
 ```
-A `skoci.yaml` or `Dockerfile` written by an earlier version, or by you, is still read from the project root.
+Generated Dockerfiles delete `.skoci/` from the built image (it is present in the build context because the server needs configuration) and run as a non-root user (`node`, `appuser`) where the base image allows it. `.skoci/env` was never uploaded and remains excluded. A `skoci.yaml` or `Dockerfile` written by an earlier version, or by you, is still read from the project root.
+
+`skoci validate [path]` (`--json` supported) validates `.skoci/skoci.yaml` offline with zero network calls and no deployment. It verifies config path, app name, Dockerfile/context, declared domains and preview domains, and required secrets. Exits 0 on valid, 1 on invalid with structured `{code, message, fix}`.
 
 ### 5. Promote to Production & Approve
 Production needs a domain you own. Point an A record at the server, add it to `.skoci/skoci.yaml` under `domains:`, verify it, then request the promotion:
@@ -118,13 +124,13 @@ Production needs a domain you own. Point an A record at the server, add it to `.
 skoci domain check app.yourdomain.com
 skoci promote "All preview tests passed, ready for production"
 ```
-Run from a scoped agent token, the command stops at exit code 2 and prints a `request_id`; the promotion waits for a human. Approve it via the web dashboard at `https://<server-public-ip>:8443` or on the server:
+Run from a scoped agent token (`sk_agent_*`), the command stops at exit code 2, reports status `pending_approval`, and prints `Request ID: appr_…`. The agent cannot approve its own request and must surface the request ID to a human operator. Approve it via the web dashboard at `https://<server-public-ip>:8443` or on the server:
 ```bash
 sudo skoci approve <request_id>
 ```
 The master token on the server is the human: it promotes directly, without an approval request.
 
-`skoci promote` refuses magic-DNS hostnames (`sslip.io`, `nip.io`) in production because the zone owner can obtain valid certificates for your hostname. For a throwaway demo the operator can override it ON THE SERVER with `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=1` in `/etc/skoci/skoci.env` + `systemctl restart skoci`. This is strictly an operator decision on the server and there is deliberately no client-side flag.
+`skoci promote` refuses magic-DNS hostnames (`sslip.io`, `nip.io`) in production because the zone owner can obtain valid certificates for your hostname. For a throwaway demo the operator can override it ON THE SERVER via `skoci server setup --allow-magic-dns-production` or by setting `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env` + `systemctl restart skoci`. (Boolean server settings in `/etc/skoci/skoci.env` accept `true/false`, `1/0`, `yes/no`, and `on/off`, case-insensitive). This is strictly an operator decision on the server and there is deliberately no client-side flag.
 
 ### 6. Moving Off sslip.io to a Custom Domain
 Once you have registered a domain name, configure it as your server's primary base domain:

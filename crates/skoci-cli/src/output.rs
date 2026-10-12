@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use skoci_api::error::SkociError;
 use skoci_api::models::ApiResponse;
 use skoci_api::responses::{
@@ -127,6 +127,46 @@ pub fn render_doctor(doctor: &DoctorResponse) {
             if !check.passed {
                 println!("    Fix: {}", fix);
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateResponse {
+    pub config_path: String,
+    pub app: String,
+    pub domains: Vec<String>,
+    pub preview_domains: Vec<String>,
+    pub dockerfile: String,
+    pub context: String,
+    pub required_secrets: Vec<String>,
+}
+
+pub fn render_validate(val: &ValidateResponse) {
+    println!("Configuration : Valid");
+    println!("Config Path   : {}", val.config_path);
+    println!("App Name      : {}", val.app);
+    println!("Dockerfile    : {}", val.dockerfile);
+    println!("Build Context : {}", val.context);
+
+    println!("\nDomains:");
+    if val.domains.is_empty() {
+        println!("  Production : (none)");
+    } else {
+        println!("  Production : {}", val.domains.join(", "));
+    }
+    if val.preview_domains.is_empty() {
+        println!("  Preview    : (none)");
+    } else {
+        println!("  Preview    : {}", val.preview_domains.join(", "));
+    }
+
+    println!("\nRequired Secrets:");
+    if val.required_secrets.is_empty() {
+        println!("  (none declared)");
+    } else {
+        for secret in &val.required_secrets {
+            println!("  • {}", secret);
         }
     }
 }

@@ -36,6 +36,11 @@ pub enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    #[command(about = "Validate project configuration offline")]
+    Validate {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 
     #[command(about = "Deploy project to Skoci server")]
     Deploy {

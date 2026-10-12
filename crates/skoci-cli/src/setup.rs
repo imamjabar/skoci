@@ -24,6 +24,7 @@ pub struct SetupOptions {
     pub harden_ssh: bool,
     pub setup_ufw: bool,
     pub assume_yes: bool,
+    pub allow_magic_dns_production: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +110,9 @@ pub fn build_installer_flags(opts: &SetupOptions) -> Vec<String> {
     let mut flags = Vec::new();
     if opts.magic_dns {
         flags.push("--magic-dns".to_string());
+    }
+    if opts.allow_magic_dns_production {
+        flags.push("--allow-magic-dns-production".to_string());
     }
     if let Some(domain) = &opts.domain {
         flags.push("--domain".to_string());
@@ -863,6 +867,9 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
         } else {
             println!("  Dashboard in browser : none (run 'skoci domain set <host> --primary' to enable a browser-trusted dashboard)");
         }
+        if opts.allow_magic_dns_production {
+            println!("  Warning              : Magic-DNS hostnames are allowed in production (--allow-magic-dns-production enabled)");
+        }
     }
 
     let base_domain = opts.domain.clone();
@@ -1043,12 +1050,20 @@ mod tests {
             harden_ssh: false,
             setup_ufw: false,
             assume_yes: false,
+            allow_magic_dns_production: false,
         };
         assert_eq!(build_installer_flags(&default_opts), Vec::<String>::new());
 
         let mut magic_opts = default_opts.clone();
         magic_opts.magic_dns = true;
         assert_eq!(build_installer_flags(&magic_opts), vec!["--magic-dns"]);
+
+        let mut allow_magic_prod_opts = default_opts.clone();
+        allow_magic_prod_opts.allow_magic_dns_production = true;
+        assert_eq!(
+            build_installer_flags(&allow_magic_prod_opts),
+            vec!["--allow-magic-dns-production"]
+        );
 
         let mut domain_email_opts = default_opts.clone();
         domain_email_opts.domain = Some("example.com".into());
@@ -1097,6 +1112,7 @@ mod tests {
             harden_ssh: false,
             setup_ufw: false,
             assume_yes: false,
+            allow_magic_dns_production: false,
         };
 
         let cmd_parts = ["sudo", "skoci", "server", "fingerprint", "--json"];
@@ -1130,6 +1146,7 @@ mod tests {
             harden_ssh: false,
             setup_ufw: false,
             assume_yes: false,
+            allow_magic_dns_production: false,
         };
         let args = build_installer_ssh_args(&opts);
         let target = format!("{}@{}", opts.user, opts.host);

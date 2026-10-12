@@ -1,8 +1,8 @@
 use futures_util::StreamExt;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::{
-    ApiResponse, LEGACY_CONFIG_PATH, PROJECT_CONFIG_PATH, PROJECT_DIR, PROJECT_DOCKERFILE_PATH,
-    PROJECT_IGNORE_PATH,
+    ApiResponse, LEGACY_CONFIG_PATH, MAX_APP_NAME_LEN, PROJECT_CONFIG_PATH, PROJECT_DIR,
+    PROJECT_DOCKERFILE_PATH, PROJECT_IGNORE_PATH,
 };
 use skoci_api::requests::{
     ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
@@ -11,8 +11,8 @@ use skoci_api::requests::{
 };
 use skoci_api::responses::{DeployResponse, DeployStage, InitResponse, StageStatus};
 use skoci_client::SkociClient;
-use skoci_core::config::ConfigLoader;
-use skoci_core::detector::ProjectDetector;
+use skoci_core::config::{is_valid_app_name, ConfigLoader, RESERVED_APP_NAMES};
+use skoci_core::detector::{normalize_app_name_lossy, ProjectDetector};
 use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Instant;
@@ -20,7 +20,7 @@ use std::time::Instant;
 use crate::args::{
     AppCommands, Commands, DbCommands, DomainCommands, SecretCommands, TokenCommands,
 };
-use crate::output;
+use crate::output::{self, ValidateResponse};
 use crate::progress::DeployProgressTracker;
 pub fn error_exit_code(err: &SkociError) -> i32 {
     match err.code.as_str() {
@@ -217,6 +217,44 @@ async fn verify_version_compatibility(client: &SkociClient, json: bool) -> Resul
     }
 }
 
+fn validate_app_name_for_init(app_name: &str) -> SkociResult<()> {
+    if is_valid_app_name(app_name) {
+        return Ok(());
+    }
+
+    let rule_broken = if app_name.is_empty() {
+        "app name cannot be empty"
+    } else if app_name.len() > MAX_APP_NAME_LEN {
+        "app name exceeds 40-character limit"
+    } else if RESERVED_APP_NAMES.contains(&app_name) {
+        "app name is reserved (skoci, api, www, admin, dashboard)"
+    } else if app_name.ends_with("-preview") {
+        "app name cannot end with '-preview' suffix"
+    } else if app_name.contains("--") {
+        "app name cannot contain consecutive hyphens ('--')"
+    } else if app_name.starts_with('-') || app_name.ends_with('-') {
+        "app name cannot start or end with a hyphen"
+    } else if !app_name
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        "app name must start with a lowercase letter or digit"
+    } else {
+        "app name contains invalid characters (only lowercase alphanumeric and hyphens allowed)"
+    };
+
+    let fix = format!(
+        "Pass a valid app name with 'skoci init --app <name>'. Rule broken: {rule_broken} (must be 1-40 chars of [a-z0-9-], starting with a letter or digit, no '--', no trailing '-', no '-preview' suffix, and not reserved)"
+    );
+
+    Err(SkociError::config_invalid(
+        format!("Invalid app name '{app_name}': {rule_broken}"),
+        fix,
+    ))
+}
+
 pub fn init_project(
     path: impl AsRef<Path>,
     app_override: Option<&str>,
@@ -233,15 +271,23 @@ pub fn init_project(
 
     let app_name = if let Some(app) = app_override {
         app.trim().to_string()
+    } else if let Some(suggested) = ProjectDetector::suggest_app_name(path) {
+        suggested
     } else {
         path.canonicalize()
             .ok()
             .and_then(|p| {
                 p.file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase().replace(['_', ' '], "-"))
+                    .map(|n| normalize_app_name_lossy(&n.to_string_lossy()))
             })
-            .unwrap_or_else(|| "app".to_string())
+            .or_else(|| {
+                path.file_name()
+                    .map(|n| normalize_app_name_lossy(&n.to_string_lossy()))
+            })
+            .unwrap_or_default()
     };
+
+    validate_app_name_for_init(&app_name)?;
 
     let detection = ProjectDetector::detect(path);
 
@@ -325,6 +371,28 @@ pub fn init_project(
         app_name,
         skipped_files,
         notes: detection.notes,
+    })
+}
+
+pub fn validate_project(path: impl AsRef<Path>) -> SkociResult<ValidateResponse> {
+    let path = path.as_ref();
+    let config_path = ConfigLoader::locate_config(path).ok_or_else(|| {
+        SkociError::config_invalid(
+            "skoci.yaml file not found",
+            "Run 'skoci init' in your project root or pass a valid directory",
+        )
+    })?;
+
+    let cfg = ConfigLoader::load_config(&config_path)?;
+
+    Ok(ValidateResponse {
+        config_path: config_path.display().to_string(),
+        app: cfg.app,
+        domains: cfg.domains,
+        preview_domains: cfg.preview_domains,
+        dockerfile: cfg.build.dockerfile,
+        context: cfg.build.context,
+        required_secrets: cfg.env.secrets,
     })
 }
 
@@ -512,7 +580,7 @@ pub async fn stream_events_and_render(
             } else {
                 eprintln!("Smoke test did not pass");
             }
-            eprintln!("Version: {}  Duration: {:.1}s", resp.version, dur);
+            eprintln!("Version: {}  ID: {}  Duration: {:.1}s", resp.version, resp.deployment_id, dur);
             eprintln!("\nHints:");
             eprintln!("  skoci logs {}", resp.app);
             eprintln!("  skoci status {}", resp.app);
@@ -542,7 +610,7 @@ pub async fn stream_events_and_render(
                 );
                 println!("  A new certificate usually needs under a minute. Re-check with: skoci status {}", resp.app);
             }
-            println!("Version: {}  Duration: {:.1}s", resp.version, dur);
+            println!("Version: {}  ID: {}  Duration: {:.1}s", resp.version, resp.deployment_id, dur);
             println!("\nHints:");
             println!("  skoci logs {}", resp.app);
             println!("  skoci status {}", resp.app);
@@ -561,6 +629,9 @@ pub async fn stream_events_and_render(
             eprintln!("\n✗ Deployment failed: {}", err.message);
         }
         eprintln!("Fix: {}", err.fix);
+        if let Some(v) = version {
+            eprintln!("Version: {v}");
+        }
         eprintln!("Deployment ID: {deployment_id}  (skoci watch {deployment_id})");
         error_exit_code(&err)
     } else {
@@ -576,7 +647,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
     }
     let client = if !matches!(
         cmd,
-        Commands::Connect { .. } | Commands::Init { .. } | Commands::AgentGuide
+        Commands::Connect { .. }
+            | Commands::Init { .. }
+            | Commands::AgentGuide
+            | Commands::Validate { .. }
     ) {
         let target = match resolve_global(&global) {
             Ok(t) => t,
@@ -805,6 +879,21 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             }
         },
 
+        Commands::Validate { path } => match validate_project(&path) {
+            Ok(res) => {
+                if json {
+                    output::print_json(&ApiResponse::ok(res, "Configuration is valid"));
+                } else {
+                    output::render_validate(&res);
+                }
+                0
+            }
+            Err(err) => {
+                output::print_error(&err, json);
+                1
+            }
+        },
+
         Commands::Deploy {
             env,
             path,
@@ -911,10 +1000,6 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                             mb,
                             packed.files,
                             elapsed.as_secs_f64()
-                        );
-                        eprintln!(
-                            "  Version: {}  ID: {}",
-                            accepted.version, accepted.deployment_id
                         );
                     }
 
@@ -1871,7 +1956,16 @@ Skoci is a secure, deterministic agent-native deployment platform.
    • Exit Code 2: Action requires human approval. Wait for approval or prompt the user to run `skoci approvals` and `skoci approve <id>`.
    • Exit Code 3: Authentication error or quota rate limit (unauthorized, scope_violation, rate_limited).
 
-5. **Agent Security Rules**:
+5. **Promotion & Approval Flow (Exit Code 2)**:
+   • Master token promotes directly without approval.
+   • Scoped agent token (`sk_agent_*`) always produces an approval request with status `pending_approval` and exits 2.
+   • The agent CANNOT approve its own request. There is no auto-approve flag.
+   • When `skoci promote` exits 2 with `pending_approval`, extract and surface `Request ID: appr_…` to the human operator.
+   • The human operator must approve the request on the server by running `skoci approve <id>`.
+   • `skoci approvals --json` lists pending requests under `data[]`.
+   • Note: MCP intentionally exposes only the listing tool (`skoci_approvals`), not approve or reject tools.
+
+6. **Agent Security Rules**:
    • NEVER use raw SSH if the task can be performed via Skoci CLI/API.
    • NEVER display secret values or tokens on console.
    • Use `skoci secret set <KEY> <VALUE>` to inject secure environment variables."#
@@ -2086,5 +2180,131 @@ mod tests {
 
         let _ = std::fs::remove_file(master_file);
         let _ = std::fs::remove_dir_all(project_root);
+    }
+    #[test]
+    fn test_validate_project_valid() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_validate_valid_{unique_id}"));
+        let skoci_dir = root.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        let config_yaml = r#"version: 1
+app: my-test-app
+domains:
+  - my-test-app.example.com
+preview_domains:
+  - preview.example.com
+build:
+  dockerfile: .skoci/Dockerfile
+  context: .
+run:
+  port: 8080
+env:
+  secrets:
+    - DATABASE_URL
+"#;
+        std::fs::write(skoci_dir.join("skoci.yaml"), config_yaml).unwrap();
+
+        let res = validate_project(&root).unwrap();
+        assert_eq!(res.app, "my-test-app");
+        assert_eq!(res.domains, vec!["my-test-app.example.com"]);
+        assert_eq!(res.preview_domains, vec!["preview.example.com"]);
+        assert_eq!(res.dockerfile, ".skoci/Dockerfile");
+        assert_eq!(res.context, ".");
+        assert_eq!(res.required_secrets, vec!["DATABASE_URL"]);
+        assert!(res.config_path.contains("skoci.yaml"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_validate_project_invalid() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_validate_invalid_{unique_id}"));
+        let skoci_dir = root.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        let config_yaml = r#"version: 1
+app: ""
+domains: []
+run:
+  port: 8080
+"#;
+        std::fs::write(skoci_dir.join("skoci.yaml"), config_yaml).unwrap();
+
+        let err = validate_project(&root).unwrap_err();
+        assert_eq!(err.code, "config_invalid");
+        assert!(!err.fix.is_empty());
+        assert_eq!(error_exit_code(&err), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_validate_project_missing_config() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_validate_missing_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = validate_project(&root).unwrap_err();
+        assert_eq!(err.code, "config_invalid");
+        assert!(err.message.contains("skoci.yaml file not found"));
+        assert_eq!(error_exit_code(&err), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_init_project_suggest_app_name_from_package_json() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("belajarpaper_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name": "@myorg/pahampaper-id", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+
+        let res = init_project(&root, None).unwrap();
+        assert_eq!(res.app_name, "pahampaper-id");
+
+        let cfg_content = std::fs::read_to_string(root.join(PROJECT_CONFIG_PATH)).unwrap();
+        assert!(cfg_content.contains("app: pahampaper-id"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_init_project_unnormalisable_dir_name_early_failure() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let base = temp_dir.join(format!("test_unnormalisable_{unique_id}"));
+        let root = base.join("---");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = init_project(&root, None).unwrap_err();
+        assert_eq!(err.code, "config_invalid");
+        assert!(err.fix.contains("skoci init --app <name>"));
+        assert!(!root.join(".skoci").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_init_project_invalid_explicit_app_early_failure() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_explicit_bad_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = init_project(&root, Some("invalid--name")).unwrap_err();
+        assert_eq!(err.code, "config_invalid");
+        assert!(err.fix.contains("skoci init --app <name>"));
+        assert!(err.fix.contains("--"));
+        assert!(!root.join(".skoci").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -69,8 +69,10 @@ Navigate to your application repository directory:
 ```bash
 cd ~/projects/toko
 skoci init
+skoci validate
 skoci deploy --env preview
 ```
+`skoci validate` checks `.skoci/skoci.yaml` offline before deploying.
 
 Your application builds remotely on Docker and goes live with real-time progress streaming.
 ---

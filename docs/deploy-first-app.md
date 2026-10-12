@@ -39,11 +39,20 @@ Skoci automatically detects your application framework:
 
 Databases are only added to `services` when matching dependencies are detected (e.g. `pg`, `psycopg`, `mysql2`, `redis`). `skoci init` prints recommendations (such as chosen health check endpoints) — review them before deploying.
 
+### Default App Name Resolution
+`skoci init` determines the default application name from project manifests in order:
+1. `package.json`: reads the `name` field, stripping any leading `@scope/` prefix.
+2. `Cargo.toml`: reads `[package] name`.
+3. `pyproject.toml`: reads `[project] name` or `[tool.poetry] name`.
+4. Directory name fallback: used only when no manifest defines an application name.
+
+The candidate name is validated upfront (must be 1–40 lowercase alphanumeric characters and hyphens, start with a letter/digit, contain no consecutive hyphens `--`, no trailing hyphen, not end with `-preview`, and not be reserved). An unusable name fails immediately at `init` with an actionable fix, preventing late `scope_violation` errors during deployment.
+
+### Generated Artifacts & Container Sandboxing
 Initialization creates everything inside the `.skoci/` directory:
 1. `.skoci/skoci.yaml`: Declarative contract for your application (lookup falls back to root `skoci.yaml` for older projects).
-2. `.skoci/Dockerfile`: Container image recipe (if not already present; configured via `build.dockerfile: .skoci/Dockerfile`).
-3. `.skoci/ignore`: Upload filter for `skoci deploy` preventing sensitive or unnecessary files from being uploaded (a user's own `.dockerignore` is still honoured when `.skoci/ignore` is absent).
-
+2. `.skoci/Dockerfile`: Container image recipe (if not already present; configured via `build.dockerfile: .skoci/Dockerfile`). Generated Dockerfiles delete `.skoci/` from the built container image (it is present in the build context because the server requires the config) and run as a non-root user (`node` for Node, `appuser` for Python, Rust, and Go) where the base image supports it.
+3. `.skoci/ignore`: Upload filter for `skoci deploy` preventing sensitive or unnecessary files from being uploaded (a user's own `.dockerignore` is still honoured when `.skoci/ignore` is absent). The `.skoci/env` credential file is never uploaded.
 ### Why Your Laptop Does Not Need Docker
 The generated `.skoci/Dockerfile` is just a build recipe. Container compilation runs entirely on your remote VPS. Your local machine or AI agent sandbox only archives the project files and uploads them over HTTPS.
 
@@ -89,9 +98,26 @@ skoci secret set API_KEY "production-secret-key"
 
 Secrets are encrypted with **ChaCha20-Poly1305** using the node key (`/var/lib/skoci/node.key`, generated at installation). Secret values **are never returned to AI agents**, injected via temporary env-files (permissions `0600`, deleted immediately), and redacted in logs.
 
+
 ---
 
-## 5. Deploying to Preview
+## 5. Offline Configuration Validation (`skoci validate`)
+
+Before deploying, validate `.skoci/skoci.yaml` offline with zero network calls:
+
+```bash
+skoci validate
+# Or structured JSON output:
+skoci validate --json
+```
+
+`skoci validate [path]` inspects the configuration path, application name, Dockerfile path, build context, declared production and preview domains, and required secrets.
+
+* **Exit 0 (Valid):** Configuration is well-formed and passes all rule checks.
+* **Exit 1 (Invalid):** Configuration file missing, syntax error, or invalid fields; outputs structured `{code, message, fix}`.
+---
+
+## 6. Deploying to Preview
 
 Deploy your application to the preview environment:
 
@@ -121,7 +147,7 @@ Every deployment finishes in one of three distinct result states:
 
 Your preview application is immediately accessible at your configured preview domain (e.g. `https://toko-preview.sumopod.id`).
 
-## 6. Domains & DNS Pre-Verification
+## 7. Domains & DNS Pre-Verification
 
 Production deployments on Skoci require a genuine custom domain. Magic DNS domains (such as `*.sslip.io`) are strictly rejected in production because third-party zones expose deployments to hijacking risks and shared Let's Encrypt rate limits.
 
@@ -165,7 +191,7 @@ skoci domain set sumopod.id --primary
 
 Point `A` records for both `sumopod.id` and `skoci.sumopod.id` at the server first; `--force` skips that precheck. The command persists the base domain, re-points every live route at `<app>.sumopod.id` and `<app>-preview.sumopod.id`, moves the dashboard to `skoci.sumopod.id`, and lets the proxy request the new certificates. No restart, no dropped route, and the setting survives a restart.
 
-## 7. Inspecting Status & Logs
+## 8. Inspecting Status & Logs
 
 Check container health in real-time:
 ```bash
@@ -179,7 +205,7 @@ skoci logs --tail 50
 
 ---
 
-## 8. Promoting to Production (Human Gate)
+## 9. Promoting to Production (Human Gate & Approval Flow)
 
 By default, shipping to production requires human approval:
 
@@ -187,7 +213,11 @@ By default, shipping to production requires human approval:
 skoci promote "All preview tests passed, ready for production"
 ```
 
-The command returns exit code 2 (*pending approval*) and a `request_id`, e.g. `appr_4e052b4e...`.
+The promotion behavior depends on the token used:
+* **Master Token (Human Admin):** If run on the server with the master token, `skoci promote` promotes directly to production without creating a pending approval.
+* **Scoped Agent Token (`sk_agent_*`):** Always returns exit code 2 (*pending approval*), status `pending_approval`, and prints `Request ID: appr_…`.
+  - The agent **cannot** approve its own request (there is no auto-approve flag).
+  - The agent surfaces the `request_id` to a human operator.
 
 A human operator approves it via:
 * **Web Dashboard:** Open `https://<server-public-ip>:8443` in your browser, log in with the master token, and click **Approve** in the Approvals tab.
@@ -197,9 +227,11 @@ A human operator approves it via:
   ```
 Once approved, the production container becomes active and traffic is routed to `https://toko.<base-domain>`.
 
+> **Magic DNS in Production:** Magic-DNS hostnames (`sslip.io`) are refused in production by default. To allow them for a temporary demo, an operator must enable the server override using `skoci server setup --allow-magic-dns-production` or by setting `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env` on the server and restarting the service (`sudo systemctl restart skoci`).
+
 ---
 
-## 9. 1-Click Rollback
+## 10. 1-Click Rollback
 
 If an issue is detected, rollback to the previous version:
 

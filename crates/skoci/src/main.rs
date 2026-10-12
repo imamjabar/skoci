@@ -80,6 +80,8 @@ enum ServerCommands {
         setup_ufw: bool,
         #[arg(long, short = 'y', help = "Do not prompt for confirmation")]
         yes: bool,
+        #[arg(long, help = "Operator override: allow sslip.io-style hostnames in production")]
+        allow_magic_dns_production: bool,
     },
 
     #[command(about = "Print this server's TLS key pin (run on the VPS)")]
@@ -104,7 +106,14 @@ struct RunArgs {
     tls: TlsArg,
     #[arg(long, env = "SKOCI_ACME_EMAIL")]
     acme_email: Option<String>,
-    #[arg(long, env = "SKOCI_ACME_STAGING")]
+    #[arg(
+        long,
+        env = "SKOCI_ACME_STAGING",
+        value_parser = parse_loose_bool,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false"
+    )]
     acme_staging: bool,
     #[arg(long, env = "SKOCI_MAX_UPLOAD_MB", default_value_t = 200)]
     max_upload_mb: u64,
@@ -112,7 +121,15 @@ struct RunArgs {
     public_ip: Option<IpAddr>,
     #[arg(long, env = "SKOCI_CONTROL_TLS_BIND", default_value = "0.0.0.0:8443", help = "Pinned TLS control endpoint; 'off' disables it")]
     control_tls_bind: String,
-    #[arg(long, env = "SKOCI_ALLOW_MAGIC_DNS_PRODUCTION", help = "Operator override: allow sslip.io-style hostnames in production")]
+    #[arg(
+        long,
+        env = "SKOCI_ALLOW_MAGIC_DNS_PRODUCTION",
+        value_parser = parse_loose_bool,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false",
+        help = "Operator override: allow sslip.io-style hostnames in production"
+    )]
     allow_magic_dns_production: bool,
 }
 
@@ -182,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
                     harden_ssh,
                     setup_ufw,
                     yes,
+                    allow_magic_dns_production,
                 },
         } => {
             let opts = skoci_cli::setup::SetupOptions {
@@ -198,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
                 harden_ssh,
                 setup_ufw,
                 assume_yes: yes,
+                allow_magic_dns_production,
             };
             let code = skoci_cli::setup::run_server_setup(opts, args.json).await;
             std::process::exit(code);
@@ -244,4 +263,42 @@ fn parse_control_tls_bind(value: &str) -> anyhow::Result<Option<SocketAddr>> {
         .parse::<SocketAddr>()
         .map_err(|e| anyhow::anyhow!("Invalid --control-tls-bind '{trimmed}': {e}. Use host:port such as 0.0.0.0:8443, or 'off'"))?;
     Ok(Some(addr))
+}
+
+fn parse_loose_bool(raw: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!(
+            "invalid boolean '{raw}'; accepted values: true/false, 1/0, yes/no, on/off"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_loose_bool_accepted_values() {
+        for truthy in ["true", "True", "TRUE", "1", "yes", "YES", "Yes", "on", "ON", "On", "  true  ", " 1 "] {
+            assert_eq!(parse_loose_bool(truthy), Ok(true), "failed on truthy: {truthy}");
+        }
+        for falsy in ["false", "False", "FALSE", "0", "no", "NO", "No", "off", "OFF", "Off", "  false  ", " 0 "] {
+            assert_eq!(parse_loose_bool(falsy), Ok(false), "failed on falsy: {falsy}");
+        }
+    }
+
+    #[test]
+    fn test_parse_loose_bool_rejects_junk() {
+        for junk in ["maybe", "2", "-1", "invalid", "", "   ", "none", "null"] {
+            let res = parse_loose_bool(junk);
+            assert!(res.is_err(), "expected error for junk: '{junk}'");
+            let err_msg = res.unwrap_err();
+            assert!(
+                err_msg.contains("true/false, 1/0, yes/no, on/off"),
+                "error message must name accepted values: {err_msg}"
+            );
+        }
+    }
 }

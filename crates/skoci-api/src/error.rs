@@ -166,7 +166,7 @@ impl SkociError {
         } else {
             (
                 format!(" (magic-DNS hosts rejected: {})", rejected.join(", ")),
-                "Point an A record at the server, set it as primary with 'skoci domain set <host> --primary', or add it under 'domains' in .skoci/skoci.yaml. Operator override: set SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=1 in /etc/skoci/skoci.env followed by 'systemctl restart skoci' (the zone owner of the magic-DNS domain can obtain valid certificates for that hostname)".to_string(),
+                "Point an A record at the server, set it as primary with 'skoci domain set <host> --primary', or add it under 'domains' in .skoci/skoci.yaml. Operator override: run 'skoci server setup --allow-magic-dns-production' to configure it without hand-editing files over SSH, or set SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true in /etc/skoci/skoci.env followed by 'systemctl restart skoci' (the zone owner of the magic-DNS domain can obtain valid certificates for that hostname)".to_string(),
             )
         };
         Self::new(
