@@ -193,6 +193,9 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 ```
 Existing projects keep working untouched: a root `skoci.yaml`, `Dockerfile` and `.env.skoci` are still read. To adopt the `.skoci/` layout in a project, delete the generated root files and run `skoci init` again — keep a `Dockerfile` you wrote yourself, it stays at the root either way.
 
+### To 0.4.3
+`.skoci/env` is still read for `SKOCI_SERVER_URL`, `SKOCI_TOKEN` and `SKOCI_SERVER_PIN`, but those three are no longer exported into the process environment. A script that relied on `skoci` to publish them to its own child processes must read the file itself. Everything else in `.skoci/env` is still exported as before.
+
 ### From 0.1
 
 If you are running an existing Skoci 0.1 installation:

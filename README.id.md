@@ -193,6 +193,9 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 ```
 Proyek yang sudah ada tetap berjalan tanpa perubahan: `skoci.yaml`, `Dockerfile`, dan `.env.skoci` di root tetap dibaca. Untuk memakai tata letak `.skoci/` pada sebuah proyek, hapus berkas hasil generate di root lalu jalankan `skoci init` lagi — pertahankan `Dockerfile` yang Anda tulis sendiri, berkas itu tetap berada di root pada kedua kasus.
 
+### Ke 0.4.3
+`.skoci/env` tetap dibaca untuk `SKOCI_SERVER_URL`, `SKOCI_TOKEN`, dan `SKOCI_SERVER_PIN`, tetapi ketiganya tidak lagi diekspor ke environment proses. Skrip yang mengandalkan `skoci` untuk meneruskan ketiga variabel itu ke proses anaknya harus membaca berkas tersebut sendiri. Variabel lain di `.skoci/env` tetap diekspor seperti sebelumnya.
+
 ### Dari 0.1
 
 Bagi pengguna yang telah memasang Skoci versi 0.1:

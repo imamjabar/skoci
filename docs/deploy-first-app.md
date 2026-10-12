@@ -153,6 +153,18 @@ preview_domains:
 ```
 When deploying, Skoci's reverse proxy automatically provisions TLS certificates from Let's Encrypt via HTTP-01 challenges.
 
+A hostname belongs to exactly one environment. Listing the same host under both `domains` and `preview_domains` is rejected, because the proxy maps one host to one container and the last deploy would silently take over production traffic.
+
+### C. Move the Whole Server to a Domain You Bought
+`domains:` attaches one hostname to one app. When you want every app on the server to live under a domain, set the server's base domain (requires the master token on the server, or an admin session):
+
+```bash
+skoci domain check sumopod.id
+skoci domain set sumopod.id --primary
+```
+
+Point `A` records for both `sumopod.id` and `skoci.sumopod.id` at the server first; `--force` skips that precheck. The command persists the base domain, re-points every live route at `<app>.sumopod.id` and `<app>-preview.sumopod.id`, moves the dashboard to `skoci.sumopod.id`, and lets the proxy request the new certificates. No restart, no dropped route, and the setting survives a restart.
+
 ## 7. Inspecting Status & Logs
 
 Check container health in real-time:
