@@ -171,6 +171,35 @@ pub fn build_installer_ssh_args(opts: &SetupOptions) -> Vec<String> {
     args
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SshFailure {
+    Auth,
+    HostKeyChanged,
+    HostKeyUnverified,
+    Other,
+}
+
+/// `stderr` must already be lowercased. Host-key problems outrank authentication: a changed key
+/// also aborts the authentication attempt, and telling the user to copy an SSH key then would send
+/// them down the wrong path.
+pub fn classify_ssh_failure(stderr: &str) -> SshFailure {
+    if stderr.contains("remote host identification has changed")
+        || stderr.contains("host key for")
+    {
+        return SshFailure::HostKeyChanged;
+    }
+    if stderr.contains("host key verification failed") {
+        return SshFailure::HostKeyUnverified;
+    }
+    if stderr.contains("permission denied")
+        || stderr.contains("publickey")
+        || stderr.contains("authentication failed")
+    {
+        return SshFailure::Auth;
+    }
+    SshFailure::Other
+}
+
 fn parse_fingerprint_response(stdout: &str) -> Result<ServerFingerprint, SkociError> {
     if let Ok(resp) = serde_json::from_str::<ApiResponse<ServerFingerprint>>(stdout) {
         if let Some(fp) = resp.data {
@@ -414,11 +443,9 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
     if !preflight_output.status.success() {
         let stderr = String::from_utf8_lossy(&preflight_output.stderr);
         let stderr_lower = stderr.to_ascii_lowercase();
-        let is_auth_error = stderr_lower.contains("permission denied")
-            || stderr_lower.contains("publickey")
-            || stderr_lower.contains("authentication failed");
+        let failure = classify_ssh_failure(&stderr_lower);
 
-        if is_auth_error {
+        if failure == SshFailure::Auth {
             let is_tty = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
             let should_bootstrap = if opts.ssh_copy_id {
                 true
@@ -589,10 +616,24 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
                     "Password authentication requires an interactive terminal (sshpass is not supported by Skoci). Pass '--ssh-copy-id' to copy your key, or run 'ssh-copy-id' manually.",
                 ));
             }
-        } else if stderr_lower.contains("host key verification failed") {
+        } else if failure == SshFailure::HostKeyChanged {
+            return Err(SkociError::bad_request(
+                format!(
+                    "SSH host key of {} changed since you last connected",
+                    opts.host
+                ),
+                format!(
+                    "If you rebuilt or reinstalled this server, drop the old key with 'ssh-keygen -R {}' and run setup again. If you did not, stop: someone may be intercepting the connection.",
+                    opts.host
+                ),
+            ));
+        } else if failure == SshFailure::HostKeyUnverified {
             return Err(SkociError::bad_request(
                 format!("SSH host key verification failed for {}", opts.host),
-                "Check your ~/.ssh/known_hosts file or update the remote server host key",
+                format!(
+                    "Connect once manually to record the key ('ssh -p {} {}@{}'), or remove a stale entry with 'ssh-keygen -R {}'",
+                    opts.port, opts.user, opts.host, opts.host
+                ),
             ));
         } else {
             return Err(SkociError::bad_request(
@@ -1097,5 +1138,33 @@ mod tests {
         assert_eq!(args[target_idx + 2], "-s");
         assert_eq!(args[target_idx + 3], "--");
         assert!(!args.contains(&"sh".to_string()));
+    }
+
+    #[test]
+    fn test_classify_ssh_failure_on_real_openssh_output() {
+        // Verbatim from OpenSSH 9.x after a VPS was rebuilt on the same IP.
+        let changed = "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    warning: remote host identification has changed!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+it is possible that someone is doing something nasty!
+offending ecdsa key in /users/x/.ssh/known_hosts:26
+host key for 43.173.34.155 has changed and you have requested strict checking.
+host key verification failed.";
+        assert_eq!(classify_ssh_failure(changed), SshFailure::HostKeyChanged);
+
+        let unknown = "no ed25519 host key is known for 203.0.113.9 and you have requested strict checking.\nhost key verification failed.";
+        assert_eq!(
+            classify_ssh_failure(unknown),
+            SshFailure::HostKeyUnverified
+        );
+
+        assert_eq!(
+            classify_ssh_failure("ubuntu@203.0.113.9: permission denied (publickey,password)."),
+            SshFailure::Auth
+        );
+        assert_eq!(
+            classify_ssh_failure("ssh: connect to host 203.0.113.9 port 22: connection refused"),
+            SshFailure::Other
+        );
     }
 }

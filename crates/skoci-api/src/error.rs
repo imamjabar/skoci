@@ -202,7 +202,7 @@ impl SkociError {
         Self::new(
             "pin_mismatch",
             format!("TLS key of {server} does not match the pinned key (expected {expected}, got {got})"),
-            "Possible interception: do not continue. If the server key was rotated on purpose, re-run 'skoci server setup' or reconnect with the new '--pin'",
+            "Possible interception: do not continue. If you rebuilt this server or rotated its key on purpose, run 'skoci server setup --host <ip> --user <user>' again to store the new pin, or reconnect with the new '--pin' from 'sudo skoci server fingerprint'",
         )
     }
 

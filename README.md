@@ -142,6 +142,14 @@ Skoci exposes two distinct HTTPS endpoints for different purposes:
 |`https://<server-ip>:8443`|always on|ACME IP certificate, or self-signed before one is issued|Agents and the CLI. Trust comes from the SPKI pin, so a browser warning here is expected and is not a defect.|
 |`https://skoci.<your-domain>`|only once a base domain is configured|Let's Encrypt|Humans in a browser, no warning|
 
+### Rebuilding the Server on the Same IP
+A reinstalled VPS has a new SSH host key and a new Skoci TLS key, so both trust anchors you stored are stale. Setup refuses to continue and says exactly which one it is:
+```bash
+ssh-keygen -R <server-ip>                                   # the SSH host key changed
+skoci server setup --host <server-ip> --user root           # stores the new SPKI pin and token
+```
+If instead a normal command fails with `pin_mismatch`, the server's TLS key changed: re-run setup, or reconnect with the pin from `sudo skoci server fingerprint`. Neither error is ever auto-accepted — the same symptom appears under interception.
+
 ---
 
 ## Give It to Your Agent

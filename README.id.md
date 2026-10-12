@@ -142,6 +142,14 @@ Skoci menyediakan dua endpoint HTTPS terpisah untuk kebutuhan yang berbeda:
 | `https://<server-ip>:8443` | selalu aktif | Sertifikat ACME untuk IP, atau self-signed sebelum terbit | Agen dan CLI. Kepercayaan berasal dari SPKI pin, jadi peringatan browser di sini memang diharapkan dan bukan cacat. |
 | `https://skoci.<domain-anda>` | hanya setelah base domain disetel | Let's Encrypt | Manusia lewat browser, tanpa peringatan |
 
+### Membangun Ulang Server di IP yang Sama
+VPS yang dipasang ulang memiliki host key SSH baru dan kunci TLS Skoci baru, sehingga kedua jangkar kepercayaan yang Anda simpan menjadi usang. Setup menolak melanjutkan dan menyebutkan dengan tepat mana yang berubah:
+```bash
+ssh-keygen -R <server-ip>                                   # host key SSH berubah
+skoci server setup --host <server-ip> --user root           # menyimpan SPKI pin dan token baru
+```
+Jika perintah biasa gagal dengan `pin_mismatch`, berarti kunci TLS server yang berubah: jalankan setup lagi, atau hubungkan ulang memakai pin dari `sudo skoci server fingerprint`. Kedua galat ini tidak pernah diterima otomatis — gejala yang sama muncul saat terjadi penyadapan.
+
 ---
 
 ## Berikan ke Agen Anda
