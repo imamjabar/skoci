@@ -52,28 +52,32 @@ If you have run `skoci connect` or `skoci server setup` (Skoci >= 0.4.0), creden
 
 All tools are derived from a single API source of truth (`skoci-api`), guaranteeing 100% parity with the CLI:
 
-| Tool Name | Purpose | Parameters |
+| Tool | Parameters | What It Does |
 | :--- | :--- | :--- |
-| `skoci_init` | Detect framework & create `.skoci/skoci.yaml` | `app`, `path` |
-| `skoci_deploy` | Upload, compile image, & cutover | `app`, `env` (`preview`/`production`), `commit` |
-| `skoci_status` | Inspect container health & status | `app` |
-| `skoci_logs` | Retrieve recent logs (secrets redacted) | `app`, `tail` |
-| `skoci_secret_set` | Store ChaCha20 encrypted secret | `app`, `key`, `value` |
-| `skoci_secret_list` | List secret key names | `app` |
-| `skoci_promote` | Request production promotion approval | `app`, `reason` |
-| `skoci_rollback` | Revert to previous working version | `app`, `target_version` |
-| `skoci_doctor` | Inspect idle RAM (<20 MB) & daemons | *(none)* |
-| `skoci_db_backup` | Trigger database backup snapshot | `app`, `service` |
-| `skoci_db_restore` | Request database restore (requires approval) | `app`, `service`, `backup_id` |
+| `skoci_init` | `path`, `app` | Detect project framework and generate .skoci/skoci.yaml, .skoci/Dockerfile, and .skoci/ignore |
+| `skoci_deploy` | `path`, `env` | Deploy project to Skoci server (pack, upload, and stream events until complete) |
+| `skoci_watch` | `deployment_id` | Watch a running deployment until completion and return final status |
+| `skoci_status` | `app`, `path` | Check container status, live health, and application URLs |
+| `skoci_logs` | `app`, `env`, `tail`, `path` | View recent application logs with error line summary |
+| `skoci_deployments` | `app`, `limit`, `path` | List application deployment history |
+| `skoci_secret_set` | `app`, `key`, `value`, `path` | Set encrypted secret for application |
+| `skoci_secret_list` | `app`, `path` | List application secret key names (values remain encrypted and hidden) |
+| `skoci_promote` | `app`, `reason`, `version`, `path` | Submit promotion from preview to production (requires admin approval when called by agent) |
+| `skoci_rollback` | `app`, `env`, `target_version`, `path` | Roll back application to a previous healthy version |
+| `skoci_approvals` | *(none)* | List pending approval requests waiting for admin action |
+| `skoci_doctor` | *(none)* | Check health of Skoci server, Docker daemon, RAM, and proxy status |
+| `skoci_db_backup` | `app`, `service`, `path` | Create secure application database backup |
+| `skoci_db_list` | `app`, `path` | List database backup history for application |
+| `skoci_db_restore` | `app`, `backup_id`, `service`, `path` | Submit database restore from backup file (requires admin approval when called by agent) |
 
 ---
 
 ## 3. Tool Safety Boundaries (Strict Human Exclusion)
 
-The approval action (`approve`) is **intentionally EXCLUDED from the agent tool definition**:
-1. Agents **CANNOT** approve their own requests. Production promotions and restores strictly require human operator authorization via the Dashboard or master token.
-2. If an agent attempts to invoke the approval endpoint (`/api/approve`), the system rejects the request with an `unauthorized` error.
+Certain actions are **deliberately absent from the MCP tool definition** to preserve human-in-the-loop security:
 
+1. **Approving a promotion or database restore (`skoci approve` / `/api/approve`):** Agents can request promotion to production (`skoci_promote`) or a database restoration (`skoci_db_restore`), generating a pending request. However, agents **CANNOT** approve their own requests. Production promotions and restores strictly require human operator authorization via the web dashboard or CLI with a master token. This prevents autonomous agent drift or hallucinated rollouts from modifying production environments without human verification. If an agent attempts to invoke the approval endpoint (`/api/approve`), the system rejects the request with an `unauthorized` error.
+2. **Upgrading the server (`skoci server upgrade`):** Upgrading the server binary and restarting the background systemd service are host-level administrative operations. They affect all running containers, the reverse proxy, and control plane connectivity. Upgrades must be initiated deliberately by the human operator, not triggered automatically by an AI agent during an application deployment session.
 ---
 
 ## 4. Standard Exit Codes & Deployment Result States

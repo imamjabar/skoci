@@ -32,3 +32,31 @@ pub struct AppState {
     /// `None` inside when the TLS control endpoint is disabled.
     pub control_tls: ControlTlsStatus,
 }
+
+impl AppState {
+    pub fn base_domain(&self) -> Option<String> {
+        self.db
+            .get_setting("base_domain")
+            .ok()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.config.base_domain.clone())
+    }
+
+    pub fn api_domain(&self) -> Option<String> {
+        if let Some(base) = self
+            .db
+            .get_setting("base_domain")
+            .ok()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(format!("skoci.{base}"))
+        } else {
+            self.config
+                .api_domain
+                .clone()
+                .or_else(|| self.config.base_domain.as_ref().map(|b| format!("skoci.{b}")))
+        }
+    }
+}

@@ -99,6 +99,14 @@ pub struct DomainCheckRequest {
     pub host: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainSetPrimaryRequest {
+    pub host: String,
+    /// Accept the host even when DNS does not resolve to this server yet.
+    #[serde(default)]
+    pub force: bool,
+}
+
 fn default_env() -> String {
     crate::models::ENV_PREVIEW.to_string()
 }

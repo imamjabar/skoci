@@ -265,6 +265,20 @@ pub struct DomainCheckResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainSetPrimaryResponse {
+    pub base_domain: String,
+    /// Control-plane hostname derived from the base domain, `skoci.<base_domain>`.
+    pub api_domain: String,
+    pub previous_base_domain: Option<String>,
+    /// Hostnames the proxy will obtain or renew certificates for.
+    pub certificate_hosts: Vec<String>,
+    /// Routes re-pointed at the new base domain, as `app:env`.
+    pub updated_routes: Vec<String>,
+    /// True when the DNS precheck was skipped by the caller.
+    pub dns_check_skipped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbBackupResponse {
     pub backup_id: String,
     pub app: String,

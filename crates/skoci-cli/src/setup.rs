@@ -1,5 +1,7 @@
+use std::io::{IsTerminal, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::{normalize_spki_pin, ApiResponse, CONTROL_TLS_PORT, MAX_APP_NAME_LEN};
@@ -13,11 +15,14 @@ pub struct SetupOptions {
     pub user: String,
     pub port: u16,
     pub ssh_key: Option<PathBuf>,
+    pub ssh_copy_id: bool,
     pub app: Option<String>,
     pub version: Option<String>,
     pub magic_dns: bool,
     pub domain: Option<String>,
     pub email: Option<String>,
+    pub harden_ssh: bool,
+    pub setup_ufw: bool,
     pub assume_yes: bool,
 }
 
@@ -30,6 +35,10 @@ pub struct ServerSetupResponse {
     pub app: String,
     pub next_command: String,
     pub steps: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_domain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dashboard_url: Option<String>,
 }
 
 pub fn is_valid_host(host: &str) -> bool {
@@ -113,6 +122,16 @@ pub fn build_installer_flags(opts: &SetupOptions) -> Vec<String> {
         flags.push("--version".to_string());
         flags.push(version.clone());
     }
+    if opts.harden_ssh {
+        flags.push("--harden-ssh".to_string());
+    }
+    if opts.setup_ufw {
+        flags.push("--setup-ufw".to_string());
+    }
+    if opts.port != 22 {
+        flags.push("--ssh-port".to_string());
+        flags.push(opts.port.to_string());
+    }
     flags
 }
 
@@ -131,6 +150,24 @@ pub fn build_ssh_args(opts: &SetupOptions, remote_argv: &[&str]) -> Vec<String> 
     for arg in remote_argv {
         args.push(arg.to_string());
     }
+    args
+}
+pub fn build_installer_ssh_args(opts: &SetupOptions) -> Vec<String> {
+    let mut args = vec![
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-p".to_string(),
+        opts.port.to_string(),
+    ];
+    if let Some(key) = &opts.ssh_key {
+        args.push("-i".to_string());
+        args.push(key.display().to_string());
+    }
+    args.push(format!("{}@{}", opts.user, opts.host));
+    args.push("bash".to_string());
+    args.push("-s".to_string());
+    args.push("--".to_string());
+    args.extend(build_installer_flags(opts));
     args
 }
 
@@ -250,7 +287,7 @@ async fn run_remote_skoci_cmd(opts: &SetupOptions, subcmd: &[&str]) -> Result<St
     ))
 }
 
-async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSetupResponse> {
+async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<ServerSetupResponse> {
     let mut steps = Vec::new();
 
     // Step 1: Validate inputs
@@ -288,33 +325,36 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
             trimmed.to_string()
         }
         None => {
-            let yaml_path = Path::new("skoci.yaml");
-            if yaml_path.exists() {
-                match skoci_core::config::ConfigLoader::load_config(yaml_path) {
-                    Ok(cfg) => {
-                        let trimmed = cfg.app.trim();
-                        if !is_valid_app_name(trimmed) {
+            let root = Path::new(".");
+            match skoci_core::config::ConfigLoader::locate_config(root) {
+                Some(config_path) => {
+                    match skoci_core::config::ConfigLoader::load_config(&config_path) {
+                        Ok(cfg) => {
+                            let trimmed = cfg.app.trim();
+                            if !is_valid_app_name(trimmed) {
+                                return Err(SkociError::bad_request(
+                                    format!("Invalid app name '{trimmed}' in {}", config_path.display()),
+                                    format!(
+                                        "Use lowercase alphanumeric characters and hyphens, up to {MAX_APP_NAME_LEN} characters"
+                                    ),
+                                ));
+                            }
+                            trimmed.to_string()
+                        }
+                        Err(e) => {
                             return Err(SkociError::bad_request(
-                                format!("Invalid app name '{trimmed}' in .skoci/skoci.yaml"),
-                                format!(
-                                    "Use lowercase alphanumeric characters and hyphens, up to {MAX_APP_NAME_LEN} characters"
-                                ),
+                                format!("Failed to read {}: {e}", config_path.display()),
+                                format!("Specify --app <name> explicitly or fix {} in the current directory", config_path.display()),
                             ));
                         }
-                        trimmed.to_string()
-                    }
-                    Err(e) => {
-                        return Err(SkociError::bad_request(
-                            format!("Failed to read skoci.yaml: {e}"),
-                            "Specify --app <name> explicitly or fix skoci.yaml in the current directory",
-                        ));
                     }
                 }
-            } else {
-                return Err(SkociError::bad_request(
-                    "App name not specified and skoci.yaml not found in current directory",
-                    "Specify --app <name> or run 'skoci init' in your project directory first",
-                ));
+                None => {
+                    return Err(SkociError::bad_request(
+                        "App name not specified and neither .skoci/skoci.yaml nor skoci.yaml found in current directory",
+                        "Specify --app <name> or run 'skoci init' in your project directory first",
+                    ));
+                }
             }
         }
     };
@@ -347,21 +387,24 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
     }
     steps.push(step2_msg);
 
-    let mut preflight_cmd = tokio::process::Command::new("ssh");
-    preflight_cmd
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg("StrictHostKeyChecking=accept-new")
-        .arg("-p")
-        .arg(opts.port.to_string());
-    if let Some(key) = &opts.ssh_key {
-        preflight_cmd.arg("-i").arg(key);
-    }
-    preflight_cmd.arg(format!("{}@{}", opts.user, opts.host));
-    preflight_cmd.arg("true");
+    let run_preflight = |key: &Option<PathBuf>| {
+        let mut preflight_cmd = tokio::process::Command::new("ssh");
+        preflight_cmd
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-o")
+            .arg("StrictHostKeyChecking=accept-new")
+            .arg("-p")
+            .arg(opts.port.to_string());
+        if let Some(k) = key {
+            preflight_cmd.arg("-i").arg(k);
+        }
+        preflight_cmd.arg(format!("{}@{}", opts.user, opts.host));
+        preflight_cmd.arg("true");
+        preflight_cmd
+    };
 
-    let preflight_output = preflight_cmd.output().await.map_err(|e| {
+    let preflight_output = run_preflight(&opts.ssh_key).output().await.map_err(|e| {
         SkociError::internal(
             format!("Failed to execute SSH preflight: {e}"),
             "Ensure OpenSSH client ('ssh') is installed and accessible in PATH",
@@ -371,34 +414,198 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
     if !preflight_output.status.success() {
         let stderr = String::from_utf8_lossy(&preflight_output.stderr);
         let stderr_lower = stderr.to_ascii_lowercase();
-        if stderr_lower.contains("permission denied")
+        let is_auth_error = stderr_lower.contains("permission denied")
             || stderr_lower.contains("publickey")
-            || stderr_lower.contains("authentication failed")
-        {
-            return Err(SkociError::bad_request(
-                format!(
-                    "SSH authentication failed for {}@{}:{}",
+            || stderr_lower.contains("authentication failed");
+
+        if is_auth_error {
+            let is_tty = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+            let should_bootstrap = if opts.ssh_copy_id {
+                true
+            } else if is_tty {
+                eprint!(
+                    "SSH password authentication required. Copy SSH key to {}@{}:{} using ssh-copy-id? [y/N]: ",
                     opts.user, opts.host, opts.port
-                ),
-                "Password authentication requires an interactive terminal (sshpass is not supported by Skoci). Please add an SSH key using 'ssh-copy-id' or specify '--ssh-key <path>', or run the installer manually on the VPS.",
-            ));
-        }
-        if stderr_lower.contains("host key verification failed") {
+                );
+                let _ = std::io::stderr().flush();
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    let trimmed = input.trim();
+                    trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes")
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if should_bootstrap {
+                let (private_key, pub_key) = if let Some(key) = &opts.ssh_key {
+                    let key_str = key.to_string_lossy();
+                    if key_str.ends_with(".pub") {
+                        let priv_k = PathBuf::from(key_str.trim_end_matches(".pub"));
+                        (priv_k, key.clone())
+                    } else {
+                        let pub_candidate = PathBuf::from(format!("{key_str}.pub"));
+                        let pub_k = if pub_candidate.exists() {
+                            pub_candidate
+                        } else {
+                            key.clone()
+                        };
+                        (key.clone(), pub_k)
+                    }
+                } else {
+                    let home = std::env::var("HOME")
+                        .or_else(|_| std::env::var("USERPROFILE"))
+                        .map(PathBuf::from)
+                        .map_err(|_| {
+                            SkociError::bad_request(
+                                "Could not determine HOME directory to find SSH key",
+                                "Specify '--ssh-key <path>' explicitly",
+                            )
+                        })?;
+                    let ssh_dir = home.join(".ssh");
+                    let ed25519 = ssh_dir.join("id_ed25519");
+                    let rsa = ssh_dir.join("id_rsa");
+
+                    if ed25519.exists() {
+                        let pub_candidate = PathBuf::from(format!("{}.pub", ed25519.display()));
+                        let pub_k = if pub_candidate.exists() { pub_candidate } else { ed25519.clone() };
+                        (ed25519, pub_k)
+                    } else if rsa.exists() {
+                        let pub_candidate = PathBuf::from(format!("{}.pub", rsa.display()));
+                        let pub_k = if pub_candidate.exists() { pub_candidate } else { rsa.clone() };
+                        (rsa, pub_k)
+                    } else {
+                        let _ = std::fs::create_dir_all(&ssh_dir);
+                        if !json {
+                            eprintln!("  Generating Ed25519 key at {}...", ed25519.display());
+                        }
+                        let comment = format!("skoci@{}", opts.host);
+                        let gen_status = tokio::process::Command::new("ssh-keygen")
+                            .arg("-t")
+                            .arg("ed25519")
+                            .arg("-N")
+                            .arg("")
+                            .arg("-f")
+                            .arg(&ed25519)
+                            .arg("-C")
+                            .arg(&comment)
+                            .status()
+                            .await
+                            .map_err(|e| {
+                                SkociError::internal(
+                                    format!("Failed to execute ssh-keygen: {e}"),
+                                    "Ensure OpenSSH client ('ssh-keygen') is installed and accessible in PATH",
+                                )
+                            })?;
+                        if !gen_status.success() {
+                            return Err(SkociError::internal(
+                                format!("ssh-keygen failed with exit code {}", gen_status.code().unwrap_or(-1)),
+                                "Run 'ssh-keygen -t ed25519' manually to create an SSH key",
+                            ));
+                        }
+                        let pub_k = PathBuf::from(format!("{}.pub", ed25519.display()));
+                        (ed25519, pub_k)
+                    }
+                };
+
+                if !json {
+                    eprintln!(
+                        "  Running ssh-copy-id -i {} -p {} {}@{}...",
+                        pub_key.display(), opts.port, opts.user, opts.host
+                    );
+                }
+
+                let copy_res = tokio::process::Command::new("ssh-copy-id")
+                    .arg("-i")
+                    .arg(&pub_key)
+                    .arg("-p")
+                    .arg(opts.port.to_string())
+                    .arg(format!("{}@{}", opts.user, opts.host))
+                    .stdin(std::process::Stdio::inherit())
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .status()
+                    .await;
+
+                match copy_res {
+                    Ok(status) => {
+                        if !status.success() {
+                            return Err(SkociError::bad_request(
+                                format!("ssh-copy-id failed with exit code {}", status.code().unwrap_or(-1)),
+                                format!(
+                                    "Verify password and run 'ssh-copy-id -i {} -p {} {}@{}' manually",
+                                    pub_key.display(), opts.port, opts.user, opts.host
+                                ),
+                            ));
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(SkociError::bad_request(
+                            "ssh-copy-id is not installed on this system",
+                            format!(
+                                "Install ssh-copy-id or copy your key manually: cat {} | ssh -p {} {}@{} 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'",
+                                pub_key.display(), opts.port, opts.user, opts.host
+                            ),
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(SkociError::internal(
+                            format!("Failed to execute ssh-copy-id: {e}"),
+                            format!(
+                                "Run 'ssh-copy-id -i {} -p {} {}@{}' manually",
+                                pub_key.display(), opts.port, opts.user, opts.host
+                            ),
+                        ));
+                    }
+                }
+
+                opts.ssh_key = Some(private_key);
+
+                let retry_output = run_preflight(&opts.ssh_key).output().await.map_err(|e| {
+                    SkociError::internal(
+                        format!("Failed to execute SSH preflight retry: {e}"),
+                        "Ensure OpenSSH client ('ssh') is installed and accessible in PATH",
+                    )
+                })?;
+
+                if !retry_output.status.success() {
+                    let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+                    return Err(SkociError::bad_request(
+                        format!(
+                            "SSH authentication failed after ssh-copy-id for {}@{}:{}: {}",
+                            opts.user, opts.host, opts.port, retry_stderr.trim()
+                        ),
+                        "Verify authorized_keys permissions (0600) and SSH daemon configuration on the server",
+                    ));
+                }
+            } else {
+                return Err(SkociError::bad_request(
+                    format!(
+                        "SSH authentication failed for {}@{}:{}",
+                        opts.user, opts.host, opts.port
+                    ),
+                    "Password authentication requires an interactive terminal (sshpass is not supported by Skoci). Pass '--ssh-copy-id' to copy your key, or run 'ssh-copy-id' manually.",
+                ));
+            }
+        } else if stderr_lower.contains("host key verification failed") {
             return Err(SkociError::bad_request(
                 format!("SSH host key verification failed for {}", opts.host),
                 "Check your ~/.ssh/known_hosts file or update the remote server host key",
             ));
+        } else {
+            return Err(SkociError::bad_request(
+                format!(
+                    "Failed SSH connection to {}@{}:{}: {}",
+                    opts.user,
+                    opts.host,
+                    opts.port,
+                    stderr.trim()
+                ),
+                "Verify the host address, port, and that the SSH server is running and accessible",
+            ));
         }
-        return Err(SkociError::bad_request(
-            format!(
-                "Failed SSH connection to {}@{}:{}: {}",
-                opts.user,
-                opts.host,
-                opts.port,
-                stderr.trim()
-            ),
-            "Verify the host address, port, and that the SSH server is running and accessible",
-        ));
     }
 
     let target_host = if opts.port == 22 {
@@ -429,23 +636,9 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
     }
     steps.push(step3_msg);
 
-    let installer_flags = build_installer_flags(&opts);
+    let installer_args = build_installer_ssh_args(&opts);
     let mut install_cmd = tokio::process::Command::new("ssh");
-    install_cmd
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-p")
-        .arg(opts.port.to_string());
-    if let Some(key) = &opts.ssh_key {
-        install_cmd.arg("-i").arg(key);
-    }
-    install_cmd.arg(format!("{}@{}", opts.user, opts.host));
-    install_cmd.arg("sh");
-    install_cmd.arg("-s");
-    install_cmd.arg("--");
-    for flag in &installer_flags {
-        install_cmd.arg(flag);
-    }
+    install_cmd.args(&installer_args);
 
     install_cmd.stdin(std::process::Stdio::piped());
     install_cmd.stdout(std::process::Stdio::piped());
@@ -472,6 +665,9 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
         drop(stdin);
     }
 
+    let captured_stderr = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_stderr_clone = Arc::clone(&captured_stderr);
+
     use tokio::io::AsyncBufReadExt;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -490,6 +686,9 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
             let mut reader = tokio::io::BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 eprintln!("  | {line}");
+                if let Ok(mut lock) = captured_stderr_clone.lock() {
+                    lock.push(line);
+                }
             }
         }
     });
@@ -504,6 +703,18 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
     })?;
 
     if !status.success() {
+        let err_lines = captured_stderr.lock().map(|l| l.join("\n")).unwrap_or_default();
+        let err_lower = err_lines.to_ascii_lowercase();
+        let is_bash_missing = (err_lower.contains("bash") && err_lower.contains("not found"))
+            || (status.code() == Some(127) && err_lower.contains("not found"))
+            || err_lower.contains("bash: command not found");
+        if is_bash_missing {
+            return Err(SkociError::bad_request(
+                format!("Bash is required on target host '{}' to run the Skoci installer", opts.host),
+                "Install bash on the remote host (e.g. 'apt-get update && apt-get install -y bash') and retry",
+            ));
+        }
+
         return Err(SkociError::internal(
             format!(
                 "Remote installation failed with exit code {}",
@@ -597,6 +808,25 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
     let step7_msg = "Step 7/7: Setup completed successfully".to_string();
     steps.push(step7_msg);
 
+    let pin_display = if pin.starts_with("sha256:") {
+        pin.clone()
+    } else {
+        format!("sha256:{pin}")
+    };
+
+    if !json {
+        eprintln!("\n✓ Skoci server setup completed successfully!\n");
+        println!("  Agent / CLI endpoint : {control_url}  (pinned: {pin_display}, browser warning is expected)");
+        if let Some(domain) = &opts.domain {
+            println!("  Dashboard in browser : https://skoci.{domain}  (Let's Encrypt)");
+        } else {
+            println!("  Dashboard in browser : none (run 'skoci domain set <host> --primary' to enable a browser-trusted dashboard)");
+        }
+    }
+
+    let base_domain = opts.domain.clone();
+    let dashboard_url = base_domain.as_ref().map(|d| format!("https://skoci.{d}"));
+
     Ok(ServerSetupResponse {
         host: opts.host.clone(),
         control_url,
@@ -605,6 +835,8 @@ async fn do_server_setup(opts: SetupOptions, json: bool) -> SkociResult<ServerSe
         app,
         next_command: "skoci deploy".to_string(),
         steps,
+        base_domain,
+        dashboard_url,
     })
 }
 
@@ -614,11 +846,8 @@ pub async fn run_server_setup(opts: SetupOptions, json: bool) -> i32 {
             if json {
                 crate::output::print_json(&ApiResponse::ok(resp, "Server setup completed successfully"));
             } else {
-                eprintln!("\n✓ Skoci server setup completed successfully!\n");
-                println!("Control URL : {}", resp.control_url);
-                println!("SPKI Pin    : {}", resp.spki_pin);
-                println!("Profile     : {} (saved and set as current)", resp.profile);
-                println!("Application : {}", resp.app);
+                println!("  Profile              : {} (saved and set as current)", resp.profile);
+                println!("  Application          : {}", resp.app);
                 println!("\nNext steps:");
                 println!("  Deploy your app: {}", resp.next_command);
             }
@@ -764,11 +993,14 @@ mod tests {
             user: "root".into(),
             port: 22,
             ssh_key: None,
+            ssh_copy_id: false,
             app: None,
             version: None,
             magic_dns: false,
             domain: None,
             email: None,
+            harden_ssh: false,
+            setup_ufw: false,
             assume_yes: false,
         };
         assert_eq!(build_installer_flags(&default_opts), Vec::<String>::new());
@@ -791,6 +1023,21 @@ mod tests {
             build_installer_flags(&version_opts),
             vec!["--version", "v0.4.0"]
         );
+
+        let mut harden_opts = default_opts.clone();
+        harden_opts.harden_ssh = true;
+        assert_eq!(build_installer_flags(&harden_opts), vec!["--harden-ssh"]);
+
+        let mut ufw_opts = default_opts.clone();
+        ufw_opts.setup_ufw = true;
+        assert_eq!(build_installer_flags(&ufw_opts), vec!["--setup-ufw"]);
+
+        let mut port_opts = default_opts.clone();
+        port_opts.port = 2222;
+        assert_eq!(
+            build_installer_flags(&port_opts),
+            vec!["--ssh-port", "2222"]
+        );
     }
 
     #[test]
@@ -800,13 +1047,17 @@ mod tests {
             user: "root".into(),
             port: 22,
             ssh_key: None,
+            ssh_copy_id: false,
             app: Some("myapp".into()),
             version: None,
             magic_dns: false,
             domain: None,
             email: None,
+            harden_ssh: false,
+            setup_ufw: false,
             assume_yes: false,
         };
+
         let cmd_parts = ["sudo", "skoci", "server", "fingerprint", "--json"];
         let args = build_ssh_args(&opts, &cmd_parts);
 
@@ -821,5 +1072,30 @@ mod tests {
             assert!(!arg.contains(' '), "Remote arg '{arg}' contains a space");
         }
         assert!(!args.iter().any(|a| a.contains("skoci server fingerprint")));
+    }
+    #[test]
+    fn test_installer_argv_contains_bash() {
+        let opts = SetupOptions {
+            host: "203.0.113.10".into(),
+            user: "root".into(),
+            port: 22,
+            ssh_key: None,
+            ssh_copy_id: false,
+            app: Some("myapp".into()),
+            version: None,
+            magic_dns: false,
+            domain: None,
+            email: None,
+            harden_ssh: false,
+            setup_ufw: false,
+            assume_yes: false,
+        };
+        let args = build_installer_ssh_args(&opts);
+        let target = format!("{}@{}", opts.user, opts.host);
+        let target_idx = args.iter().position(|a| a == &target).expect("target found");
+        assert_eq!(args[target_idx + 1], "bash");
+        assert_eq!(args[target_idx + 2], "-s");
+        assert_eq!(args[target_idx + 3], "--");
+        assert!(!args.contains(&"sh".to_string()));
     }
 }

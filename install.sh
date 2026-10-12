@@ -47,7 +47,9 @@ NO_TLS=0
 CLI_VERSION="latest"
 CLIENT_ONLY=0
 MAGIC_DNS=0
-
+HARDEN_SSH=0
+SETUP_UFW=0
+CLI_SSH_PORT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain)
@@ -88,6 +90,39 @@ while [ $# -gt 0 ]; do
     --magic-dns)
       MAGIC_DNS=1
       shift
+      ;;
+    --harden-ssh)
+      HARDEN_SSH=1
+      shift
+      ;;
+    --setup-ufw)
+      SETUP_UFW=1
+      shift
+      ;;
+    --ssh-port)
+      if [ -n "${2:-}" ]; then
+        CLI_SSH_PORT="$2"
+        shift 2
+      else
+        echo -e "${RED}Error: --ssh-port requires a value${NC}" >&2
+        exit 1
+      fi
+      ;;
+    -h|--help)
+      echo "Usage: install.sh [options]"
+      echo ""
+      echo "Options:"
+      echo "  --domain <domain>   Base domain you own, used for app hostnames and TLS"
+      echo "  --email <email>     Contact address for Let's Encrypt"
+      echo "  --version <tag>     Skoci version tag to install (default: latest)"
+      echo "  --magic-dns         Enable sslip.io preview hostnames"
+      echo "  --no-tls            Disable TLS (HTTP only)"
+      echo "  --client-only       Install Skoci CLI client only"
+      echo "  --harden-ssh        Harden SSH daemon (disable password auth)"
+      echo "  --setup-ufw         Configure and enable UFW firewall"
+      echo "  --ssh-port <port>   SSH port for firewall rules and hardening"
+      echo "  -h, --help          Show this help message"
+      exit 0
       ;;
     *)
       echo -e "${RED}Error: Unknown option: $1${NC}" >&2
@@ -479,15 +514,104 @@ $SUDO systemctl daemon-reload
 $SUDO systemctl enable skoci >/dev/null 2>&1
 $SUDO systemctl restart skoci
 
+# Derive SSH port
+SSH_PORT="${CLI_SSH_PORT:-}"
+if [ -z "$SSH_PORT" ] && [ -n "${SSH_CONNECTION:-}" ]; then
+  read -r _ _ _ detected_port <<< "${SSH_CONNECTION}"
+  if [ -n "$detected_port" ]; then
+    SSH_PORT="$detected_port"
+  fi
+fi
+if [ -z "$SSH_PORT" ]; then
+  SSH_PORT="22"
+fi
+
 # Firewall Configuration (UFW)
-if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qw "active"; then
-  echo "Configuring UFW firewall..."
+if [ "$SETUP_UFW" = "1" ]; then
+  if ! command -v ufw >/dev/null 2>&1; then
+    echo -e "\n${YELLOW}Notice: ufw is not installed. Skipping firewall configuration.${NC}"
+    echo "To configure the firewall manually, run:"
+    echo "  sudo apt-get install -y ufw"
+    echo "  sudo ufw allow ${SSH_PORT}/tcp"
+    echo "  sudo ufw allow 80/tcp"
+    echo "  sudo ufw allow 443/tcp"
+    echo "  sudo ufw allow 8443/tcp"
+    echo "  sudo ufw default deny incoming"
+    echo "  sudo ufw default allow outgoing"
+    echo -e "  sudo ufw --force enable\n"
+  else
+    echo "Configuring UFW firewall (SSH port: ${SSH_PORT})..."
+    if ! $SUDO ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1; then
+      echo -e "${RED}Could not add the UFW rule for SSH port ${SSH_PORT}; leaving the firewall untouched to avoid locking you out.${NC}" >&2
+      echo -e "${YELLOW}Run 'sudo ufw allow ${SSH_PORT}/tcp' manually, then re-run with --setup-ufw.${NC}" >&2
+    else
+      $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
+      $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
+      $SUDO ufw allow 8443/tcp >/dev/null 2>&1 || true
+      $SUDO ufw default deny incoming >/dev/null 2>&1 || true
+      $SUDO ufw default allow outgoing >/dev/null 2>&1 || true
+      $SUDO ufw --force enable >/dev/null 2>&1 || true
+      echo -e "${GREEN}✓ UFW firewall configured and enabled.${NC}"
+    fi
+    if $SUDO ufw status 2>/dev/null | grep -q "8787"; then
+      echo -e "${YELLOW}Port 8787 is no longer published externally (127.0.0.1 only).${NC}"
+      echo -e "Remove old rule: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
+    fi
+  fi
+elif command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qw "active"; then
+  echo "Configuring UFW firewall rules for active firewall..."
   $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
   $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
   $SUDO ufw allow 8443/tcp >/dev/null 2>&1 || true
   if $SUDO ufw status 2>/dev/null | grep -q "8787"; then
     echo -e "${YELLOW}Port 8787 is no longer published externally (127.0.0.1 only).${NC}"
     echo -e "Remove old rule: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
+  fi
+fi
+
+# SSH Hardening
+if [ "$HARDEN_SSH" = "1" ]; then
+  echo "Hardening SSH configuration..."
+  INVOKING_HOME=""
+  if [ -n "$INVOKING_USER" ]; then
+    INVOKING_HOME="$(getent passwd "$INVOKING_USER" 2>/dev/null | cut -d: -f6 || true)"
+  fi
+  if [ -z "$INVOKING_HOME" ]; then
+    INVOKING_HOME="${HOME:-/root}"
+  fi
+
+  AUTH_KEYS="${INVOKING_HOME}/.ssh/authorized_keys"
+  if [ ! -f "$AUTH_KEYS" ] || [ ! -s "$AUTH_KEYS" ]; then
+    echo -e "\n${YELLOW}⚠️  WARNING: Refusing to harden SSH!${NC}"
+    echo -e "${YELLOW}   ${AUTH_KEYS} for user '${INVOKING_USER}' is missing or empty.${NC}"
+    echo -e "${YELLOW}   Disabling password authentication without authorized keys would lock you out.${NC}\n"
+  elif ! $SUDO grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/' /etc/ssh/sshd_config 2>/dev/null; then
+    echo -e "\n${YELLOW}⚠️  WARNING: Skipping SSH hardening.${NC}"
+    echo -e "${YELLOW}   /etc/ssh/sshd_config has no 'Include /etc/ssh/sshd_config.d/*.conf' line, so a drop-in would be ignored.${NC}"
+    echo -e "${YELLOW}   Add that Include line (or set 'PasswordAuthentication no' by hand), then re-run with --harden-ssh.${NC}\n"
+  else
+    $SUDO mkdir -p /etc/ssh/sshd_config.d
+    # sshd keeps the FIRST value it reads for a keyword, so this drop-in must sort
+    # ahead of distro files such as 50-cloud-init.conf (PasswordAuthentication yes).
+    $SUDO rm -f /etc/ssh/sshd_config.d/99-skoci.conf
+    $SUDO tee /etc/ssh/sshd_config.d/00-skoci-harden.conf >/dev/null << 'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+EOF
+    $SUDO chmod 0644 /etc/ssh/sshd_config.d/00-skoci-harden.conf
+
+    if $SUDO sshd -t && [ "$($SUDO sshd -T 2>/dev/null | grep -c '^passwordauthentication no')" = "1" ]; then
+      if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
+        $SUDO systemctl reload ssh 2>/dev/null || $SUDO systemctl restart ssh 2>/dev/null || true
+      elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then
+        $SUDO systemctl reload sshd 2>/dev/null || $SUDO systemctl restart sshd 2>/dev/null || true
+      fi
+      echo -e "${GREEN}✓ SSH hardened: password login disabled (/etc/ssh/sshd_config.d/00-skoci-harden.conf). Keep your SSH key.${NC}"
+    else
+      echo -e "${RED}⚠️  sshd rejected the hardened configuration, or another drop-in still enables password login. Reverting to avoid a lockout.${NC}" >&2
+      $SUDO rm -f /etc/ssh/sshd_config.d/00-skoci-harden.conf
+    fi
   fi
 fi
 echo -e "${YELLOW}IMPORTANT: Ensure ports 80, 443, and 8443 are also open in your cloud firewall (e.g., Sumopod panel, AWS Security Group, Hetzner Firewall).${NC}"

@@ -220,17 +220,17 @@ async fn execute_pipeline(
                 ));
             }
 
-            let requested_hosts = compute_hosts(&state.config.base_domain, &cfg, &opts.env);
+            let requested_hosts = compute_hosts(&state.base_domain(), &cfg, &opts.env);
             for h in &requested_hosts {
-                if let Some(api_d) = &state.config.api_domain {
-                    if h.eq_ignore_ascii_case(api_d) {
+                if let Some(api_d) = state.api_domain() {
+                    if h.eq_ignore_ascii_case(&api_d) {
                         return Err(SkociError::forbidden(
                             format!("Hostname '{h}' is reserved for the Skoci control API"),
                             "Remove this domain from .skoci/skoci.yaml domains/preview_domains",
                         ));
                     }
                 }
-                if let Some(base_d) = &state.config.base_domain {
+                if let Some(base_d) = state.base_domain() {
                     let base_suffix = format!(".{base_d}");
                     let auto_prod = format!("{}.{base_d}", cfg.app).to_lowercase();
                     let auto_prev = format!("{}-preview.{base_d}", cfg.app).to_lowercase();
@@ -684,7 +684,7 @@ async fn execute_pipeline(
         None,
     );
 
-    let hosts = compute_hosts(&state.config.base_domain, &cfg, &opts.env);
+    let hosts = compute_hosts(&state.base_domain(), &cfg, &opts.env);
     let route = Route {
         app: opts.app.clone(),
         env: opts.env.clone(),
@@ -923,34 +923,33 @@ pub fn resolve_project_config(build_dir: &Path) -> SkociResult<PathBuf> {
     Ok(config_path)
 }
 
+/// Hostname Skoci derives for an app from the server's base domain.
+pub fn auto_host(app: &str, base_domain: &str, env: &str) -> String {
+    if env == "production" {
+        format!("{app}.{base_domain}").to_lowercase()
+    } else {
+        format!("{app}-preview.{base_domain}").to_lowercase()
+    }
+}
+
 pub fn compute_hosts(base_domain: &Option<String>, cfg: &SkociConfig, env: &str) -> Vec<String> {
     let mut hosts = Vec::new();
 
-    if env == "production" {
-        for d in &cfg.domains {
-            let trimmed = d.trim().to_lowercase();
-            if !trimmed.is_empty() && !hosts.contains(&trimmed) {
-                hosts.push(trimmed);
-            }
-        }
-        if let Some(base) = base_domain {
-            let auto = format!("{}.{base}", cfg.app).to_lowercase();
-            if !hosts.contains(&auto) {
-                hosts.push(auto);
-            }
-        }
+    let explicit = if env == "production" {
+        &cfg.domains
     } else {
-        for d in &cfg.preview_domains {
-            let trimmed = d.trim().to_lowercase();
-            if !trimmed.is_empty() && !hosts.contains(&trimmed) {
-                hosts.push(trimmed);
-            }
+        &cfg.preview_domains
+    };
+    for d in explicit {
+        let trimmed = d.trim().to_lowercase();
+        if !trimmed.is_empty() && !hosts.contains(&trimmed) {
+            hosts.push(trimmed);
         }
-        if let Some(base) = base_domain {
-            let auto = format!("{}-preview.{base}", cfg.app).to_lowercase();
-            if !hosts.contains(&auto) {
-                hosts.push(auto);
-            }
+    }
+    if let Some(base) = base_domain {
+        let auto = auto_host(&cfg.app, base, env);
+        if !hosts.contains(&auto) {
+            hosts.push(auto);
         }
     }
 
@@ -1055,7 +1054,7 @@ pub fn check_production_domain_policy(
         return Ok(());
     }
 
-    let hosts = compute_hosts(&state.config.base_domain, cfg, env);
+    let hosts = compute_hosts(&state.base_domain(), cfg, env);
     if hosts.is_empty() {
         return Err(SkociError::production_requires_domain(app, &[]));
     }
@@ -1097,7 +1096,7 @@ pub async fn check_production_dns_records(
         None => return Ok(()),
     };
 
-    let hosts = compute_hosts(&state.config.base_domain, cfg, env);
+    let hosts = compute_hosts(&state.base_domain(), cfg, env);
     let expected = vec![public_ip.to_string()];
 
     for host in hosts {

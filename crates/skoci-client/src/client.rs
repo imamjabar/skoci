@@ -1,24 +1,24 @@
-use tokio_util::bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use serde::de::DeserializeOwned;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::ApiResponse;
 use skoci_api::requests::{
     ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
-    DeploymentsQuery, DomainCheckRequest, LogsQuery, PromoteRequest, RollbackRequest,
-    SecretSetRequest, TokenCreateRequest,
+    DeploymentsQuery, DomainCheckRequest, DomainSetPrimaryRequest, LogsQuery, PromoteRequest,
+    RollbackRequest, SecretSetRequest, TokenCreateRequest,
 };
 use skoci_api::responses::{
-    AppDeleteResponse, AppSummary, ApprovalInfo, ApproveResponse, AuditEntry,
-    DbBackupListResponse, DbBackupResponse, DbRestoreResponse, DefaultAppResponse,
-    DeployAccepted, DeployEvent, DeployStage, DeploymentInfo, DoctorResponse,
-    DomainCheckResponse, LogsResponse, PromoteResponse, SecretListResponse, StatusResponse,
-    TokenCreateResponse, TokenListResponse, TokenRevokeResponse,
+    AppDeleteResponse, AppSummary, ApprovalInfo, ApproveResponse, AuditEntry, DbBackupListResponse,
+    DbBackupResponse, DbRestoreResponse, DefaultAppResponse, DeployAccepted, DeployEvent,
+    DeployStage, DeploymentInfo, DoctorResponse, DomainCheckResponse, DomainSetPrimaryResponse,
+    LogsResponse, PromoteResponse, SecretListResponse, StatusResponse, TokenCreateResponse,
+    TokenListResponse, TokenRevokeResponse,
 };
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::bytes::Bytes;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -131,17 +131,15 @@ impl SkociClient {
         let base_url = base_url.into().trim_end_matches('/').to_string();
 
         let normalized_pin = match pin.as_deref() {
-            Some(p) if !p.trim().is_empty() => {
-                match skoci_api::models::normalize_spki_pin(p) {
-                    Some(np) => Some(np),
-                    None => {
-                        return Err(SkociError::bad_request(
+            Some(p) if !p.trim().is_empty() => match skoci_api::models::normalize_spki_pin(p) {
+                Some(np) => Some(np),
+                None => {
+                    return Err(SkociError::bad_request(
                             format!("Malformed SPKI pin '{p}': expected sha256:<64 hex> or bare 64-char hex"),
                             "Check the pin format or retrieve a fresh pin with 'skoci server fingerprint'",
                         ));
-                    }
                 }
-            }
+            },
             _ => None,
         };
 
@@ -154,7 +152,11 @@ impl SkociClient {
 
         let host_str = parsed_url.host_str().unwrap_or("").to_string();
         let is_ip_literal = host_str.parse::<std::net::IpAddr>().is_ok()
-            || host_str.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok();
+            || host_str
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok();
 
         if parsed_url.scheme() == "https" && is_ip_literal && normalized_pin.is_none() {
             return Err(SkociError::pin_required(&host_str));
@@ -172,17 +174,18 @@ impl SkociClient {
                 supported_algs,
             });
 
-            let client_config: rustls::ClientConfig = rustls::ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .map_err(|e| {
-                    SkociError::internal(
-                        format!("Failed to configure TLS protocol versions: {e}"),
-                        "Check TLS configuration",
-                    )
-                })?
-                .dangerous()
-                .with_custom_certificate_verifier(verifier)
-                .with_no_client_auth();
+            let client_config: rustls::ClientConfig =
+                rustls::ClientConfig::builder_with_provider(provider)
+                    .with_safe_default_protocol_versions()
+                    .map_err(|e| {
+                        SkociError::internal(
+                            format!("Failed to configure TLS protocol versions: {e}"),
+                            "Check TLS configuration",
+                        )
+                    })?
+                    .dangerous()
+                    .with_custom_certificate_verifier(verifier)
+                    .with_no_client_auth();
 
             builder = builder.use_preconfigured_tls(client_config);
             Some(mismatch_slot)
@@ -206,7 +209,12 @@ impl SkociClient {
         })
     }
 
-    fn map_reqwest_err(&self, e: &reqwest::Error, default_msg: String, default_fix: impl Into<String>) -> SkociError {
+    fn map_reqwest_err(
+        &self,
+        e: &reqwest::Error,
+        default_msg: String,
+        default_fix: impl Into<String>,
+    ) -> SkociError {
         if let Some(slot) = &self.pin_mismatch_slot {
             if let Some(m) = slot.lock().take() {
                 return SkociError::pin_mismatch(&m.server, &m.expected, &m.got);
@@ -219,7 +227,10 @@ impl SkociClient {
             if let Some(sep) = rest.find(", got ") {
                 let exp = &rest[..sep];
                 let got_rest = &rest[sep + ", got ".len()..];
-                let got = got_rest.split(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '"').next().unwrap_or(got_rest);
+                let got = got_rest
+                    .split(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '"')
+                    .next()
+                    .unwrap_or(got_rest);
                 let server = self.server_host();
                 return SkociError::pin_mismatch(&server, exp, got);
             }
@@ -303,28 +314,39 @@ impl SkociClient {
                 "Ensure context archive file exists and is readable",
             )
         })?;
-        let total_bytes = file.metadata().await.map_err(|e| {
-            SkociError::internal(format!("Failed to read file metadata: {e}"), "Try deploying again")
-        })?.len();
+        let total_bytes = file
+            .metadata()
+            .await
+            .map_err(|e| {
+                SkociError::internal(
+                    format!("Failed to read file metadata: {e}"),
+                    "Try deploying again",
+                )
+            })?
+            .len();
 
         let sent = Arc::new(AtomicU64::new(0));
         let progress = Arc::new(progress);
 
         let stream = tokio_util::io::ReaderStream::new(file).map(move |res| {
             if let Ok(bytes) = &res {
-                let cur = sent.fetch_add(bytes.len() as u64, Ordering::SeqCst)
-                    + bytes.len() as u64;
+                let cur = sent.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
                 progress(cur, total_bytes);
             }
             res
         });
 
         let body = reqwest::Body::wrap_stream(stream);
-        let mut url = format!("{}/api/deploy?app={}&env={}", self.base_url, req.app, req.env);
+        let mut url = format!(
+            "{}/api/deploy?app={}&env={}",
+            self.base_url, req.app, req.env
+        );
         if let Some(commit) = &req.commit {
             url.push_str(&format!("&commit={}", commit));
         }
-        let rb = self.client.post(&url)
+        let rb = self
+            .client
+            .post(&url)
             .header("Content-Type", "application/gzip")
             .body(body);
 
@@ -421,10 +443,7 @@ impl SkociClient {
         self.send(self.auth(rb)).await
     }
 
-    pub async fn rollback(
-        &self,
-        req: RollbackRequest,
-    ) -> SkociResult<ApiResponse<DeployAccepted>> {
+    pub async fn rollback(&self, req: RollbackRequest) -> SkociResult<ApiResponse<DeployAccepted>> {
         let url = format!("{}/api/rollback", self.base_url);
         let rb = self.client.post(&url).json(&req);
         self.send(self.auth(rb)).await
@@ -530,6 +549,20 @@ impl SkociClient {
         let rb = self.auth(self.client.post(&url).json(&body));
         self.send(rb).await
     }
+
+    pub async fn domain_set_primary(
+        &self,
+        host: &str,
+        force: bool,
+    ) -> SkociResult<ApiResponse<DomainSetPrimaryResponse>> {
+        let url = format!("{}/api/domains/primary", self.base_url);
+        let body = DomainSetPrimaryRequest {
+            host: host.to_string(),
+            force,
+        };
+        let rb = self.auth(self.client.post(&url).json(&body));
+        self.send(rb).await
+    }
 }
 
 pub fn parse_sse_stream<S, E>(
@@ -560,103 +593,54 @@ where
         terminated: false,
     };
 
-    Box::pin(futures_util::stream::unfold(state, |mut state| Box::pin(async move {
-        if state.terminated {
-            return None;
-        }
-
-        loop {
-            if let Some(pos) = state.buffer.find('\n') {
-                let line = state.buffer[..pos].trim_end_matches('\r').to_string();
-                state.buffer.drain(..=pos);
-
-                if line.is_empty() {
-                    if !state.data_lines.is_empty() {
-                        let payload = state.data_lines.join("\n");
-                        state.data_lines.clear();
-                        match serde_json::from_str::<DeployEvent>(&payload) {
-                            Ok(event) => {
-                                if event.stage == DeployStage::Done {
-                                    state.saw_done = true;
-                                    state.terminated = true;
-                                }
-                                return Some((Ok(event), state));
-                            }
-                            Err(e) => {
-                                state.terminated = true;
-                                return Some((
-                                    Err(SkociError::internal(
-                                        format!("Failed to parse SSE event: {e}"),
-                                        "Check SSE data format from server",
-                                    )),
-                                    state,
-                                ));
-                            }
-                        }
-                    }
-                } else if line.starts_with(':') {
-                    // SSE comment / keepalive line
-                    continue;
-                } else if let Some(rest) = line.strip_prefix("data:") {
-                    let data_str = rest.strip_prefix(' ').unwrap_or(rest);
-                    state.data_lines.push(data_str.to_string());
-                }
-                continue;
-            }
-
-            if state.eof_reached {
-                state.terminated = true;
-                if !state.saw_done {
-                    return Some((
-                        Err(SkociError::internal(
-                            "Event connection closed before deployment completed",
-                            format!("Use `skoci watch {}` to reconnect", state.deployment_id),
-                        )),
-                        state,
-                    ));
-                }
+    Box::pin(futures_util::stream::unfold(state, |mut state| {
+        Box::pin(async move {
+            if state.terminated {
                 return None;
             }
 
-            match state.stream.next().await {
-                Some(Ok(bytes)) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    state.buffer.push_str(&text);
-                }
-                Some(Err(e)) => {
-                    state.terminated = true;
-                    return Some((
-                        Err(SkociError::internal(
-                            format!("SSE connection closed with error: {e}"),
-                            format!("Use `skoci watch {}` to reconnect", state.deployment_id),
-                        )),
-                        state,
-                    ));
-                }
-                None => {
-                    state.eof_reached = true;
-                    // Flush trailing line if buffer wasn't terminated with newline
-                    if !state.buffer.trim().is_empty() {
-                        let line = state.buffer.trim_end_matches('\r').to_string();
-                        state.buffer.clear();
-                        if let Some(rest) = line.strip_prefix("data:") {
-                            let data_str = rest.strip_prefix(' ').unwrap_or(rest);
-                            state.data_lines.push(data_str.to_string());
-                        }
-                    }
-                    if !state.data_lines.is_empty() {
-                        let payload = state.data_lines.join("\n");
-                        state.data_lines.clear();
-                        if let Ok(event) = serde_json::from_str::<DeployEvent>(&payload) {
-                            if event.stage == DeployStage::Done {
-                                state.saw_done = true;
-                                state.terminated = true;
+            loop {
+                if let Some(pos) = state.buffer.find('\n') {
+                    let line = state.buffer[..pos].trim_end_matches('\r').to_string();
+                    state.buffer.drain(..=pos);
+
+                    if line.is_empty() {
+                        if !state.data_lines.is_empty() {
+                            let payload = state.data_lines.join("\n");
+                            state.data_lines.clear();
+                            match serde_json::from_str::<DeployEvent>(&payload) {
+                                Ok(event) => {
+                                    if event.stage == DeployStage::Done {
+                                        state.saw_done = true;
+                                        state.terminated = true;
+                                    }
+                                    return Some((Ok(event), state));
+                                }
+                                Err(e) => {
+                                    state.terminated = true;
+                                    return Some((
+                                        Err(SkociError::internal(
+                                            format!("Failed to parse SSE event: {e}"),
+                                            "Check SSE data format from server",
+                                        )),
+                                        state,
+                                    ));
+                                }
                             }
-                            return Some((Ok(event), state));
                         }
+                    } else if line.starts_with(':') {
+                        // SSE comment / keepalive line
+                        continue;
+                    } else if let Some(rest) = line.strip_prefix("data:") {
+                        let data_str = rest.strip_prefix(' ').unwrap_or(rest);
+                        state.data_lines.push(data_str.to_string());
                     }
+                    continue;
+                }
+
+                if state.eof_reached {
+                    state.terminated = true;
                     if !state.saw_done {
-                        state.terminated = true;
                         return Some((
                             Err(SkociError::internal(
                                 "Event connection closed before deployment completed",
@@ -667,9 +651,63 @@ where
                     }
                     return None;
                 }
+
+                match state.stream.next().await {
+                    Some(Ok(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        state.buffer.push_str(&text);
+                    }
+                    Some(Err(e)) => {
+                        state.terminated = true;
+                        return Some((
+                            Err(SkociError::internal(
+                                format!("SSE connection closed with error: {e}"),
+                                format!("Use `skoci watch {}` to reconnect", state.deployment_id),
+                            )),
+                            state,
+                        ));
+                    }
+                    None => {
+                        state.eof_reached = true;
+                        // Flush trailing line if buffer wasn't terminated with newline
+                        if !state.buffer.trim().is_empty() {
+                            let line = state.buffer.trim_end_matches('\r').to_string();
+                            state.buffer.clear();
+                            if let Some(rest) = line.strip_prefix("data:") {
+                                let data_str = rest.strip_prefix(' ').unwrap_or(rest);
+                                state.data_lines.push(data_str.to_string());
+                            }
+                        }
+                        if !state.data_lines.is_empty() {
+                            let payload = state.data_lines.join("\n");
+                            state.data_lines.clear();
+                            if let Ok(event) = serde_json::from_str::<DeployEvent>(&payload) {
+                                if event.stage == DeployStage::Done {
+                                    state.saw_done = true;
+                                    state.terminated = true;
+                                }
+                                return Some((Ok(event), state));
+                            }
+                        }
+                        if !state.saw_done {
+                            state.terminated = true;
+                            return Some((
+                                Err(SkociError::internal(
+                                    "Event connection closed before deployment completed",
+                                    format!(
+                                        "Use `skoci watch {}` to reconnect",
+                                        state.deployment_id
+                                    ),
+                                )),
+                                state,
+                            ));
+                        }
+                        return None;
+                    }
+                }
             }
-        }
-    })))
+        })
+    }))
 }
 
 #[cfg(test)]
@@ -761,7 +799,10 @@ mod tests {
         assert!(skoci_api::models::normalize_spki_pin("").is_none());
         assert!(skoci_api::models::normalize_spki_pin("   ").is_none());
         assert!(skoci_api::models::normalize_spki_pin("sha256:too_short").is_none());
-        assert!(skoci_api::models::normalize_spki_pin("not_hex_chars_0123456789abcdef0123456789abcdef0123456789abcdefgh").is_none());
+        assert!(skoci_api::models::normalize_spki_pin(
+            "not_hex_chars_0123456789abcdef0123456789abcdef0123456789abcdefgh"
+        )
+        .is_none());
 
         // Bad pin in client creation fails with bad_request
         let res = SkociClient::new("http://localhost:8787", None, Some("bad_pin".to_string()));

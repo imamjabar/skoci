@@ -873,3 +873,135 @@ fn test_resolve_project_config_rejects_symlinked_config() {
     assert_eq!(err.code, "config_invalid");
     assert!(err.message.contains("symlink"), "{}", err.message);
 }
+
+#[tokio::test]
+async fn test_base_domain_accessor_prefers_db_over_startup_config() {
+    let (mut state, _temp) = setup_test_state(10).await;
+    let mut config = (*state.config).clone();
+    config.base_domain = Some("startup.example.com".to_string());
+    config.api_domain = Some("skoci.startup.example.com".to_string());
+    state.config = Arc::new(config);
+
+    assert_eq!(state.base_domain(), Some("startup.example.com".to_string()));
+    assert_eq!(state.api_domain(), Some("skoci.startup.example.com".to_string()));
+
+    state.db.set_setting("base_domain", "override.example.com").unwrap();
+
+    assert_eq!(state.base_domain(), Some("override.example.com".to_string()));
+    assert_eq!(state.api_domain(), Some("skoci.override.example.com".to_string()));
+}
+
+#[tokio::test]
+async fn test_domain_set_primary_rejects_magic_dns_and_raw_ip() {
+    let (state, _temp) = setup_test_state(10).await;
+    let app = build_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/primary")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "192.168.1.100", "force": true }).to_string()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/primary")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "::1", "force": true }).to_string()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/primary")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "192-168-1-100.sslip.io", "force": true }).to_string()))
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_domain_set_primary_success_with_force() {
+    use chrono::Utc;
+    use skoci_api::responses::DomainSetPrimaryResponse;
+    use skoci_control::db::RouteRecord;
+
+    let (state, _temp) = setup_test_state(10).await;
+
+    let route_rec = RouteRecord {
+        app: "my-app".to_string(),
+        env: "production".to_string(),
+        container: "c_my_app_prod".to_string(),
+        host_port: 3000,
+        version: "v1".to_string(),
+        hosts: vec!["my-app.old.example.com".to_string()],
+        deployed_at: Utc::now(),
+    };
+    state.db.upsert_route(&route_rec).unwrap();
+
+    let app = build_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/primary")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {MASTER_TOKEN}"))
+        .body(Body::from(json!({ "host": "newdomain.com", "force": true }).to_string()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let resp: ApiResponse<DomainSetPrimaryResponse> = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(resp.success);
+    let data = resp.data.unwrap();
+
+    assert_eq!(data.base_domain, "newdomain.com");
+    assert_eq!(data.api_domain, "skoci.newdomain.com");
+    assert_eq!(data.previous_base_domain, None);
+    assert!(data.dns_check_skipped);
+    assert_eq!(data.updated_routes, vec!["my-app:production".to_string()]);
+    assert!(data.certificate_hosts.contains(&"skoci.newdomain.com".to_string()));
+    assert!(data.certificate_hosts.contains(&"my-app.newdomain.com".to_string()));
+
+    assert_eq!(
+        state.db.get_setting("base_domain").unwrap(),
+        Some("newdomain.com".to_string())
+    );
+    assert_eq!(state.base_domain(), Some("newdomain.com".to_string()));
+    assert_eq!(state.api_domain(), Some("skoci.newdomain.com".to_string()));
+
+    let routes = state.db.list_routes().unwrap();
+    let updated = routes
+        .iter()
+        .find(|r| r.app == "my-app" && r.env == "production")
+        .unwrap();
+    assert!(updated.hosts.contains(&"my-app.newdomain.com".to_string()));
+}
+
+#[tokio::test]
+async fn test_domain_set_primary_requires_admin() {
+    let (state, _temp) = setup_test_state(10).await;
+    let (agent_token, hash, _) = generate_agent_token("some-app");
+    state.db.insert_agent_token(&hash, "some-app", "agent-1").unwrap();
+    let app = build_router(state);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/domains/primary")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {agent_token}"))
+        .body(Body::from(json!({ "host": "newdomain.com", "force": true }).to_string()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}

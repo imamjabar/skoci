@@ -3,10 +3,10 @@ use axum::response::Response;
 use axum::Json;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::is_magic_dns;
-use skoci_api::requests::DomainCheckRequest;
-use skoci_api::responses::DomainCheckResponse;
+use skoci_api::requests::{DomainCheckRequest, DomainSetPrimaryRequest};
+use skoci_api::responses::{DomainCheckResponse, DomainSetPrimaryResponse};
 use std::collections::HashSet;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::http::{api_reply, AuthSubject};
@@ -116,5 +116,136 @@ pub async fn handle_domain_check(
         points_here,
         magic_dns: magic,
         record_hint,
+    }))
+}
+
+pub async fn handle_set_primary(
+    State(state): State<AppState>,
+    AuthSubject(subject): AuthSubject,
+    Json(body): Json<DomainSetPrimaryRequest>,
+) -> Response {
+    if let Err(err) = subject.require_admin() {
+        return api_reply::<DomainSetPrimaryResponse>(Err(err));
+    }
+
+    if let Err(e) = validate_domain_host(&body.host) {
+        return api_reply::<DomainSetPrimaryResponse>(Err(e));
+    }
+
+    let host = body.host.trim().to_lowercase();
+    if host.parse::<IpAddr>().is_ok() {
+        return api_reply::<DomainSetPrimaryResponse>(Err(SkociError::bad_request(
+            format!("'{host}' is an IP address, not a domain name"),
+            "Provide a registered domain name (e.g. example.com)",
+        )));
+    }
+
+    if is_magic_dns(&host) {
+        return api_reply::<DomainSetPrimaryResponse>(Err(SkociError::bad_request(
+            format!("'{host}' is a magic-DNS domain (e.g. sslip.io)"),
+            "Provide a domain name you own (e.g. example.com) to leave magic DNS behind",
+        )));
+    }
+
+    let dns_check_skipped = body.force;
+    if !body.force {
+        let expected_ips: Vec<String> = match state.config.public_ip {
+            Some(ip) => vec![ip.to_string()],
+            None => Vec::new(),
+        };
+
+        let resolved = resolve_host_ips(&host).await;
+        let points_here = match state.config.public_ip {
+            Some(ip) => resolved.contains(&ip),
+            None => false,
+        };
+        if !points_here {
+            let resolved_ips: Vec<String> = resolved.iter().map(|ip| ip.to_string()).collect();
+            return api_reply::<DomainSetPrimaryResponse>(Err(SkociError::dns_mismatch(
+                &host,
+                &expected_ips,
+                &resolved_ips,
+            )));
+        }
+
+        let api_host = format!("skoci.{host}");
+        let resolved_api = resolve_host_ips(&api_host).await;
+        let api_points_here = match state.config.public_ip {
+            Some(ip) => resolved_api.contains(&ip),
+            None => false,
+        };
+        if !api_points_here {
+            let resolved_api_ips: Vec<String> =
+                resolved_api.iter().map(|ip| ip.to_string()).collect();
+            return api_reply::<DomainSetPrimaryResponse>(Err(SkociError::dns_mismatch(
+                &api_host,
+                &expected_ips,
+                &resolved_api_ips,
+            )));
+        }
+    }
+
+    let previous_base_domain = state.base_domain();
+    if let Err(e) = state.db.set_setting("base_domain", &host) {
+        return api_reply::<DomainSetPrimaryResponse>(Err(e));
+    }
+
+    let _ = state.db.record_audit(
+        &subject.identifier(),
+        subject.actor_type(),
+        "set_primary_domain",
+        &host,
+        "Server primary domain updated",
+    );
+
+    let routes = match state.db.list_routes() {
+        Ok(r) => r,
+        Err(e) => return api_reply::<DomainSetPrimaryResponse>(Err(e)),
+    };
+
+    let mut updated_routes = Vec::new();
+    for mut r in routes {
+        let new_hosts = match state.db.get_app_config(&r.app) {
+            Ok(Some(cfg)) => crate::deploy::compute_hosts(&Some(host.clone()), &cfg, &r.env),
+            Ok(None) => vec![crate::deploy::auto_host(&r.app, &host, &r.env)],
+            Err(e) => return api_reply::<DomainSetPrimaryResponse>(Err(e)),
+        };
+        r.hosts = new_hosts.clone();
+        let target = SocketAddr::from(([127, 0, 0, 1], r.host_port));
+
+        let route = skoci_proxy::router::Route {
+            app: r.app.clone(),
+            env: r.env.clone(),
+            hosts: new_hosts,
+            target,
+            version: r.version.clone(),
+        };
+
+        if let Err(e) = state.router.upsert_route(route).await {
+            return api_reply::<DomainSetPrimaryResponse>(Err(e));
+        }
+
+        if let Err(e) = state.db.upsert_route(&r) {
+            return api_reply::<DomainSetPrimaryResponse>(Err(e));
+        }
+
+        updated_routes.push(format!("{}:{}", r.app, r.env));
+    }
+
+    let api_domain = format!("skoci.{host}");
+    state
+        .router
+        .set_control(Some(api_domain.clone()), state.config.bind)
+        .await;
+
+    let certificate_hosts = state.router.all_dns_hosts().await;
+
+    api_reply(Ok(DomainSetPrimaryResponse {
+        base_domain: host,
+        api_domain,
+        previous_base_domain,
+        certificate_hosts,
+        updated_routes,
+        dns_check_skipped,
     }))
 }

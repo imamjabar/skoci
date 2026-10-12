@@ -1,17 +1,15 @@
 use futures_util::StreamExt;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::{
-    ApiResponse, LEGACY_CONFIG_PATH, PROJECT_CONFIG_PATH, PROJECT_DIR,
-    PROJECT_DOCKERFILE_PATH, PROJECT_IGNORE_PATH,
+    ApiResponse, LEGACY_CONFIG_PATH, PROJECT_CONFIG_PATH, PROJECT_DIR, PROJECT_DOCKERFILE_PATH,
+    PROJECT_IGNORE_PATH,
 };
 use skoci_api::requests::{
     ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
     DeploymentsQuery, LogsQuery, PromoteRequest, RollbackRequest, SecretSetRequest,
     TokenCreateRequest,
 };
-use skoci_api::responses::{
-    DeployResponse, DeployStage, InitResponse, StageStatus,
-};
+use skoci_api::responses::{DeployResponse, DeployStage, InitResponse, StageStatus};
 use skoci_client::SkociClient;
 use skoci_core::config::ConfigLoader;
 use skoci_core::detector::ProjectDetector;
@@ -120,12 +118,18 @@ pub fn normalize_server_url(input: &str) -> Result<String, SkociError> {
 
     // Bare IPv4 literal
     if let Ok(ip4) = trimmed.parse::<std::net::Ipv4Addr>() {
-        return Ok(format!("https://{ip4}:{}", skoci_api::models::CONTROL_TLS_PORT));
+        return Ok(format!(
+            "https://{ip4}:{}",
+            skoci_api::models::CONTROL_TLS_PORT
+        ));
     }
 
     // Bare IPv6 literal
     if let Ok(ip6) = trimmed.parse::<std::net::Ipv6Addr>() {
-        return Ok(format!("https://[{ip6}]:{}", skoci_api::models::CONTROL_TLS_PORT));
+        return Ok(format!(
+            "https://[{ip6}]:{}",
+            skoci_api::models::CONTROL_TLS_PORT
+        ));
     }
 
     // Bracketed IPv6 literal with port, e.g. [::1]:8443
@@ -213,8 +217,10 @@ async fn verify_version_compatibility(client: &SkociClient, json: bool) -> Resul
     }
 }
 
-
-pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> SkociResult<InitResponse> {
+pub fn init_project(
+    path: impl AsRef<Path>,
+    app_override: Option<&str>,
+) -> SkociResult<InitResponse> {
     let path = path.as_ref();
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|e| {
@@ -242,7 +248,10 @@ pub fn init_project(path: impl AsRef<Path>, app_override: Option<&str>) -> Skoci
     let legacy_yaml = path.join(LEGACY_CONFIG_PATH);
     if legacy_yaml.exists() {
         let mut notes = detection.notes;
-        notes.push("Project already configured via legacy skoci.yaml; this file is still honoured.".to_string());
+        notes.push(
+            "Project already configured via legacy skoci.yaml; this file is still honoured."
+                .to_string(),
+        );
         return Ok(InitResponse {
             detected_framework: detection.framework.name().to_string(),
             created_files: Vec::new(),
@@ -388,7 +397,11 @@ pub async fn stream_events_and_render(
                         let step_info = tracker.on_stage_ok(event.stage);
                         if !is_term {
                             if let Some((n, dur)) = step_info {
-                                eprintln!("✓ [{n}/8] {} ({:.1}s)", event.stage.label(), dur.as_secs_f64());
+                                eprintln!(
+                                    "✓ [{n}/8] {} ({:.1}s)",
+                                    event.stage.label(),
+                                    dur.as_secs_f64()
+                                );
                             }
                         }
                     }
@@ -475,7 +488,9 @@ pub async fn stream_events_and_render(
         let dur = start_time.elapsed().as_secs_f64();
         if resp.urls.is_empty() {
             if is_term {
-                eprintln!("\x1b[1;33m⚠ No public address:\x1b[0m container is running but unreachable");
+                eprintln!(
+                    "\x1b[1;33m⚠ No public address:\x1b[0m container is running but unreachable"
+                );
             } else {
                 eprintln!("⚠ No public address: container is running but unreachable");
             }
@@ -556,6 +571,9 @@ pub async fn stream_events_and_render(
 }
 
 pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
+    if json {
+        skoci_client::profile::suppress_desync_warning();
+    }
     let client = if !matches!(
         cmd,
         Commands::Connect { .. } | Commands::Init { .. } | Commands::AgentGuide
@@ -680,11 +698,9 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                 }
             }
 
-            if let Err(err) = crate::env::write_project_env(
-                &normalized_server,
-                &resolved_token,
-                pin.as_deref(),
-            ) {
+            if let Err(err) =
+                crate::env::write_project_env(&normalized_server, &resolved_token, pin.as_deref())
+            {
                 output::print_error(&err, json);
                 return 1;
             }
@@ -706,14 +722,18 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                         eprintln!("Warning: Failed to save server to profile store: {err}");
                     }
                 } else if !json {
-                    println!("Saved profile '{name}' to ~/.config/skoci/servers.json (set as current)");
+                    println!(
+                        "Saved profile '{name}' to ~/.config/skoci/servers.json (set as current)"
+                    );
                 }
             }
 
             if json {
                 output::print_json(&doc_resp);
             } else {
-                println!("✓ Successfully connected and saved configuration to .skoci/env (mode 0600)\n");
+                println!(
+                    "✓ Successfully connected and saved configuration to .skoci/env (mode 0600)\n"
+                );
                 if let Some(doc) = &doc_resp.data {
                     output::render_doctor(doc);
                 }
@@ -721,73 +741,76 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             0
         }
 
-        Commands::Init { app, path } => {
-            match init_project(&path, app.as_deref()) {
-                Ok(res) => {
-                    if json {
-                        output::print_json(&ApiResponse::ok(res, "Project successfully initialized"));
-                    } else {
-                        println!("✓ Project '{}' successfully initialized!\n", res.app_name);
-                        println!("Detected framework   : {}", res.detected_framework);
-                        println!("Files created        : {}", res.created_files.join(", "));
-                        if !res.skipped_files.is_empty() {
-                            println!("Files skipped (exist): {}", res.skipped_files.join(", "));
-                        }
-                        if !res.notes.is_empty() {
-                            println!("\nNotes:");
-                            for note in &res.notes {
-                                println!("  • {}", note);
-                            }
-                        }
-
-                        let config_file = if path.join(LEGACY_CONFIG_PATH).exists() {
-                            LEGACY_CONFIG_PATH
-                        } else {
-                            PROJECT_CONFIG_PATH
-                        };
-
-                        let resolved_server_url = (|| {
-                            let project_env = crate::env::read_project_env_at(&path);
-                            if let Ok(profiles) = skoci_client::profile::load_profiles() {
-                                if let Ok(target) = skoci_client::profile::resolve_target_with_profiles(
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    project_env.clone(),
-                                    &profiles,
-                                ) {
-                                    if matches!(
-                                        target.source,
-                                        skoci_client::profile::TargetSource::ProjectEnv
-                                            | skoci_client::profile::TargetSource::Profile(_)
-                                    ) {
-                                        return Some(target.url);
-                                    }
-                                }
-                            }
-                            project_env.map(|(url, _, _)| url)
-                        })();
-
-                        println!("\nNext steps:");
-                        println!("  1. Review {config_file} (port, health path, domains)");
-                        if let Some(target_url) = resolved_server_url {
-                            println!("  2. Deploy to {target_url}: skoci deploy");
-                        } else {
-                            println!("  2. Connect once: skoci connect --server <url> --token <token>");
-                            println!("  3. Deploy: skoci deploy");
+        Commands::Init { app, path } => match init_project(&path, app.as_deref()) {
+            Ok(res) => {
+                if json {
+                    output::print_json(&ApiResponse::ok(res, "Project successfully initialized"));
+                } else {
+                    println!("✓ Project '{}' successfully initialized!\n", res.app_name);
+                    println!("Detected framework   : {}", res.detected_framework);
+                    println!("Files created        : {}", res.created_files.join(", "));
+                    if !res.skipped_files.is_empty() {
+                        println!("Files skipped (exist): {}", res.skipped_files.join(", "));
+                    }
+                    if !res.notes.is_empty() {
+                        println!("\nNotes:");
+                        for note in &res.notes {
+                            println!("  • {}", note);
                         }
                     }
-                    0
-                }
-                Err(err) => {
-                    output::print_error(&err, json);
-                    error_exit_code(&err)
-                }
-            }
-        }
 
-        Commands::Deploy { env, path, detach, commit } => {
+                    let config_file = if path.join(LEGACY_CONFIG_PATH).exists() {
+                        LEGACY_CONFIG_PATH
+                    } else {
+                        PROJECT_CONFIG_PATH
+                    };
+
+                    let resolved_server_url = (|| {
+                        let project_env = crate::env::read_project_env_at(&path);
+                        if let Ok(profiles) = skoci_client::profile::load_profiles() {
+                            if let Ok(target) = skoci_client::profile::resolve_target_with_profiles(
+                                None,
+                                None,
+                                None,
+                                None,
+                                project_env.clone(),
+                                &profiles,
+                            ) {
+                                if matches!(
+                                    target.source,
+                                    skoci_client::profile::TargetSource::ProjectEnv
+                                        | skoci_client::profile::TargetSource::Profile(_)
+                                ) {
+                                    return Some(target.url);
+                                }
+                            }
+                        }
+                        project_env.map(|(url, _, _)| url)
+                    })();
+
+                    println!("\nNext steps:");
+                    println!("  1. Review {config_file} (port, health path, domains)");
+                    if let Some(target_url) = resolved_server_url {
+                        println!("  2. Deploy to {target_url}: skoci deploy");
+                    } else {
+                        println!("  2. Connect once: skoci connect --server <url> --token <token>");
+                        println!("  3. Deploy: skoci deploy");
+                    }
+                }
+                0
+            }
+            Err(err) => {
+                output::print_error(&err, json);
+                error_exit_code(&err)
+            }
+        },
+
+        Commands::Deploy {
+            env,
+            path,
+            detach,
+            commit,
+        } => {
             if let Err(code) = verify_version_compatibility(&client, json).await {
                 return code;
             }
@@ -855,7 +878,9 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                 eprintln!("▸ Deploy {} → {}", app, env);
             }
 
-            let resp = client.deploy_upload(&packed.path, &req, move |_sent, _total| {}).await;
+            let resp = client
+                .deploy_upload(&packed.path, &req, move |_sent, _total| {})
+                .await;
 
             match resp {
                 Ok(api_resp) => {
@@ -869,7 +894,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                     let accepted = match api_resp.data {
                         Some(d) => d,
                         None => {
-                            let err = SkociError::internal("Empty response from server", "Try deploying again");
+                            let err = SkociError::internal(
+                                "Empty response from server",
+                                "Try deploying again",
+                            );
                             output::print_error(&err, json);
                             return 1;
                         }
@@ -884,7 +912,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                             packed.files,
                             elapsed.as_secs_f64()
                         );
-                        eprintln!("  Version: {}  ID: {}", accepted.version, accepted.deployment_id);
+                        eprintln!(
+                            "  Version: {}  ID: {}",
+                            accepted.version, accepted.deployment_id
+                        );
                     }
 
                     if detach {
@@ -897,7 +928,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                             println!("\nDeployment running in background (detached).");
                             println!("Deployment ID: {}", accepted.deployment_id);
                             println!("Version      : {}", accepted.version);
-                            println!("Use `skoci watch {}` to monitor status.", accepted.deployment_id);
+                            println!(
+                                "Use `skoci watch {}` to monitor status.",
+                                accepted.deployment_id
+                            );
                         }
                         0
                     } else {
@@ -1065,7 +1099,9 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("✓ Secret '{key}' saved successfully for app '{app_name}'");
+                                println!(
+                                    "✓ Secret '{key}' saved successfully for app '{app_name}'"
+                                );
                             }
                             0
                         }
@@ -1075,39 +1111,41 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                         }
                     }
                 }
-                SecretCommands::List => {
-                    match client.secret_list(&app_name).await {
-                        Ok(resp) => {
-                            if !resp.success {
-                                if let Some(err) = &resp.error {
-                                    output::print_error(err, json);
-                                    return error_exit_code(err);
+                SecretCommands::List => match client.secret_list(&app_name).await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
+                            }
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else if let Some(data) = &resp.data {
+                            if data.keys.is_empty() {
+                                println!("App '{app_name}' has no secrets yet.");
+                            } else {
+                                println!("Secret list for app '{app_name}':");
+                                for k in &data.keys {
+                                    println!("  • {k}");
                                 }
                             }
-                            if json {
-                                output::print_json(&resp);
-                            } else if let Some(data) = &resp.data {
-                                if data.keys.is_empty() {
-                                    println!("App '{app_name}' has no secrets yet.");
-                                } else {
-                                    println!("Secret list for app '{app_name}':");
-                                    for k in &data.keys {
-                                        println!("  • {k}");
-                                    }
-                                }
-                            }
-                            0
                         }
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            error_exit_code(&err)
-                        }
+                        0
                     }
-                }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
+                    }
+                },
             }
         }
 
-        Commands::Promote { reason, version, detach } => {
+        Commands::Promote {
+            reason,
+            version,
+            detach,
+        } => {
             if let Err(code) = verify_version_compatibility(&client, json).await {
                 return code;
             }
@@ -1153,7 +1191,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                             } else {
                                 if !json {
                                     eprintln!("▸ Promoting {} → production", dep.app);
-                                    eprintln!("  Version: {}  ID: {}", dep.version, dep.deployment_id);
+                                    eprintln!(
+                                        "  Version: {}  ID: {}",
+                                        dep.version, dep.deployment_id
+                                    );
                                 }
                                 stream_events_and_render(
                                     &client,
@@ -1185,30 +1226,32 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             }
         }
 
-        Commands::Approvals => {
-            match client.approvals().await {
-                Ok(resp) => {
-                    if !resp.success {
-                        if let Some(err) = &resp.error {
-                            output::print_error(err, json);
-                            return error_exit_code(err);
-                        }
+        Commands::Approvals => match client.approvals().await {
+            Ok(resp) => {
+                if !resp.success {
+                    if let Some(err) = &resp.error {
+                        output::print_error(err, json);
+                        return error_exit_code(err);
                     }
-                    if json {
-                        output::print_json(&resp);
-                    } else if let Some(data) = &resp.data {
-                        output::render_approvals(data);
-                    }
-                    0
                 }
-                Err(err) => {
-                    output::print_error(&err, json);
-                    error_exit_code(&err)
+                if json {
+                    output::print_json(&resp);
+                } else if let Some(data) = &resp.data {
+                    output::render_approvals(data);
                 }
+                0
             }
-        }
+            Err(err) => {
+                output::print_error(&err, json);
+                error_exit_code(&err)
+            }
+        },
 
-        Commands::Approve { request_id, note, detach } => {
+        Commands::Approve {
+            request_id,
+            note,
+            detach,
+        } => {
             let req = ApproveRequest { request_id, note };
             match client.approve(req).await {
                 Ok(resp) => {
@@ -1224,15 +1267,24 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                                 if json {
                                     output::print_json(&resp);
                                 } else {
-                                    println!("✓ Approval request approved ({}). {}", data.action, data.detail);
+                                    println!(
+                                        "✓ Approval request approved ({}). {}",
+                                        data.action, data.detail
+                                    );
                                     println!("Deployment ID: {}", dep.deployment_id);
                                 }
                                 0
                             } else {
                                 if !json {
-                                    println!("✓ Approval request approved ({}). {}", data.action, data.detail);
+                                    println!(
+                                        "✓ Approval request approved ({}). {}",
+                                        data.action, data.detail
+                                    );
                                     eprintln!("▸ Running deployment {} → {}", dep.app, dep.env);
-                                    eprintln!("  Version: {}  ID: {}", dep.version, dep.deployment_id);
+                                    eprintln!(
+                                        "  Version: {}  ID: {}",
+                                        dep.version, dep.deployment_id
+                                    );
                                 }
                                 stream_events_and_render(
                                     &client,
@@ -1249,7 +1301,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                             if json {
                                 output::print_json(&resp);
                             } else {
-                                println!("✓ Approval request approved ({}): {}", data.action, data.detail);
+                                println!(
+                                    "✓ Approval request approved ({}): {}",
+                                    data.action, data.detail
+                                );
                             }
                             0
                         }
@@ -1265,7 +1320,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
         }
 
         Commands::Reject { request_id } => {
-            let req = ApproveRequest { request_id, note: None };
+            let req = ApproveRequest {
+                request_id,
+                note: None,
+            };
             match client.reject(req).await {
                 Ok(resp) => {
                     if !resp.success {
@@ -1325,7 +1383,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                         } else {
                             if !json {
                                 eprintln!("▸ Rollback {} → {}", data.app, data.env);
-                                eprintln!("  Version: {}  ID: {}", data.version, data.deployment_id);
+                                eprintln!(
+                                    "  Version: {}  ID: {}",
+                                    data.version, data.deployment_id
+                                );
                             }
                             stream_events_and_render(
                                 &client,
@@ -1349,29 +1410,31 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             }
         }
 
-        Commands::Doctor => {
-            match client.doctor().await {
-                Ok(resp) => {
-                    if !resp.success {
-                        if let Some(err) = &resp.error {
-                            output::print_error(err, json);
-                            return error_exit_code(err);
-                        }
+        Commands::Doctor => match client.doctor().await {
+            Ok(resp) => {
+                if !resp.success {
+                    if let Some(err) = &resp.error {
+                        output::print_error(err, json);
+                        return error_exit_code(err);
                     }
-                    if json {
-                        output::print_json(&resp);
-                    } else if let Some(data) = &resp.data {
-                        output::render_doctor(data);
-                    }
-                    let healthy = resp.data.map(|d| d.healthy).unwrap_or(false);
-                    if healthy { 0 } else { 1 }
                 }
-                Err(err) => {
-                    output::print_error(&err, json);
-                    error_exit_code(&err)
+                if json {
+                    output::print_json(&resp);
+                } else if let Some(data) = &resp.data {
+                    output::render_doctor(data);
+                }
+                let healthy = resp.data.map(|d| d.healthy).unwrap_or(false);
+                if healthy {
+                    0
+                } else {
+                    1
                 }
             }
-        }
+            Err(err) => {
+                output::print_error(&err, json);
+                error_exit_code(&err)
+            }
+        },
 
         Commands::Db { action } => {
             let app_name = match resolve_app(None) {
@@ -1384,7 +1447,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
 
             match action {
                 DbCommands::Backup { service } => {
-                    let req = DbBackupRequest { app: app_name, service };
+                    let req = DbBackupRequest {
+                        app: app_name,
+                        service,
+                    };
                     match client.db_backup(req).await {
                         Ok(resp) => {
                             if !resp.success {
@@ -1397,7 +1463,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                                 output::print_json(&resp);
                             } else if let Some(data) = &resp.data {
                                 let mb = (data.size_bytes as f64) / 1_048_576.0;
-                                println!("✓ Database backup created successfully. ID: {} ({:.2} MB)", data.backup_id, mb);
+                                println!(
+                                    "✓ Database backup created successfully. ID: {} ({:.2} MB)",
+                                    data.backup_id, mb
+                                );
                             }
                             0
                         }
@@ -1407,38 +1476,42 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                         }
                     }
                 }
-                DbCommands::List => {
-                    match client.db_backups(&app_name).await {
-                        Ok(resp) => {
-                            if !resp.success {
-                                if let Some(err) = &resp.error {
-                                    output::print_error(err, json);
-                                    return error_exit_code(err);
+                DbCommands::List => match client.db_backups(&app_name).await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
+                            }
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else if let Some(data) = &resp.data {
+                            if data.backups.is_empty() {
+                                println!("No database backups yet for app '{app_name}'.");
+                            } else {
+                                println!(
+                                    "{:<28} {:<12} {:<12} CREATED",
+                                    "BACKUP ID", "SERVICE", "SIZE"
+                                );
+                                println!("{}", "-".repeat(75));
+                                for b in &data.backups {
+                                    let mb = (b.size_bytes as f64) / 1_048_576.0;
+                                    let ts = b.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                                    println!(
+                                        "{:<28} {:<12} {:<12.2} {}",
+                                        b.backup_id, b.service, mb, ts
+                                    );
                                 }
                             }
-                            if json {
-                                output::print_json(&resp);
-                            } else if let Some(data) = &resp.data {
-                                if data.backups.is_empty() {
-                                    println!("No database backups yet for app '{app_name}'.");
-                                } else {
-                                    println!("{:<28} {:<12} {:<12} CREATED", "BACKUP ID", "SERVICE", "SIZE");
-                                    println!("{}", "-".repeat(75));
-                                    for b in &data.backups {
-                                        let mb = (b.size_bytes as f64) / 1_048_576.0;
-                                        let ts = b.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
-                                        println!("{:<28} {:<12} {:<12.2} {}", b.backup_id, b.service, mb, ts);
-                                    }
-                                }
-                            }
-                            0
                         }
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            error_exit_code(&err)
-                        }
+                        0
                     }
-                }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
+                    }
+                },
                 DbCommands::Restore { backup_id, service } => {
                     let req = DbRestoreRequest {
                         app: app_name,
@@ -1475,49 +1548,49 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             }
         }
 
-        Commands::App { action } => {
-            match action {
-                AppCommands::Delete { app } => {
-                    let app_name = match resolve_app(app) {
-                        Ok(a) => a,
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            return error_exit_code(&err);
-                        }
-                    };
-                    match client.app_delete(&app_name).await {
-                        Ok(resp) => {
-                            if !resp.success {
-                                if let Some(err) = &resp.error {
-                                    output::print_error(err, json);
-                                    return error_exit_code(err);
-                                }
+        Commands::App { action } => match action {
+            AppCommands::Delete { app } => {
+                let app_name = match resolve_app(app) {
+                    Ok(a) => a,
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        return error_exit_code(&err);
+                    }
+                };
+                match client.app_delete(&app_name).await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
                             }
-                            if json {
-                                output::print_json(&resp);
-                            } else if let Some(data) = &resp.data {
-                                if data.status == "pending_approval" {
-                                    let req_id = data.request_id.as_deref().unwrap_or("-");
-                                    println!("▸ App deletion submitted for admin approval (Request ID: {req_id})");
-                                    return 2;
-                                } else {
-                                    println!("✓ App '{app_name}' deleted successfully.");
-                                }
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else if let Some(data) = &resp.data {
+                            if data.status == "pending_approval" {
+                                let req_id = data.request_id.as_deref().unwrap_or("-");
+                                println!("▸ App deletion submitted for admin approval (Request ID: {req_id})");
+                                return 2;
+                            } else {
+                                println!("✓ App '{app_name}' deleted successfully.");
                             }
-                            0
                         }
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            error_exit_code(&err)
-                        }
+                        0
+                    }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
                     }
                 }
             }
-        }
+        },
 
         Commands::DefaultApp { app } => {
             if let Some(app_name) = app {
-                let req = DefaultAppRequest { app: app_name.clone() };
+                let req = DefaultAppRequest {
+                    app: app_name.clone(),
+                };
                 match client.default_app_put(req).await {
                     Ok(resp) => {
                         if !resp.success {
@@ -1563,80 +1636,77 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             }
         }
 
-        Commands::Token { action } => {
-            match action {
-                TokenCommands::Create { app, name } => {
-                    let req = TokenCreateRequest { app, name };
-                    match client.token_create(req).await {
-                        Ok(resp) => {
-                            if !resp.success {
-                                if let Some(err) = &resp.error {
-                                    output::print_error(err, json);
-                                    return error_exit_code(err);
-                                }
+        Commands::Token { action } => match action {
+            TokenCommands::Create { app, name } => {
+                let req = TokenCreateRequest { app, name };
+                match client.token_create(req).await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
                             }
-                            if json {
-                                output::print_json(&resp);
-                            } else if let Some(data) = &resp.data {
-                                println!("✓ Token created successfully for '{}' ({}):", data.app, data.name);
-                                println!("  Token: {}", data.token);
-                                println!("  ID   : {}", data.id);
-                                println!("  (IMPORTANT: Save this token now, it will not be displayed again)");
-                            }
-                            0
                         }
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            error_exit_code(&err)
+                        if json {
+                            output::print_json(&resp);
+                        } else if let Some(data) = &resp.data {
+                            println!(
+                                "✓ Token created successfully for '{}' ({}):",
+                                data.app, data.name
+                            );
+                            println!("  Token: {}", data.token);
+                            println!("  ID   : {}", data.id);
+                            println!("  (IMPORTANT: Save this token now, it will not be displayed again)");
                         }
+                        0
                     }
-                }
-                TokenCommands::List { app } => {
-                    match client.token_list(&app).await {
-                        Ok(resp) => {
-                            if !resp.success {
-                                if let Some(err) = &resp.error {
-                                    output::print_error(err, json);
-                                    return error_exit_code(err);
-                                }
-                            }
-                            if json {
-                                output::print_json(&resp);
-                            } else if let Some(data) = &resp.data {
-                                output::render_tokens(&data.tokens);
-                            }
-                            0
-                        }
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            error_exit_code(&err)
-                        }
-                    }
-                }
-                TokenCommands::Revoke { app, name } => {
-                    match client.token_revoke(&app, &name).await {
-                        Ok(resp) => {
-                            if !resp.success {
-                                if let Some(err) = &resp.error {
-                                    output::print_error(err, json);
-                                    return error_exit_code(err);
-                                }
-                            }
-                            if json {
-                                output::print_json(&resp);
-                            } else if let Some(data) = &resp.data {
-                                println!("✓ {} token(s) revoked successfully.", data.revoked);
-                            }
-                            0
-                        }
-                        Err(err) => {
-                            output::print_error(&err, json);
-                            error_exit_code(&err)
-                        }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
                     }
                 }
             }
-        }
+            TokenCommands::List { app } => match client.token_list(&app).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        output::render_tokens(&data.tokens);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            },
+            TokenCommands::Revoke { app, name } => match client.token_revoke(&app, &name).await {
+                Ok(resp) => {
+                    if !resp.success {
+                        if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        }
+                    }
+                    if json {
+                        output::print_json(&resp);
+                    } else if let Some(data) = &resp.data {
+                        println!("✓ {} token(s) revoked successfully.", data.revoked);
+                    }
+                    0
+                }
+                Err(err) => {
+                    output::print_error(&err, json);
+                    error_exit_code(&err)
+                }
+            },
+        },
         Commands::Domain { cmd } => match cmd {
             DomainCommands::Check { host } => match client.domain_check(&host).await {
                 Ok(resp) => {
@@ -1701,6 +1771,77 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                     error_exit_code(&err)
                 }
             },
+            DomainCommands::Set {
+                host,
+                primary,
+                force,
+            } => {
+                if !primary {
+                    let err = SkociError::bad_request(
+                        "Missing required flag '--primary': non-primary domain configuration is not supported yet",
+                        format!("skoci domain set {host} --primary"),
+                    );
+                    output::print_error(&err, json);
+                    return error_exit_code(&err);
+                }
+
+                match client.domain_set_primary(&host, force).await {
+                    Ok(resp) => {
+                        if !resp.success {
+                            if let Some(err) = &resp.error {
+                                output::print_error(err, json);
+                                return error_exit_code(err);
+                            }
+                        }
+                        if json {
+                            output::print_json(&resp);
+                        } else if let Some(data) = &resp.data {
+                            println!("✓ Primary base domain updated successfully\n");
+                            match &data.previous_base_domain {
+                                Some(prev) => {
+                                    println!("Base domain     : {prev} → {}", data.base_domain)
+                                }
+                                None => println!("Base domain     : {}", data.base_domain),
+                            }
+                            println!("Control hostname: {}", data.api_domain);
+
+                            if !data.certificate_hosts.is_empty() {
+                                println!("\nCertificate hostnames to issue:");
+                                for h in &data.certificate_hosts {
+                                    println!("  • {h}");
+                                }
+                                println!("  ⚠ Certificate issuance takes a few seconds; the first request to a new hostname may be slow.");
+                            }
+
+                            if !data.updated_routes.is_empty() {
+                                println!("\nRe-pointed routes:");
+                                for route in &data.updated_routes {
+                                    println!("  • {route}");
+                                }
+                            }
+
+                            if data.dns_check_skipped {
+                                println!("\n⚠ DNS pre-check skipped (--force).");
+                            }
+                        } else if let Some(err) = &resp.error {
+                            output::print_error(err, json);
+                            return error_exit_code(err);
+                        } else {
+                            let err = SkociError::internal(
+                                "Missing domain set response data",
+                                "Retry setting primary domain",
+                            );
+                            output::print_error(&err, json);
+                            return error_exit_code(&err);
+                        }
+                        0
+                    }
+                    Err(err) => {
+                        output::print_error(&err, json);
+                        error_exit_code(&err)
+                    }
+                }
+            }
         },
 
         Commands::AgentGuide => {
@@ -1746,10 +1887,16 @@ mod tests {
 
     #[test]
     fn test_error_exit_code() {
-        assert_eq!(error_exit_code(&SkociError::unauthorized("Unauthorized")), 3);
+        assert_eq!(
+            error_exit_code(&SkociError::unauthorized("Unauthorized")),
+            3
+        );
         assert_eq!(error_exit_code(&SkociError::scope_violation("a", "b")), 3);
         assert_eq!(error_exit_code(&SkociError::rate_limited()), 3);
-        assert_eq!(error_exit_code(&SkociError::approval_required("req_1", "promote")), 2);
+        assert_eq!(
+            error_exit_code(&SkociError::approval_required("req_1", "promote")),
+            2
+        );
         assert_eq!(error_exit_code(&SkociError::bad_request("Bad", "Fix")), 1);
         assert_eq!(error_exit_code(&SkociError::internal("Err", "Fix")), 1);
     }
@@ -1757,7 +1904,10 @@ mod tests {
     #[test]
     fn test_resolve_app_explicit() {
         assert_eq!(resolve_app(Some("my-app".to_string())).unwrap(), "my-app");
-        assert_eq!(resolve_app(Some("  custom-app  ".to_string())).unwrap(), "custom-app");
+        assert_eq!(
+            resolve_app(Some("  custom-app  ".to_string())).unwrap(),
+            "custom-app"
+        );
     }
     #[test]
     fn test_server_input_normalization_table() {
@@ -1767,10 +1917,7 @@ mod tests {
             "https://43.173.34.155:8443"
         );
         // bare v6
-        assert_eq!(
-            normalize_server_url("::1").unwrap(),
-            "https://[::1]:8443"
-        );
+        assert_eq!(normalize_server_url("::1").unwrap(), "https://[::1]:8443");
         assert_eq!(
             normalize_server_url("2001:db8::1").unwrap(),
             "https://[2001:db8::1]:8443"
@@ -1802,10 +1949,7 @@ mod tests {
             "https://example.com:9443"
         );
         // hostname
-        assert_eq!(
-            normalize_server_url("host").unwrap(),
-            "https://host"
-        );
+        assert_eq!(normalize_server_url("host").unwrap(), "https://host");
         assert_eq!(
             normalize_server_url("example.com").unwrap(),
             "https://example.com"
@@ -1877,7 +2021,10 @@ mod tests {
 
         init_project(&root, Some("own-recipe")).unwrap();
 
-        assert_eq!(std::fs::read_to_string(root.join("Dockerfile")).unwrap(), user_df);
+        assert_eq!(
+            std::fs::read_to_string(root.join("Dockerfile")).unwrap(),
+            user_df
+        );
         assert!(!root.join(PROJECT_DOCKERFILE_PATH).exists());
         let cfg_content = std::fs::read_to_string(root.join(PROJECT_CONFIG_PATH)).unwrap();
         assert!(cfg_content.contains("dockerfile: Dockerfile"));
@@ -1920,7 +2067,11 @@ mod tests {
         let project_root = temp_dir.join(format!("test_empty_proj_{unique_id}"));
         std::fs::create_dir_all(&project_root).unwrap();
 
-        std::fs::write(&master_file, "SKOCI_MASTER_TOKEN=master_token_secret_12345\n").unwrap();
+        std::fs::write(
+            &master_file,
+            "SKOCI_MASTER_TOKEN=master_token_secret_12345\n",
+        )
+        .unwrap();
 
         let global = GlobalOpts::default();
         let profiles = skoci_client::profile::ProfileConfig::default();
@@ -1928,7 +2079,10 @@ mod tests {
 
         assert_eq!(target.url, "http://127.0.0.1:8787");
         assert_eq!(target.token.as_deref(), Some("master_token_secret_12345"));
-        assert_eq!(target.source, skoci_client::profile::TargetSource::LocalMaster);
+        assert_eq!(
+            target.source,
+            skoci_client::profile::TargetSource::LocalMaster
+        );
 
         let _ = std::fs::remove_file(master_file);
         let _ = std::fs::remove_dir_all(project_root);

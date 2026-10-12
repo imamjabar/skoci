@@ -74,6 +74,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/apps/:app", delete(apps::handle_delete_app))
         // Domains
         .route("/api/domains/check", post(domains::handle_domain_check))
+        .route("/api/domains/primary", post(domains::handle_set_primary))
         // Status & Logs
         .route("/api/status/:app", get(status::handle_status))
         .route("/api/logs/:app", get(logs::handle_logs))

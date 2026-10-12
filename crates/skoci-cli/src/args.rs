@@ -7,13 +7,23 @@ pub enum Commands {
     Connect {
         #[arg(long)]
         server: String,
-        #[arg(long, help = "Authentication token (reads from SKOCI_TOKEN or stdin if omitted)")]
+        #[arg(
+            long,
+            help = "Authentication token (reads from SKOCI_TOKEN or stdin if omitted)"
+        )]
         token: Option<String>,
-        #[arg(long, help = "Allow unencrypted HTTP connection to non-localhost hosts")]
+        #[arg(
+            long,
+            help = "Allow unencrypted HTTP connection to non-localhost hosts"
+        )]
         insecure: bool,
         #[arg(long, help = "Pinned server TLS key, sha256:<hex>")]
         pin: Option<String>,
-        #[arg(long, default_value = "default", help = "Profile name in the global profile store")]
+        #[arg(
+            long,
+            default_value = "default",
+            help = "Profile name in the global profile store"
+        )]
         name: String,
         #[arg(long, help = "Skip saving to the global profile store")]
         no_profile: bool,
@@ -33,16 +43,17 @@ pub enum Commands {
         env: String,
         #[arg(long, default_value = ".")]
         path: PathBuf,
-        #[arg(long, help = "Run deployment in the background without waiting for events")]
+        #[arg(
+            long,
+            help = "Run deployment in the background without waiting for events"
+        )]
         detach: bool,
         #[arg(long, help = "Commit SHA or git identifier")]
         commit: Option<String>,
     },
 
     #[command(about = "Watch live events from a running deployment")]
-    Watch {
-        deployment_id: String,
-    },
+    Watch { deployment_id: String },
 
     #[command(about = "List deployment history")]
     Deployments {
@@ -53,9 +64,7 @@ pub enum Commands {
     },
 
     #[command(about = "View application and container health status")]
-    Status {
-        app: Option<String>,
-    },
+    Status { app: Option<String> },
 
     #[command(about = "View application logs and error summary")]
     Logs {
@@ -92,9 +101,7 @@ pub enum Commands {
         detach: bool,
     },
     #[command(about = "Reject an approval request (admin only)")]
-    Reject {
-        request_id: String,
-    },
+    Reject { request_id: String },
 
     #[command(about = "Roll back application to a previous version")]
     Rollback {
@@ -121,9 +128,7 @@ pub enum Commands {
     },
 
     #[command(name = "default-app", about = "View or set default application")]
-    DefaultApp {
-        app: Option<String>,
-    },
+    DefaultApp { app: Option<String> },
 
     #[command(about = "Manage scoped agent tokens")]
     Token {
@@ -136,7 +141,6 @@ pub enum Commands {
         cmd: DomainCommands,
     },
 
-
     #[command(name = "agent-guide", about = "Skoci operational guide for AI agents")]
     AgentGuide,
 }
@@ -144,10 +148,7 @@ pub enum Commands {
 #[derive(Subcommand, Debug, Clone)]
 pub enum SecretCommands {
     #[command(about = "Set secret for application")]
-    Set {
-        key: String,
-        value: Option<String>,
-    },
+    Set { key: String, value: Option<String> },
     #[command(about = "List application secret key names")]
     List,
 }
@@ -172,9 +173,7 @@ pub enum DbCommands {
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
     #[command(about = "Delete application")]
-    Delete {
-        app: Option<String>,
-    },
+    Delete { app: Option<String> },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -203,11 +202,15 @@ pub enum TokenCommands {
 #[derive(Subcommand, Debug, Clone)]
 pub enum DomainCommands {
     #[command(about = "Check DNS resolution for a custom domain")]
-    Check {
-        host: String,
-    },
+    Check { host: String },
     #[command(about = "Verify and prepare adding a custom domain")]
-    Add {
+    Add { host: String },
+    #[command(about = "Set primary base domain or configure domain settings")]
+    Set {
         host: String,
+        #[arg(long, help = "Configure host as the primary base domain")]
+        primary: bool,
+        #[arg(long, help = "Skip DNS resolution pre-check")]
+        force: bool,
     },
 }

@@ -158,15 +158,21 @@ impl SkociError {
 
     /// Production hostnames must be owned by the operator; magic-DNS zones (sslip.io, nip.io, ...) are third-party.
     pub fn production_requires_domain(app: &str, rejected: &[String]) -> Self {
-        let detail = if rejected.is_empty() {
-            String::new()
+        let (detail, fix) = if rejected.is_empty() {
+            (
+                String::new(),
+                "Point an A record at the server, configure it with 'skoci domain set <host> --primary' or add it under 'domains' in .skoci/skoci.yaml (skoci domain add <host>), then deploy again".to_string(),
+            )
         } else {
-            format!(" (magic-DNS hosts rejected: {})", rejected.join(", "))
+            (
+                format!(" (magic-DNS hosts rejected: {})", rejected.join(", ")),
+                "Point an A record at the server, set it as primary with 'skoci domain set <host> --primary', or add it under 'domains' in .skoci/skoci.yaml. Operator override: set SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=1 in /etc/skoci/skoci.env followed by 'systemctl restart skoci' (the zone owner of the magic-DNS domain can obtain valid certificates for that hostname)".to_string(),
+            )
         };
         Self::new(
             "production_requires_domain",
             format!("Production for '{app}' needs a domain you own{detail}"),
-            "Point an A record at the server, add it under 'domains' in .skoci/skoci.yaml (skoci domain add <host>), then deploy again",
+            fix,
         )
     }
 

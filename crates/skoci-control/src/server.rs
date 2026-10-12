@@ -126,15 +126,31 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
         router.set_default_app(Some(default_app)).await;
     }
 
+    let initial_api_domain = if let Some(base) = db
+        .get_setting("base_domain")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(format!("skoci.{base}"))
+    } else {
+        cfg.api_domain.clone().or_else(|| {
+            cfg.base_domain
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|b| format!("skoci.{b}"))
+        })
+    };
+
     // Set control host
-    router.set_control(cfg.api_domain.clone(), cfg.bind).await;
+    router.set_control(initial_api_domain.clone(), cfg.bind).await;
 
     // Initialize Control TLS & HTTP challenges
     let http_challenges = skoci_proxy::HttpChallenges::default();
     let control_tls = crate::tls::ControlTls::load_or_create(
         &cfg.data_dir,
         cfg.public_ip,
-        cfg.api_domain.as_deref(),
+        initial_api_domain.as_deref(),
     )
     .context("Failed to initialize control plane TLS")?;
 

@@ -192,6 +192,41 @@ fn test_validation_rejects_bad_hostnames() {
 }
 
 #[test]
+fn test_validation_rejects_duplicate_domains_in_same_list() {
+    let yaml_domains = "version: 1\napp: test-app\nrun:\n  port: 8080\ndomains:\n  - app.example.com\n  - app.example.com\n";
+    let err_domains = ConfigLoader::parse_config(yaml_domains).unwrap_err();
+    assert_eq!(err_domains.code, "config_invalid");
+    assert_eq!(
+        err_domains.message,
+        "Domain 'app.example.com' is listed twice under 'domains'"
+    );
+    assert_eq!(err_domains.fix, "Remove the repeated entry");
+
+    let yaml_preview = "version: 1\napp: test-app\nrun:\n  port: 8080\npreview_domains:\n  - preview.example.com\n  - preview.example.com\n";
+    let err_preview = ConfigLoader::parse_config(yaml_preview).unwrap_err();
+    assert_eq!(err_preview.code, "config_invalid");
+    assert_eq!(
+        err_preview.message,
+        "Domain 'preview.example.com' is listed twice under 'preview_domains'"
+    );
+    assert_eq!(err_preview.fix, "Remove the repeated entry");
+}
+
+#[test]
+fn test_validation_rejects_duplicate_domains_across_lists() {
+    let yaml = "version: 1\napp: test-app\nrun:\n  port: 8080\ndomains:\n  - app.example.com\npreview_domains:\n  - app.example.com\n";
+    let err = ConfigLoader::parse_config(yaml).unwrap_err();
+    assert_eq!(err.code, "config_invalid");
+    assert_eq!(
+        err.message,
+        "Domain 'app.example.com' is listed under both 'domains' and 'preview_domains'"
+    );
+    assert!(err.fix.contains("One hostname routes to exactly one environment"));
+    assert!(err.fix.contains("<app>-preview.<base-domain>"));
+    assert!(err.fix.contains("preview_domains"));
+}
+
+#[test]
 fn test_validation_rejects_parent_dir_dockerfile() {
     assert!(!is_safe_relative_path("../Dockerfile"));
     assert!(!is_safe_relative_path("/etc/Dockerfile"));

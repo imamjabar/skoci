@@ -1346,4 +1346,12 @@ impl Database {
             .map_err(|e| SkociError::internal(e.to_string(), "Try again"))?;
         Ok(())
     }
+
+    pub fn get_base_domain(&self) -> SkociResult<Option<String>> {
+        self.get_setting("base_domain")
+    }
+
+    pub fn set_base_domain(&self, domain: &str) -> SkociResult<()> {
+        self.set_setting("base_domain", domain)
+    }
 }

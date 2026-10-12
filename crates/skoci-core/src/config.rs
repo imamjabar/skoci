@@ -168,11 +168,12 @@ impl ConfigLoader {
             }
             if !seen_domains.insert(domain.as_str()) {
                 return Err(SkociError::config_invalid(
-                    format!("Duplicate domain found: '{domain}'"),
-                    "Remove duplicate domain from 'domains' or 'preview_domains'",
+                    format!("Domain '{domain}' is listed twice under 'domains'"),
+                    "Remove the repeated entry",
                 ));
             }
         }
+        let mut seen_preview_domains = HashSet::new();
         for domain in &cfg.preview_domains {
             if !is_valid_hostname(domain) {
                 return Err(SkociError::config_invalid(
@@ -180,10 +181,16 @@ impl ConfigLoader {
                     "Use a valid domain name like 'preview.example.com' (lowercase, contains dot, not an IP)",
                 ));
             }
-            if !seen_domains.insert(domain.as_str()) {
+            if seen_domains.contains(domain.as_str()) {
                 return Err(SkociError::config_invalid(
-                    format!("Duplicate domain found: '{domain}'"),
-                    "Remove duplicate domain from 'domains' or 'preview_domains'",
+                    format!("Domain '{domain}' is listed under both 'domains' and 'preview_domains'"),
+                    "One hostname routes to exactly one environment and preview gets its own hostname automatically (<app>-preview.<base-domain>), so the host should be removed from 'preview_domains'",
+                ));
+            }
+            if !seen_preview_domains.insert(domain.as_str()) {
+                return Err(SkociError::config_invalid(
+                    format!("Domain '{domain}' is listed twice under 'preview_domains'"),
+                    "Remove the repeated entry",
                 ));
             }
         }

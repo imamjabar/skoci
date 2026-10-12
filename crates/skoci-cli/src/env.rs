@@ -69,6 +69,9 @@ pub fn filter_skoci_env_pairs(pairs: Vec<(String, String)>) -> Vec<(String, Stri
     filter_skoci_env_pairs_with_source(pairs, PROJECT_ENV_PATH)
 }
 
+const PROJECT_ENV_CREDENTIAL_KEYS: [&str; 3] =
+    ["SKOCI_SERVER_URL", "SKOCI_TOKEN", "SKOCI_SERVER_PIN"];
+
 pub fn load_env_files() {
     load_env_files_at(Path::new("."));
 }
@@ -90,6 +93,12 @@ pub fn load_env_files_at(root: &Path) {
         if let Ok(content) = std::fs::read_to_string(&path) {
             let pairs = filter_skoci_env_pairs_with_source(parse_env_file_content(&content), &path.display().to_string());
             for (k, v) in pairs {
+                // Credentials stay out of the process environment: the resolver takes them as an
+                // explicit project-env layer, which is what makes a flag outrank the file and what
+                // lets the CLI report which store a command actually used.
+                if PROJECT_ENV_CREDENTIAL_KEYS.contains(&k.as_str()) {
+                    continue;
+                }
                 if std::env::var(&k).is_err() {
                     std::env::set_var(&k, &v);
                 }

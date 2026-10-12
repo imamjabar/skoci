@@ -67,6 +67,11 @@ Konfigurasi VPS jarak jauh langsung dari laptop Anda melalui SSH (Skoci >= 0.4.0
 ```bash
 skoci server setup --host <server-public-ip> --user root
 ```
+Flag setup opsional untuk provisioning server baru:
+* `--ssh-copy-id`: install public key SSH Anda pada VPS yang hanya menggunakan password (membuat `~/.ssh/id_ed25519` jika Anda belum memiliki key), alih-alih gagal.
+* `--harden-ssh`: menulis `/etc/ssh/sshd_config.d/00-skoci-harden.conf` yang menonaktifkan autentikasi password dan keyboard-interactive serta menyetel `PermitRootLogin prohibit-password`. Berkas ini diurutkan sebelum drop-in bawaan distro seperti `50-cloud-init.conf`, karena `sshd` memakai nilai pertama yang dibacanya. Divalidasi dengan `sshd -t` lalu diperiksa ulang dengan `sshd -T` sebelum reload, dibatalkan jika salah satu gagal, dan dilewati jika akun tidak memiliki `authorized_keys`.
+* `--setup-ufw`: mengizinkan port SSH, 80, 443, dan 8443, lalu mengaktifkan `ufw` dengan kebijakan default deny incoming. Dilewati beserta petunjuk jika `ufw` belum terpasang.
+
 Atau pasang langsung di terminal server Linux 64-bit Anda (pastikan port **80**, **443**, dan **8443** terbuka di firewall cloud):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
@@ -118,6 +123,24 @@ Dijalankan dengan scoped agent token, perintah berhenti di kode keluar 2 dan men
 sudo skoci approve <request_id>
 ```
 Master token di server berperan sebagai manusia: promosi langsung berjalan tanpa permintaan persetujuan.
+
+`skoci promote` menolak hostname magic-DNS (`sslip.io`, `nip.io`) di production karena pemilik zona dapat menerbitkan sertifikat valid untuk hostname Anda. Untuk demo sementara, operator dapat mengesampingkannya DI SERVER dengan `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=1` di `/etc/skoci/skoci.env` + `systemctl restart skoci`. Ini merupakan keputusan operator server sepenuhnya dan sengaja tidak disediakan flag di sisi klien.
+
+### 6. Beralih dari sslip.io ke Domain Kustom
+Setelah Anda membeli domain, konfigurasikan sebagai base domain utama server Anda:
+```bash
+skoci domain check mydomain.com
+skoci domain set mydomain.com --primary
+```
+Perintah kedua menyimpan base domain, mengarahkan ulang setiap rute aktif ke `<app>.mydomain.com` dan `<app>-preview.mydomain.com`, memindahkan dashboard ke `skoci.mydomain.com`, dan memicu penerbitan sertifikat untuk hostname baru tanpa me-restart server atau memutus permintaan. Menambahkan `--force` akan melewati pra-pemeriksaan DNS. Pastikan `A` record untuk `mydomain.com` dan `skoci.mydomain.com` sudah mengarah ke server terlebih dahulu.
+
+### Dua Endpoint: Control Plane vs. Dashboard
+Skoci menyediakan dua endpoint HTTPS terpisah untuk kebutuhan yang berbeda:
+
+| Endpoint | Default | Sertifikat | Untuk |
+| --- | --- | --- | --- |
+| `https://<server-ip>:8443` | selalu aktif | Sertifikat ACME untuk IP, atau self-signed sebelum terbit | Agen dan CLI. Kepercayaan berasal dari SPKI pin, jadi peringatan browser di sini memang diharapkan dan bukan cacat. |
+| `https://skoci.<domain-anda>` | hanya setelah base domain disetel | Let's Encrypt | Manusia lewat browser, tanpa peringatan |
 
 ---
 

@@ -62,6 +62,8 @@ enum ServerCommands {
         port: u16,
         #[arg(long, help = "SSH private key to authenticate with")]
         ssh_key: Option<PathBuf>,
+        #[arg(long, help = "Bootstrap SSH public key to server using ssh-copy-id if password auth is required")]
+        ssh_copy_id: bool,
         #[arg(long, help = "App the generated token is scoped to (default: app from skoci.yaml)")]
         app: Option<String>,
         #[arg(long, help = "Skoci version tag to install (default: latest)")]
@@ -72,6 +74,10 @@ enum ServerCommands {
         domain: Option<String>,
         #[arg(long, help = "Contact address for Let's Encrypt")]
         email: Option<String>,
+        #[arg(long, help = "Disable password authentication and root passwords in sshd")]
+        harden_ssh: bool,
+        #[arg(long, help = "Configure and enable UFW firewall (SSH, 80, 443, 8443)")]
+        setup_ufw: bool,
         #[arg(long, short = 'y', help = "Do not prompt for confirmation")]
         yes: bool,
     },
@@ -167,11 +173,14 @@ async fn main() -> anyhow::Result<()> {
                     user,
                     port,
                     ssh_key,
+                    ssh_copy_id,
                     app,
                     version,
                     magic_dns,
                     domain,
                     email,
+                    harden_ssh,
+                    setup_ufw,
                     yes,
                 },
         } => {
@@ -180,11 +189,14 @@ async fn main() -> anyhow::Result<()> {
                 user,
                 port,
                 ssh_key,
+                ssh_copy_id,
                 app,
                 version,
                 magic_dns,
                 domain,
                 email,
+                harden_ssh,
+                setup_ufw,
                 assume_yes: yes,
             };
             let code = skoci_cli::setup::run_server_setup(opts, args.json).await;

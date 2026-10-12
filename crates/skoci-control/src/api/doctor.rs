@@ -189,16 +189,16 @@ pub async fn handle_doctor(
     });
 
     // 6. Base domain
-    let base_domain_set = state.config.base_domain.is_some();
+    let base_domain = state.base_domain();
     checks.push(DoctorCheck {
         name: "base_domain".to_string(),
         passed: true,
-        message: match &state.config.base_domain {
+        message: match &base_domain {
             Some(d) => format!("Base domain configured: {d}"),
-            None => "Base domain not configured (using specific hosts from skoci.yaml)".to_string(),
+            None => "Base domain not configured (using specific hosts from .skoci/skoci.yaml)".to_string(),
         },
-        fix: if !base_domain_set {
-            Some("Set --base-domain <domain> to enable automatic host routing".to_string())
+        fix: if base_domain.is_none() {
+            Some("Run 'skoci domain set <host> --primary' to route <app>.<host> automatically".to_string())
         } else {
             None
         },

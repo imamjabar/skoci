@@ -67,6 +67,11 @@ Configure your remote VPS directly from your laptop over SSH (Skoci >= 0.4.0):
 ```bash
 skoci server setup --host <server-public-ip> --user root
 ```
+Useful setup flags for provisioning a fresh server:
+* `--ssh-copy-id`: install your SSH public key on a password-only VPS (generates `~/.ssh/id_ed25519` if you have no key), instead of failing.
+* `--harden-ssh`: writes `/etc/ssh/sshd_config.d/00-skoci-harden.conf` disabling password and keyboard-interactive auth and setting `PermitRootLogin prohibit-password`. The file sorts ahead of distro drop-ins such as `50-cloud-init.conf`, because `sshd` keeps the first value it reads. Validated with `sshd -t` and re-checked with `sshd -T` before reload, reverted if either fails, and skipped entirely when the account has no `authorized_keys`.
+* `--setup-ufw`: allows the SSH port, 80, 443 and 8443, then enables `ufw` with default deny incoming. Skipped with instructions if `ufw` is not installed.
+
 Or install directly on your 64-bit Linux server terminal (ensure ports **80**, **443**, and **8443** are open in your firewall):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
@@ -118,6 +123,24 @@ Run from a scoped agent token, the command stops at exit code 2 and prints a `re
 sudo skoci approve <request_id>
 ```
 The master token on the server is the human: it promotes directly, without an approval request.
+
+`skoci promote` refuses magic-DNS hostnames (`sslip.io`, `nip.io`) in production because the zone owner can obtain valid certificates for your hostname. For a throwaway demo the operator can override it ON THE SERVER with `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=1` in `/etc/skoci/skoci.env` + `systemctl restart skoci`. This is strictly an operator decision on the server and there is deliberately no client-side flag.
+
+### 6. Moving Off sslip.io to a Custom Domain
+Once you have registered a domain name, configure it as your server's primary base domain:
+```bash
+skoci domain check mydomain.com
+skoci domain set mydomain.com --primary
+```
+The second command persists the base domain, re-points every live route at `<app>.mydomain.com` and `<app>-preview.mydomain.com`, moves the dashboard to `skoci.mydomain.com`, and triggers certificate issuance for the new hostnames without restarting the server or dropping a request. Passing `--force` skips the DNS precheck. Note that `A` records for both `mydomain.com` and `skoci.mydomain.com` must point at the server first.
+
+### Two Endpoints: Control Plane vs. Dashboard
+Skoci exposes two distinct HTTPS endpoints for different purposes:
+
+| Endpoint | Default | Certificate | Use |
+| --- | --- | --- | --- |
+|`https://<server-ip>:8443`|always on|ACME IP certificate, or self-signed before one is issued|Agents and the CLI. Trust comes from the SPKI pin, so a browser warning here is expected and is not a defect.|
+|`https://skoci.<your-domain>`|only once a base domain is configured|Let's Encrypt|Humans in a browser, no warning|
 
 ---
 
