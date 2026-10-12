@@ -211,6 +211,13 @@ Proyek yang sudah ada tetap berjalan tanpa perubahan: `skoci.yaml`, `Dockerfile`
 ### Ke 0.4.3
 `.skoci/env` tetap dibaca untuk `SKOCI_SERVER_URL`, `SKOCI_TOKEN`, dan `SKOCI_SERVER_PIN`, tetapi ketiganya tidak lagi diekspor ke environment proses. Skrip yang mengandalkan `skoci` untuk meneruskan ketiga variabel itu ke proses anaknya harus membaca berkas tersebut sendiri. Variabel lain di `.skoci/env` tetap diekspor seperti sebelumnya.
 
+### Ke 0.4.5
+Dockerfile yang dihasilkan berubah: kini menghapus `.skoci/` dari image yang dibangun dan berjalan sebagai pengguna non-root bila base image memungkinkan. Proyek yang diinisialisasi sebelumnya tetap memakai Dockerfile lamanya, jadi tidak ada yang berubah sampai Anda mengadopsi templat baru:
+```bash
+rm .skoci/Dockerfile && skoci init && skoci deploy
+```
+Dockerfile yang Anda tulis sendiri tetap aman; `skoci init` tidak pernah menimpa berkas yang sudah ada.
+
 ### Dari 0.1
 
 Bagi pengguna yang telah memasang Skoci versi 0.1:

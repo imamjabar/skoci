@@ -211,6 +211,13 @@ Existing projects keep working untouched: a root `skoci.yaml`, `Dockerfile` and 
 ### To 0.4.3
 `.skoci/env` is still read for `SKOCI_SERVER_URL`, `SKOCI_TOKEN` and `SKOCI_SERVER_PIN`, but those three are no longer exported into the process environment. A script that relied on `skoci` to publish them to its own child processes must read the file itself. Everything else in `.skoci/env` is still exported as before.
 
+### To 0.4.5
+The generated Dockerfiles changed: they now delete `.skoci/` from the built image and run as a non-root user where the base image allows it. A project initialised earlier keeps the Dockerfile it already has, so nothing changes until you adopt the new template:
+```bash
+rm .skoci/Dockerfile && skoci init && skoci deploy
+```
+Keep a Dockerfile you wrote yourself; `skoci init` never overwrites an existing file.
+
 ### From 0.1
 
 If you are running an existing Skoci 0.1 installation:
