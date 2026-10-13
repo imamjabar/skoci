@@ -1,5 +1,5 @@
 use skoci_api::error::{SkociError, SkociResult};
-use skoci_api::models::{SkociConfig, LEGACY_CONFIG_PATH, MAX_APP_NAME_LEN, PROJECT_CONFIG_PATH};
+use skoci_api::models::{SkociConfig, MAX_APP_NAME_LEN, PROJECT_CONFIG_PATH};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -9,15 +9,11 @@ pub const RESERVED_APP_NAMES: &[&str] = &["skoci", "api", "www", "admin", "dashb
 pub struct ConfigLoader;
 
 impl ConfigLoader {
-    /// `.skoci/skoci.yaml`, else `skoci.yaml`, else None. `root` is the project/build root.
+    /// `.skoci/skoci.yaml` if present, else `None`. `root` is the project/build root.
     pub fn locate_config(root: &Path) -> Option<PathBuf> {
         let modern = root.join(PROJECT_CONFIG_PATH);
         if modern.is_file() {
             return Some(modern);
-        }
-        let legacy = root.join(LEGACY_CONFIG_PATH);
-        if legacy.is_file() {
-            return Some(legacy);
         }
         None
     }
@@ -449,4 +445,44 @@ fn is_valid_memory_spec(mem: &str) -> bool {
     }
     let num_str = &mem[..mem.len() - 1];
     !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_locate_config_resolution_order() {
+        let root = std::env::temp_dir().join(format!(
+            "skoci_cfg_loc_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(ConfigLoader::locate_config(&root), None);
+
+        // Legacy root skoci.yaml is no longer resolved by ConfigLoader::locate_config
+        std::fs::write(
+            root.join("skoci.yaml"),
+            "version: 1\napp: legacy\nrun:\n  port: 8080\n",
+        )
+        .unwrap();
+        assert_eq!(ConfigLoader::locate_config(&root), None);
+
+        // Modern .skoci/skoci.yaml is the sole location resolved
+        let skoci_dir = root.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        std::fs::write(
+            skoci_dir.join("skoci.yaml"),
+            "version: 1\napp: modern\nrun:\n  port: 8080\n",
+        )
+        .unwrap();
+        assert_eq!(
+            ConfigLoader::locate_config(&root),
+            Some(root.join(PROJECT_CONFIG_PATH))
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

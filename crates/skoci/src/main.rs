@@ -64,6 +64,8 @@ enum ServerCommands {
         ssh_key: Option<PathBuf>,
         #[arg(long, help = "Bootstrap SSH public key to server using ssh-copy-id if password auth is required")]
         ssh_copy_id: bool,
+        #[arg(long, help = "Read SSH/sudo password from first line of stdin for non-interactive bootstrap")]
+        ssh_password_stdin: bool,
         #[arg(long, help = "App the generated token is scoped to (default: app from skoci.yaml)")]
         app: Option<String>,
         #[arg(long, help = "Skoci version tag to install (default: latest)")]
@@ -76,8 +78,11 @@ enum ServerCommands {
         email: Option<String>,
         #[arg(long, help = "Disable password authentication and root passwords in sshd")]
         harden_ssh: bool,
-        #[arg(long, help = "Configure and enable UFW firewall (SSH, 80, 443, 8443)")]
-        setup_ufw: bool,
+        #[arg(long, help = "Skip UFW firewall configuration (UFW is configured by default)")]
+        no_ufw: bool,
+        /// Require human approval for every production promotion, including an app's first one
+        #[arg(long, help = "Require human approval for every production promotion, including an app's first one")]
+        strict_approvals: bool,
         #[arg(long, short = 'y', help = "Do not prompt for confirmation")]
         yes: bool,
         #[arg(long, help = "Operator override: allow sslip.io-style hostnames in production")]
@@ -157,6 +162,13 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let master_token = std::env::var("SKOCI_MASTER_TOKEN").unwrap_or_default();
             std::env::remove_var("SKOCI_MASTER_TOKEN");
+            let require_approval_always = std::env::var("SKOCI_REQUIRE_APPROVAL_ALWAYS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| parse_loose_bool(&v))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid SKOCI_REQUIRE_APPROVAL_ALWAYS: {e}"))?
+                .unwrap_or(false);
             let base_domain = run.base_domain.filter(|d| !d.trim().is_empty());
             let api_domain = run
                 .api_domain
@@ -180,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
                 public_ip: run.public_ip,
                 control_tls_bind: parse_control_tls_bind(&run.control_tls_bind)?,
                 allow_magic_dns_production: run.allow_magic_dns_production,
+                require_approval_always,
             };
             skoci_control::server::run_server(cfg).await?;
         }
@@ -191,13 +204,15 @@ async fn main() -> anyhow::Result<()> {
                     port,
                     ssh_key,
                     ssh_copy_id,
+                    ssh_password_stdin,
                     app,
                     version,
                     magic_dns,
                     domain,
                     email,
                     harden_ssh,
-                    setup_ufw,
+                    no_ufw,
+                    strict_approvals,
                     yes,
                     allow_magic_dns_production,
                 },
@@ -208,13 +223,15 @@ async fn main() -> anyhow::Result<()> {
                 port,
                 ssh_key,
                 ssh_copy_id,
+                ssh_password_stdin,
                 app,
                 version,
                 magic_dns,
                 domain,
                 email,
                 harden_ssh,
-                setup_ufw,
+                no_ufw,
+                strict_approvals,
                 assume_yes: yes,
                 allow_magic_dns_production,
             };

@@ -3,8 +3,8 @@ use flate2::Compression;
 use ignore::WalkBuilder;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::{
-    is_forbidden_upload_path, is_protected_upload_path, LEGACY_CONFIG_PATH,
-    PROJECT_CONFIG_PATH, PROJECT_DOCKERFILE_PATH, PROJECT_IGNORE_PATH,
+    is_forbidden_upload_path, is_protected_upload_path, PROJECT_CONFIG_PATH,
+    PROJECT_DOCKERFILE_PATH, PROJECT_IGNORE_PATH,
 };
 use skoci_core::config::ConfigLoader;
 use std::fs::File;
@@ -22,6 +22,13 @@ impl Drop for PackedContext {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContextListing {
+    pub files: Vec<String>,
+    pub bytes: u64,
+    pub excluded_sensitive: Vec<String>,
 }
 
 pub fn is_sensitive_entry(name: &str, is_dir: bool) -> bool {
@@ -79,8 +86,217 @@ fn has_negation_under(rel_str: &str, negations: &[String]) -> bool {
 fn has_protected_under(rel_str: &str, dockerfile: &str) -> bool {
     let prefix = format!("{rel_str}/");
     PROJECT_CONFIG_PATH.starts_with(&prefix)
-        || LEGACY_CONFIG_PATH.starts_with(&prefix)
         || dockerfile.trim_start_matches("./").starts_with(&prefix)
+}
+
+struct WalkedEntry {
+    path: PathBuf,
+    rel_str: String,
+    metadata: std::fs::Metadata,
+}
+
+struct WalkedContext {
+    entries: Vec<WalkedEntry>,
+    excluded_sensitive: Vec<String>,
+}
+
+fn walk_context(dir: &Path, dockerfile: &str) -> SkociResult<WalkedContext> {
+    let dockerfile_path = if dockerfile.is_empty() {
+        PROJECT_DOCKERFILE_PATH.to_string()
+    } else {
+        dockerfile.to_string()
+    };
+
+    let excluded_sensitive = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let excluded_clone = std::sync::Arc::clone(&excluded_sensitive);
+    let base_dir = dir.to_path_buf();
+
+    let mut ignore_sources = Vec::new();
+    let gitignore_path = dir.join(".gitignore");
+    if gitignore_path.is_file() {
+        ignore_sources.push(gitignore_path);
+    }
+
+    let skoci_ignore = dir.join(PROJECT_IGNORE_PATH);
+    let dockerignore_path = dir.join(".dockerignore");
+    if skoci_ignore.is_file() {
+        ignore_sources.push(skoci_ignore);
+    } else if dockerignore_path.is_file() {
+        ignore_sources.push(dockerignore_path);
+    }
+
+    let mut negations = Vec::new();
+    let mut gb = ignore::gitignore::GitignoreBuilder::new(dir);
+
+    for pat in DEFAULT_IGNORED_PATTERNS {
+        let _ = gb.add_line(None, pat);
+    }
+
+    for ignore_path in &ignore_sources {
+        if let Ok(content) = std::fs::read_to_string(ignore_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(neg) = trimmed.strip_prefix('!') {
+                    let neg = neg.trim();
+                    if !neg.is_empty() {
+                        negations.push(neg.to_string());
+                    }
+                }
+                let _ = gb.add_line(Some(ignore_path.clone()), trimmed);
+            }
+        }
+    }
+
+    let matcher = std::sync::Arc::new(gb.build().map_err(|e| {
+        let name = if ignore_sources.is_empty() {
+            "ignore rules".to_string()
+        } else {
+            ignore_sources
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        SkociError::bad_request(
+            format!("Invalid ignore patterns: {e}"),
+            format!("Check patterns in {name}"),
+        )
+    })?);
+    let negations = std::sync::Arc::new(negations);
+    let matcher_clone = std::sync::Arc::clone(&matcher);
+    let negations_clone = std::sync::Arc::clone(&negations);
+    let df_clone = std::sync::Arc::new(dockerfile_path);
+
+    let mut builder = WalkBuilder::new(dir);
+    builder
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        .parents(false)
+        .filter_entry(move |entry| {
+            if entry.depth() > 0 {
+                let name = entry.file_name().to_string_lossy();
+                if name == ".git" {
+                    return false;
+                }
+
+                let rel_str = match entry.path().strip_prefix(&base_dir) {
+                    Ok(rel) => rel
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    Err(_) => return false,
+                };
+
+                if is_forbidden_upload_path(&rel_str) {
+                    return false;
+                }
+
+                if is_protected_upload_path(&rel_str, &df_clone) {
+                    return true;
+                }
+
+                let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+                if is_sensitive_entry(&name, is_dir) {
+                    excluded_clone.lock().push(rel_str);
+                    return false;
+                }
+
+                let match_res = matcher_clone.matched_path_or_any_parents(entry.path(), is_dir);
+                if match_res.is_ignore() {
+                    if is_dir
+                        && (has_negation_under(&rel_str, &negations_clone)
+                            || has_protected_under(&rel_str, &df_clone))
+                    {
+                        return true;
+                    }
+                    excluded_clone.lock().push(rel_str);
+                    return false;
+                }
+            }
+            true
+        });
+
+    let mut entries = Vec::new();
+
+    for entry in builder.build() {
+        let entry = entry.map_err(|e| {
+            SkociError::bad_request(
+                format!("Failed to scan project files: {e}"),
+                "Check file access permissions in the project directory",
+            )
+        })?;
+
+        if entry.depth() == 0 {
+            continue;
+        }
+
+        let path = entry.path().to_path_buf();
+        let rel_path = path.strip_prefix(dir).map_err(|e| {
+            SkociError::internal(format!("Failed to compute relative path: {e}"), "Try deploying again")
+        })?;
+
+        let rel_str = rel_path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if is_forbidden_upload_path(&rel_str) {
+            continue;
+        }
+
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+            SkociError::internal(
+                format!("Failed to read metadata for {}: {e}", path.display()),
+                "Check project file permissions",
+            )
+        })?;
+
+        entries.push(WalkedEntry {
+            path,
+            rel_str,
+            metadata,
+        });
+    }
+
+    entries.sort_by(|a, b| a.rel_str.cmp(&b.rel_str));
+
+    let mut excluded = excluded_sensitive.lock().clone();
+    excluded.sort();
+    excluded.dedup();
+
+    Ok(WalkedContext {
+        entries,
+        excluded_sensitive: excluded,
+    })
+}
+
+pub fn list_context_files(dir: &Path, dockerfile: &str) -> SkociResult<ContextListing> {
+    let walked = walk_context(dir, dockerfile)?;
+    let mut files = Vec::new();
+    let mut bytes = 0u64;
+
+    for entry in walked.entries {
+        if !entry.metadata.is_dir() {
+            if !entry.metadata.file_type().is_symlink() {
+                bytes += entry.metadata.len();
+            }
+            files.push(entry.rel_str);
+        }
+    }
+    files.sort();
+
+    Ok(ContextListing {
+        files,
+        bytes,
+        excluded_sensitive: walked.excluded_sensitive,
+    })
 }
 
 
@@ -91,8 +307,8 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
         Some(p) => p,
         None => {
             return Err(SkociError::config_invalid(
-                format!("No skoci.yaml found in {}", dir.display()),
-                "Run 'skoci init' to generate .skoci/skoci.yaml (a root skoci.yaml from an earlier version is still read)",
+                format!("No .skoci/skoci.yaml found in {}", dir.display()),
+                "Run 'skoci init' to generate .skoci/skoci.yaml",
             ));
         }
     };
@@ -102,6 +318,8 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     } else {
         config.build.dockerfile.clone()
     };
+
+    let walked = walk_context(dir, &dockerfile_path)?;
 
     let temp_path = std::env::temp_dir().join(format!("skoci-pack-{}.tar.gz", uuid::Uuid::new_v4()));
     let mut opts = std::fs::OpenOptions::new();
@@ -127,148 +345,14 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
     let mut tar = tar::Builder::new(gz);
     tar.mode(tar::HeaderMode::Deterministic);
 
-    let excluded_sensitive = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let excluded_clone = std::sync::Arc::clone(&excluded_sensitive);
-    let base_dir = dir.to_path_buf();
-
-    let skoci_ignore = dir.join(PROJECT_IGNORE_PATH);
-    let dockerignore_path = dir.join(".dockerignore");
-    let ignore_file_to_use = if skoci_ignore.is_file() {
-        Some(skoci_ignore)
-    } else if dockerignore_path.is_file() {
-        Some(dockerignore_path)
-    } else {
-        None
-    };
-    let mut negations = Vec::new();
-    let mut gb = ignore::gitignore::GitignoreBuilder::new(dir);
-
-    for pat in DEFAULT_IGNORED_PATTERNS {
-        let _ = gb.add_line(None, pat);
-    }
-
-    if let Some(ignore_path) = &ignore_file_to_use {
-        if let Ok(content) = std::fs::read_to_string(ignore_path) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    continue;
-                }
-                if let Some(neg) = trimmed.strip_prefix('!') {
-                    let neg = neg.trim();
-                    if !neg.is_empty() {
-                        negations.push(neg.to_string());
-                    }
-                }
-                let _ = gb.add_line(Some(ignore_path.clone()), trimmed);
-            }
-        }
-    }
-
-    let matcher = std::sync::Arc::new(gb.build().map_err(|e| {
-        let name = ignore_file_to_use
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "ignore rules".to_string());
-        SkociError::bad_request(
-            format!("Invalid ignore patterns: {e}"),
-            format!("Check patterns in {name}"),
-        )
-    })?);
-    let negations = std::sync::Arc::new(negations);
-    let matcher_clone = std::sync::Arc::clone(&matcher);
-    let negations_clone = std::sync::Arc::clone(&negations);
-    let df_clone = std::sync::Arc::new(dockerfile_path.clone());
-
-    let mut builder = WalkBuilder::new(dir);
-    builder
-        .hidden(false)
-        .require_git(false)
-        .filter_entry(move |entry| {
-            if entry.depth() > 0 {
-                let name = entry.file_name().to_string_lossy();
-                if name == ".git" {
-                    return false;
-                }
-
-                let rel_str = match entry.path().strip_prefix(&base_dir) {
-                    Ok(rel) => rel
-                        .components()
-                        .map(|c| c.as_os_str().to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    Err(_) => return false,
-                };
-
-                // Forbidden upload paths win over everything (protection, negations, etc.)
-                if is_forbidden_upload_path(&rel_str) {
-                    return false;
-                }
-
-                // Protected upload paths are always archived regardless of any ignore rule
-                if is_protected_upload_path(&rel_str, &df_clone) {
-                    return true;
-                }
-
-                let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
-                if is_sensitive_entry(&name, is_dir) {
-                    excluded_clone.lock().push(rel_str);
-                    return false;
-                }
-
-                let match_res = matcher_clone.matched_path_or_any_parents(entry.path(), is_dir);
-                if match_res.is_ignore() {
-                    if is_dir {
-                        if has_negation_under(&rel_str, &negations_clone)
-                            || has_protected_under(&rel_str, &df_clone)
-                        {
-                            return true;
-                        }
-                        excluded_clone.lock().push(rel_str);
-                        return false;
-                    } else {
-                        excluded_clone.lock().push(rel_str);
-                        return false;
-                    }
-                }
-            }
-            true
-        });
     let mut files_count = 0usize;
 
-    for entry in builder.build() {
-        let entry = entry.map_err(|e| {
-            SkociError::bad_request(
-                format!("Failed to scan project files: {e}"),
-                "Check file access permissions in the project directory",
-            )
-        })?;
-
-        if entry.depth() == 0 {
-            continue;
-        }
-
-        let path = entry.path();
-        let rel_path = path.strip_prefix(dir).map_err(|e| {
-            SkociError::internal(format!("Failed to compute relative path: {e}"), "Try deploying again")
-        })?;
-
-        let rel_str = rel_path
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        if is_forbidden_upload_path(&rel_str) {
-            continue;
-        }
-
-
-        let metadata = std::fs::symlink_metadata(path).map_err(|e| {
-            SkociError::internal(
-                format!("Failed to read metadata for {}: {e}", path.display()),
-                "Check project file permissions",
-            )
-        })?;
+    for WalkedEntry {
+        path,
+        rel_str,
+        metadata,
+    } in walked.entries
+    {
 
         let mut header = tar::Header::new_gnu();
         header.set_uid(0);
@@ -281,7 +365,7 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
             header.set_entry_type(tar::EntryType::Symlink);
             header.set_size(0);
             header.set_mode(0o777);
-            let target = std::fs::read_link(path).map_err(|e| {
+            let target = std::fs::read_link(&path).map_err(|e| {
                 SkociError::bad_request(
                     format!("Failed to read symlink {}: {e}", path.display()),
                     "Ensure symlink is valid",
@@ -320,7 +404,7 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
             let mode = 0o644;
 
             header.set_mode(mode);
-            let mut file = File::open(path).map_err(|e| {
+            let mut file = File::open(&path).map_err(|e| {
                 SkociError::bad_request(
                     format!("Failed to open file {}: {e}", path.display()),
                     "Ensure the file is readable",
@@ -345,15 +429,11 @@ pub fn pack_context(dir: impl AsRef<Path>) -> SkociResult<PackedContext> {
         SkociError::internal(format!("Failed to check archive size: {e}"), "Try deploying again")
     })?.len();
 
-    let mut excluded = excluded_sensitive.lock().clone();
-    excluded.sort();
-    excluded.dedup();
-
     Ok(PackedContext {
         path: temp_path,
         files: files_count,
         bytes,
-        excluded_sensitive: excluded,
+        excluded_sensitive: walked.excluded_sensitive,
     })
 }
 
@@ -380,7 +460,9 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("skoci-test-pack-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp).unwrap();
 
-        std::fs::write(temp.join("skoci.yaml"), "app: my-app\nversion: 1\nbuild:\n  dockerfile: Dockerfile\nrun:\n  port: 8080\n").unwrap();
+        let skoci_dir = temp.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        std::fs::write(skoci_dir.join("skoci.yaml"), "app: my-app\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n").unwrap();
         std::fs::write(temp.join(".gitignore"), "git_ignored.txt\n").unwrap();
         std::fs::write(temp.join(".dockerignore"), "docker_ignored.txt\n").unwrap();
         std::fs::write(temp.join("git_ignored.txt"), "should be ignored").unwrap();
@@ -428,7 +510,7 @@ mod tests {
             entries_found.insert(path, mode);
         }
 
-        assert!(entries_found.contains_key("skoci.yaml"));
+        assert!(entries_found.contains_key(".skoci/skoci.yaml"));
         assert!(!entries_found.contains_key("git_ignored.txt"));
         assert!(!entries_found.contains_key("docker_ignored.txt"));
         assert!(!entries_found.contains_key(".env.skoci"));
@@ -452,7 +534,9 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("skoci-test-sensitive-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp).unwrap();
 
-        std::fs::write(temp.join("skoci.yaml"), "app: secure-app\nversion: 1\nbuild:\n  dockerfile: Dockerfile\nrun:\n  port: 8080\n").unwrap();
+        let skoci_dir = temp.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        std::fs::write(skoci_dir.join("skoci.yaml"), "app: secure-app\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n").unwrap();
 
         // Sensitive files that must be excluded
         std::fs::write(temp.join(".env"), "SECRET=1").unwrap();
@@ -556,7 +640,9 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("skoci-test-defaults-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp).unwrap();
 
-        std::fs::write(temp.join("skoci.yaml"), "app: test-defaults\nversion: 1\nbuild:\n  dockerfile: Dockerfile\nrun:\n  port: 8080\n").unwrap();
+        let skoci_dir = temp.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        std::fs::write(skoci_dir.join("skoci.yaml"), "app: test-defaults\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n").unwrap();
 
         // Create node_modules with foo.txt and keep.txt
         let nm = temp.join("node_modules");
@@ -770,6 +856,187 @@ mod tests {
         }
 
         assert!(entries.contains(&".skoci/skoci.yaml".to_string()));
+
+        drop(packed);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_parent_gitignore_does_not_filter_project_files() {
+        let parent = std::env::temp_dir().join(format!("skoci-test-parent-gi-{}", uuid::Uuid::new_v4()));
+        let proj = parent.join("proj");
+        let skoci_dir = proj.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+
+        std::fs::write(parent.join(".gitignore"), "secretdir/\nparent_ignored.txt\n").unwrap();
+        std::fs::write(
+            skoci_dir.join("skoci.yaml"),
+            "app: nested-app\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n",
+        ).unwrap();
+        std::fs::write(skoci_dir.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+
+        let secret_dir = proj.join("secretdir");
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        std::fs::write(secret_dir.join("inside.txt"), "must not be filtered by parent .gitignore").unwrap();
+        std::fs::write(proj.join("parent_ignored.txt"), "must also remain").unwrap();
+
+        let packed = pack_context(&proj).unwrap();
+        let archive_path = packed.path.clone();
+        let file = File::open(&archive_path).unwrap();
+        let gz = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            entries.push(entry.path().unwrap().to_string_lossy().to_string());
+        }
+
+        assert!(entries.contains(&"secretdir/inside.txt".to_string()));
+        assert!(entries.contains(&"parent_ignored.txt".to_string()));
+        assert!(!packed.excluded_sensitive.contains(&"secretdir".to_string()));
+
+        let listing = list_context_files(&proj, ".skoci/Dockerfile").unwrap();
+        assert!(listing.files.contains(&"secretdir/inside.txt".to_string()));
+        assert!(listing.files.contains(&"parent_ignored.txt".to_string()));
+
+        drop(packed);
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn test_project_root_gitignore_excludes_named_entries() {
+        let temp = std::env::temp_dir().join(format!("skoci-test-root-gi-{}", uuid::Uuid::new_v4()));
+        let skoci_dir = temp.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+
+        std::fs::write(
+            skoci_dir.join("skoci.yaml"),
+            "app: root-gi-app\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n",
+        ).unwrap();
+        std::fs::write(skoci_dir.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        std::fs::write(temp.join(".gitignore"), "ignored_dir/\nignored_file.txt\n").unwrap();
+
+        let ignored_dir = temp.join("ignored_dir");
+        std::fs::create_dir_all(&ignored_dir).unwrap();
+        std::fs::write(ignored_dir.join("inside.txt"), "excluded").unwrap();
+        std::fs::write(temp.join("ignored_file.txt"), "excluded").unwrap();
+        std::fs::write(temp.join("kept_file.txt"), "included").unwrap();
+
+        let listing = list_context_files(&temp, ".skoci/Dockerfile").unwrap();
+        assert!(listing.files.contains(&"kept_file.txt".to_string()));
+        assert!(!listing.files.contains(&"ignored_file.txt".to_string()));
+        assert!(!listing.files.contains(&"ignored_dir/inside.txt".to_string()));
+        assert!(listing.excluded_sensitive.contains(&"ignored_dir".to_string()));
+        assert!(listing.excluded_sensitive.contains(&"ignored_file.txt".to_string()));
+
+        let packed = pack_context(&temp).unwrap();
+        let file = File::open(&packed.path).unwrap();
+        let gz = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            entries.push(entry.path().unwrap().to_string_lossy().to_string());
+        }
+        assert!(entries.contains(&"kept_file.txt".to_string()));
+        assert!(!entries.contains(&"ignored_file.txt".to_string()));
+        assert!(!entries.contains(&"ignored_dir/inside.txt".to_string()));
+
+        drop(packed);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_skoci_ignore_negation_overrides_project_gitignore() {
+        let temp = std::env::temp_dir().join(format!("skoci-test-neg-override-{}", uuid::Uuid::new_v4()));
+        let skoci_dir = temp.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+
+        std::fs::write(
+            skoci_dir.join("skoci.yaml"),
+            "app: neg-override-app\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n",
+        ).unwrap();
+        std::fs::write(skoci_dir.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        std::fs::write(temp.join(".gitignore"), "keepme\ndir_ignored/\n").unwrap();
+        std::fs::write(skoci_dir.join("ignore"), "!keepme\n!dir_ignored/keep_nested.txt\n").unwrap();
+
+        std::fs::write(temp.join("keepme"), "unignored by .skoci/ignore").unwrap();
+        let dir_ignored = temp.join("dir_ignored");
+        std::fs::create_dir_all(&dir_ignored).unwrap();
+        std::fs::write(dir_ignored.join("keep_nested.txt"), "kept").unwrap();
+        std::fs::write(dir_ignored.join("drop_nested.txt"), "dropped").unwrap();
+
+        let listing = list_context_files(&temp, ".skoci/Dockerfile").unwrap();
+        assert!(listing.files.contains(&"keepme".to_string()));
+        assert!(listing.files.contains(&"dir_ignored/keep_nested.txt".to_string()));
+        assert!(!listing.files.contains(&"dir_ignored/drop_nested.txt".to_string()));
+
+        let packed = pack_context(&temp).unwrap();
+        let file = File::open(&packed.path).unwrap();
+        let gz = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            entries.push(entry.path().unwrap().to_string_lossy().to_string());
+        }
+        assert!(entries.contains(&"keepme".to_string()));
+        assert!(entries.contains(&"dir_ignored/keep_nested.txt".to_string()));
+        assert!(!entries.contains(&"dir_ignored/drop_nested.txt".to_string()));
+
+        drop(packed);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_list_context_files_matches_pack_context_paths() {
+        let temp = std::env::temp_dir().join(format!("skoci-test-list-match-{}", uuid::Uuid::new_v4()));
+        let skoci_dir = temp.join(".skoci");
+        let src_dir = temp.join("src");
+        let nm_dir = temp.join("node_modules");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&nm_dir).unwrap();
+
+        std::fs::write(
+            skoci_dir.join("skoci.yaml"),
+            "app: list-match-app\nversion: 1\nbuild:\n  dockerfile: .skoci/Dockerfile\nrun:\n  port: 8080\n",
+        ).unwrap();
+        std::fs::write(skoci_dir.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        std::fs::write(skoci_dir.join("ignore"), "ignored.log\n").unwrap();
+        std::fs::write(skoci_dir.join("env"), "SKOCI_TOKEN=secret\n").unwrap();
+        std::fs::write(temp.join(".gitignore"), "git_excluded.txt\n").unwrap();
+        std::fs::write(temp.join("git_excluded.txt"), "nope").unwrap();
+        std::fs::write(temp.join("ignored.log"), "nope").unwrap();
+        std::fs::write(temp.join(".env"), "SECRET=1").unwrap();
+        std::fs::write(nm_dir.join("pkg.js"), "nope").unwrap();
+        std::fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(src_dir.join("lib.rs"), "pub fn run() {}").unwrap();
+        std::fs::write(temp.join("README.txt"), "hello").unwrap();
+
+        let listing = list_context_files(&temp, ".skoci/Dockerfile").unwrap();
+        let packed = pack_context(&temp).unwrap();
+
+        let file = File::open(&packed.path).unwrap();
+        let gz = GzDecoder::new(file);
+        let mut archive = tar::Archive::new(gz);
+
+        let mut packed_file_paths = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            if !entry.header().entry_type().is_dir() {
+                packed_file_paths.push(entry.path().unwrap().to_string_lossy().to_string());
+            }
+        }
+        packed_file_paths.sort();
+
+        assert_eq!(listing.files, packed_file_paths);
+        assert_eq!(listing.files.len(), packed.files);
+        assert_eq!(listing.excluded_sensitive, packed.excluded_sensitive);
+        assert!(listing.bytes > 0);
 
         drop(packed);
         let _ = std::fs::remove_dir_all(&temp);

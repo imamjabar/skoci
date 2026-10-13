@@ -9,6 +9,8 @@ use skoci_api::responses::{ServerFingerprint, TokenCreateResponse};
 
 const INSTALLER_SCRIPT: &str = include_str!("../../../install.sh");
 
+const ASKPASS_ENV_VAR: &str = "SKOCI_SSH_ASKPASS_SECRET";
+
 #[derive(Debug, Clone)]
 pub struct SetupOptions {
     pub host: String,
@@ -16,15 +18,127 @@ pub struct SetupOptions {
     pub port: u16,
     pub ssh_key: Option<PathBuf>,
     pub ssh_copy_id: bool,
+    pub ssh_password_stdin: bool,
     pub app: Option<String>,
     pub version: Option<String>,
     pub magic_dns: bool,
     pub domain: Option<String>,
     pub email: Option<String>,
     pub harden_ssh: bool,
-    pub setup_ufw: bool,
+    pub no_ufw: bool,
+    pub strict_approvals: bool,
     pub assume_yes: bool,
     pub allow_magic_dns_production: bool,
+}
+
+struct AskpassGuard {
+    dir: PathBuf,
+    script: PathBuf,
+}
+
+impl AskpassGuard {
+    fn new() -> SkociResult<Self> {
+        let dir = std::env::temp_dir().join(format!(
+            "skoci-askpass-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&dir)
+                .map_err(|e| {
+                    SkociError::internal(
+                        format!(
+                            "Failed to create temporary askpass directory '{}': {e}",
+                            dir.display()
+                        ),
+                        "Check permissions on the system temporary directory",
+                    )
+                })?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir(&dir).map_err(|e| {
+                SkociError::internal(
+                    format!(
+                        "Failed to create temporary askpass directory '{}': {e}",
+                        dir.display()
+                    ),
+                    "Check permissions on the system temporary directory",
+                )
+            })?;
+        }
+
+        let script = dir.join("askpass.sh");
+        let body = format!("#!/bin/sh\nprintf '%s\\n' \"${{{ASKPASS_ENV_VAR}:-}}\"\n");
+
+        #[cfg(unix)]
+        let write_res = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&script)
+                .and_then(|mut f| {
+                    f.write_all(body.as_bytes())?;
+                    f.sync_all()
+                })
+        };
+        #[cfg(not(unix))]
+        let write_res = std::fs::write(&script, body.as_bytes());
+
+        if let Err(e) = write_res {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(SkociError::internal(
+                format!(
+                    "Failed to write temporary askpass helper '{}': {e}",
+                    script.display()
+                ),
+                "Check available disk space and permissions on the temporary directory",
+            ));
+        }
+
+        Ok(Self { dir, script })
+    }
+}
+
+impl Drop for AskpassGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.script);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn read_password_line_from_reader<R: std::io::BufRead>(mut reader: R) -> SkociResult<String> {
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line).map_err(|e| {
+        SkociError::bad_request(
+            format!("Failed to read SSH password from stdin: {e}"),
+            "Pipe the password on stdin when using '--ssh-password-stdin'",
+        )
+    })?;
+    if bytes == 0 {
+        return Err(SkociError::bad_request(
+            "No password received on stdin for --ssh-password-stdin",
+            "Pipe the password as the first line on stdin when using '--ssh-password-stdin'",
+        ));
+    }
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    if line.is_empty() {
+        return Err(SkociError::bad_request(
+            "Empty password line received on stdin for --ssh-password-stdin",
+            "Provide a non-empty password on the first line of stdin when using '--ssh-password-stdin'",
+        ));
+    }
+    Ok(line)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,15 +222,20 @@ pub fn is_valid_app_name(name: &str) -> bool {
 
 pub fn build_installer_flags(opts: &SetupOptions) -> Vec<String> {
     let mut flags = Vec::new();
-    if opts.magic_dns {
+    let domain = opts
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    if domain.is_none() {
         flags.push("--magic-dns".to_string());
     }
     if opts.allow_magic_dns_production {
         flags.push("--allow-magic-dns-production".to_string());
     }
-    if let Some(domain) = &opts.domain {
+    if let Some(domain) = domain {
         flags.push("--domain".to_string());
-        flags.push(domain.clone());
+        flags.push(domain.to_string());
     }
     if let Some(email) = &opts.email {
         flags.push("--email".to_string());
@@ -129,8 +248,11 @@ pub fn build_installer_flags(opts: &SetupOptions) -> Vec<String> {
     if opts.harden_ssh {
         flags.push("--harden-ssh".to_string());
     }
-    if opts.setup_ufw {
-        flags.push("--setup-ufw".to_string());
+    if opts.no_ufw {
+        flags.push("--no-ufw".to_string());
+    }
+    if opts.strict_approvals {
+        flags.push("--strict-approvals".to_string());
     }
     if opts.port != 22 {
         flags.push("--ssh-port".to_string());
@@ -156,7 +278,12 @@ pub fn build_ssh_args(opts: &SetupOptions, remote_argv: &[&str]) -> Vec<String> 
     }
     args
 }
+
 pub fn build_installer_ssh_args(opts: &SetupOptions) -> Vec<String> {
+    build_installer_ssh_args_with_sudo(opts, false)
+}
+
+pub fn build_installer_ssh_args_with_sudo(opts: &SetupOptions, sudo_stdin: bool) -> Vec<String> {
     let mut args = vec![
         "-o".to_string(),
         "BatchMode=yes".to_string(),
@@ -168,6 +295,12 @@ pub fn build_installer_ssh_args(opts: &SetupOptions) -> Vec<String> {
         args.push(key.display().to_string());
     }
     args.push(format!("{}@{}", opts.user, opts.host));
+    if sudo_stdin {
+        args.push("sudo".to_string());
+        args.push("-S".to_string());
+        args.push("-p".to_string());
+        args.push("''".to_string());
+    }
     args.push("bash".to_string());
     args.push("-s".to_string());
     args.push("--".to_string());
@@ -266,47 +399,61 @@ fn parse_token_create_response(stdout: &str) -> Result<TokenCreateResponse, Skoc
     ))
 }
 
-async fn run_remote_skoci_cmd(opts: &SetupOptions, subcmd: &[&str]) -> Result<String, SkociError> {
+async fn run_remote_skoci_cmd(
+    opts: &SetupOptions,
+    ssh_password: Option<&str>,
+    sudo_via_stdin: bool,
+    subcmd: &[&str],
+) -> Result<String, SkociError> {
     let mut remote_argv = Vec::new();
+    let feed_password = opts.user != "root" && sudo_via_stdin && ssh_password.is_some();
     if opts.user != "root" {
         remote_argv.push("sudo");
+        if feed_password {
+            remote_argv.push("-S");
+            remote_argv.push("-p");
+            remote_argv.push("''");
+        }
     }
     remote_argv.push("skoci");
     remote_argv.extend_from_slice(subcmd);
 
     let args = build_ssh_args(opts, &remote_argv);
-    let output = tokio::process::Command::new("ssh")
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| {
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.args(&args);
+
+    let output = if feed_password {
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
             SkociError::internal(
                 format!("Failed to execute remote command over SSH: {e}"),
                 "Ensure OpenSSH client ('ssh') is available in PATH",
             )
         })?;
+        if let (Some(mut stdin), Some(pw)) = (child.stdin.take(), ssh_password) {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(format!("{pw}\n").as_bytes()).await;
+            drop(stdin);
+        }
+        child.wait_with_output().await.map_err(|e| {
+            SkociError::internal(
+                format!("Failed to wait for remote command over SSH: {e}"),
+                "Ensure OpenSSH client ('ssh') is available in PATH",
+            )
+        })?
+    } else {
+        cmd.output().await.map_err(|e| {
+            SkociError::internal(
+                format!("Failed to execute remote command over SSH: {e}"),
+                "Ensure OpenSSH client ('ssh') is available in PATH",
+            )
+        })?
+    };
 
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-    }
-
-    if opts.user != "root" {
-        let mut fallback_argv = vec!["skoci"];
-        fallback_argv.extend_from_slice(subcmd);
-        let fallback_args = build_ssh_args(opts, &fallback_argv);
-        let fallback_output = tokio::process::Command::new("ssh")
-            .args(&fallback_args)
-            .output()
-            .await
-            .map_err(|e| {
-                SkociError::internal(
-                    format!("Failed to execute fallback remote command: {e}"),
-                    "Ensure OpenSSH client ('ssh') is available in PATH",
-                )
-            })?;
-        if fallback_output.status.success() {
-            return Ok(String::from_utf8_lossy(&fallback_output.stdout).to_string());
-        }
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -316,13 +463,18 @@ async fn run_remote_skoci_cmd(opts: &SetupOptions, subcmd: &[&str]) -> Result<St
             output.status.code().unwrap_or(-1),
             stderr.trim()
         ),
-        "Ensure Skoci is installed on the server and the user has permissions to run it",
+        "Ensure Skoci is installed on the server and the user has sudo permissions to run it",
     ))
 }
 
 async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<ServerSetupResponse> {
     let mut steps = Vec::new();
 
+    let ssh_password = if opts.ssh_password_stdin {
+        Some(read_password_line_from_reader(std::io::stdin().lock())?)
+    } else {
+        None
+    };
     // Step 1: Validate inputs
     let step1_msg = "Step 1/7: Validating server and application inputs".to_string();
     if !json {
@@ -451,7 +603,7 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
 
         if failure == SshFailure::Auth {
             let is_tty = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-            let should_bootstrap = if opts.ssh_copy_id {
+            let should_bootstrap = if opts.ssh_copy_id || ssh_password.is_some() {
                 true
             } else if is_tty {
                 eprint!(
@@ -548,18 +700,40 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
                     );
                 }
 
-                let copy_res = tokio::process::Command::new("ssh-copy-id")
-                    .arg("-i")
-                    .arg(&pub_key)
-                    .arg("-p")
-                    .arg(opts.port.to_string())
-                    .arg(format!("{}@{}", opts.user, opts.host))
-                    .stdin(std::process::Stdio::inherit())
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .await;
-
+                let copy_res = if let Some(password) = &ssh_password {
+                    let askpass = AskpassGuard::new()?;
+                    let res = tokio::process::Command::new("ssh-copy-id")
+                        .arg("-i")
+                        .arg(&pub_key)
+                        .arg("-o")
+                        .arg("StrictHostKeyChecking=accept-new")
+                        .arg("-p")
+                        .arg(opts.port.to_string())
+                        .arg(format!("{}@{}", opts.user, opts.host))
+                        .env("SSH_ASKPASS", &askpass.script)
+                        .env("SSH_ASKPASS_REQUIRE", "force")
+                        .env("DISPLAY", "none")
+                        .env(ASKPASS_ENV_VAR, password)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .status()
+                        .await;
+                    drop(askpass);
+                    res
+                } else {
+                    tokio::process::Command::new("ssh-copy-id")
+                        .arg("-i")
+                        .arg(&pub_key)
+                        .arg("-p")
+                        .arg(opts.port.to_string())
+                        .arg(format!("{}@{}", opts.user, opts.host))
+                        .stdin(std::process::Stdio::inherit())
+                        .stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit())
+                        .status()
+                        .await
+                };
                 match copy_res {
                     Ok(status) => {
                         if !status.success() {
@@ -617,7 +791,7 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
                         "SSH authentication failed for {}@{}:{}",
                         opts.user, opts.host, opts.port
                     ),
-                    "Password authentication requires an interactive terminal (sshpass is not supported by Skoci). Pass '--ssh-copy-id' to copy your key, or run 'ssh-copy-id' manually.",
+                    "Pipe the password via '--ssh-password-stdin', pass '--ssh-copy-id' from an interactive terminal, or run 'ssh-copy-id' manually.",
                 ));
             }
         } else if failure == SshFailure::HostKeyChanged {
@@ -681,7 +855,36 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
     }
     steps.push(step3_msg);
 
-    let installer_args = build_installer_ssh_args(&opts);
+    let sudo_via_stdin = if opts.user != "root" {
+        let sudo_probe_args = build_ssh_args(&opts, &["sudo", "-n", "true"]);
+        let sudo_probe = tokio::process::Command::new("ssh")
+            .args(&sudo_probe_args)
+            .output()
+            .await
+            .map_err(|e| {
+                SkociError::internal(
+                    format!("Failed to probe remote sudo access over SSH: {e}"),
+                    "Ensure OpenSSH client ('ssh') is installed and accessible in PATH",
+                )
+            })?;
+        if sudo_probe.status.success() {
+            false
+        } else if ssh_password.is_some() {
+            true
+        } else {
+            return Err(SkociError::bad_request(
+                format!(
+                    "Remote user '{}' on {} requires a password for sudo",
+                    opts.user, opts.host
+                ),
+                "Pipe the password via '--ssh-password-stdin' or configure passwordless sudo (NOPASSWD) for this user on the server",
+            ));
+        }
+    } else {
+        false
+    };
+
+    let installer_args = build_installer_ssh_args_with_sudo(&opts, sudo_via_stdin);
     let mut install_cmd = tokio::process::Command::new("ssh");
     install_cmd.args(&installer_args);
 
@@ -698,6 +901,17 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
+        if let (true, Some(pw)) = (sudo_via_stdin, ssh_password.as_deref()) {
+            stdin
+                .write_all(format!("{pw}\n").as_bytes())
+                .await
+                .map_err(|e| {
+                    SkociError::internal(
+                        format!("Failed to write sudo password to remote session: {e}"),
+                        "Check SSH connection and remote sudo configuration",
+                    )
+                })?;
+        }
         stdin
             .write_all(INSTALLER_SCRIPT.as_bytes())
             .await
@@ -709,7 +923,6 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
             })?;
         drop(stdin);
     }
-
     let captured_stderr = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured_stderr_clone = Arc::clone(&captured_stderr);
 
@@ -776,7 +989,13 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
     }
     steps.push(step4_msg);
 
-    let fp_stdout = run_remote_skoci_cmd(&opts, &["server", "fingerprint", "--json"]).await?;
+    let fp_stdout = run_remote_skoci_cmd(
+        &opts,
+        ssh_password.as_deref(),
+        sudo_via_stdin,
+        &["server", "fingerprint", "--json"],
+    )
+    .await?;
     let fp = parse_fingerprint_response(&fp_stdout)?;
 
     let pin = match normalize_spki_pin(&fp.spki_pin) {
@@ -807,6 +1026,8 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
 
     let token_stdout = run_remote_skoci_cmd(
         &opts,
+        ssh_password.as_deref(),
+        sudo_via_stdin,
         &["token", "create", "--app", &app, "--name", "laptop", "--json"],
     )
     .await?;
@@ -866,7 +1087,9 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
             println!("  Dashboard in browser : https://skoci.{domain}  (Let's Encrypt)");
         } else {
             println!("  Dashboard in browser : none (run 'skoci domain set <host> --primary' to enable a browser-trusted dashboard)");
+            println!("  Warning              : sslip.io hostnames are in use (magic-DNS); run 'skoci domain set <host> --primary' to upgrade to a real domain");
         }
+        println!("  Master token (VPS)   : /etc/skoci/skoci.env (sudo grep '^SKOCI_MASTER_TOKEN=' /etc/skoci/skoci.env | cut -d= -f2-)");
         if opts.allow_magic_dns_production {
             println!("  Warning              : Magic-DNS hostnames are allowed in production (--allow-magic-dns-production enabled)");
         }
@@ -1034,25 +1257,31 @@ mod tests {
         assert!(!is_valid_user("User"));
     }
 
-    #[test]
-    fn test_installer_flag_construction() {
-        let default_opts = SetupOptions {
+    fn default_test_opts() -> SetupOptions {
+        SetupOptions {
             host: "203.0.113.10".into(),
             user: "root".into(),
             port: 22,
             ssh_key: None,
             ssh_copy_id: false,
+            ssh_password_stdin: false,
             app: None,
             version: None,
             magic_dns: false,
             domain: None,
             email: None,
             harden_ssh: false,
-            setup_ufw: false,
+            no_ufw: false,
+            strict_approvals: false,
             assume_yes: false,
             allow_magic_dns_production: false,
-        };
-        assert_eq!(build_installer_flags(&default_opts), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn test_installer_flag_construction() {
+        let default_opts = default_test_opts();
+        assert_eq!(build_installer_flags(&default_opts), vec!["--magic-dns"]);
 
         let mut magic_opts = default_opts.clone();
         magic_opts.magic_dns = true;
@@ -1062,7 +1291,7 @@ mod tests {
         allow_magic_prod_opts.allow_magic_dns_production = true;
         assert_eq!(
             build_installer_flags(&allow_magic_prod_opts),
-            vec!["--allow-magic-dns-production"]
+            vec!["--magic-dns", "--allow-magic-dns-production"]
         );
 
         let mut domain_email_opts = default_opts.clone();
@@ -1073,47 +1302,53 @@ mod tests {
             vec!["--domain", "example.com", "--email", "admin@example.com"]
         );
 
+        let mut domain_overrides_magic_opts = domain_email_opts.clone();
+        domain_overrides_magic_opts.magic_dns = true;
+        assert_eq!(
+            build_installer_flags(&domain_overrides_magic_opts),
+            vec!["--domain", "example.com", "--email", "admin@example.com"]
+        );
+
         let mut version_opts = default_opts.clone();
         version_opts.version = Some("v0.4.0".into());
         assert_eq!(
             build_installer_flags(&version_opts),
-            vec!["--version", "v0.4.0"]
+            vec!["--magic-dns", "--version", "v0.4.0"]
         );
 
         let mut harden_opts = default_opts.clone();
         harden_opts.harden_ssh = true;
-        assert_eq!(build_installer_flags(&harden_opts), vec!["--harden-ssh"]);
+        assert_eq!(
+            build_installer_flags(&harden_opts),
+            vec!["--magic-dns", "--harden-ssh"]
+        );
 
-        let mut ufw_opts = default_opts.clone();
-        ufw_opts.setup_ufw = true;
-        assert_eq!(build_installer_flags(&ufw_opts), vec!["--setup-ufw"]);
+        let mut no_ufw_opts = default_opts.clone();
+        no_ufw_opts.no_ufw = true;
+        assert_eq!(
+            build_installer_flags(&no_ufw_opts),
+            vec!["--magic-dns", "--no-ufw"]
+        );
+
+        let mut strict_opts = default_opts.clone();
+        strict_opts.strict_approvals = true;
+        assert_eq!(
+            build_installer_flags(&strict_opts),
+            vec!["--magic-dns", "--strict-approvals"]
+        );
 
         let mut port_opts = default_opts.clone();
         port_opts.port = 2222;
         assert_eq!(
             build_installer_flags(&port_opts),
-            vec!["--ssh-port", "2222"]
+            vec!["--magic-dns", "--ssh-port", "2222"]
         );
     }
 
     #[test]
     fn test_remote_command_builder_no_space_joined_strings() {
-        let opts = SetupOptions {
-            host: "203.0.113.10".into(),
-            user: "root".into(),
-            port: 22,
-            ssh_key: None,
-            ssh_copy_id: false,
-            app: Some("myapp".into()),
-            version: None,
-            magic_dns: false,
-            domain: None,
-            email: None,
-            harden_ssh: false,
-            setup_ufw: false,
-            assume_yes: false,
-            allow_magic_dns_production: false,
-        };
+        let mut opts = default_test_opts();
+        opts.app = Some("myapp".into());
 
         let cmd_parts = ["sudo", "skoci", "server", "fingerprint", "--json"];
         let args = build_ssh_args(&opts, &cmd_parts);
@@ -1130,24 +1365,11 @@ mod tests {
         }
         assert!(!args.iter().any(|a| a.contains("skoci server fingerprint")));
     }
+
     #[test]
     fn test_installer_argv_contains_bash() {
-        let opts = SetupOptions {
-            host: "203.0.113.10".into(),
-            user: "root".into(),
-            port: 22,
-            ssh_key: None,
-            ssh_copy_id: false,
-            app: Some("myapp".into()),
-            version: None,
-            magic_dns: false,
-            domain: None,
-            email: None,
-            harden_ssh: false,
-            setup_ufw: false,
-            assume_yes: false,
-            allow_magic_dns_production: false,
-        };
+        let mut opts = default_test_opts();
+        opts.app = Some("myapp".into());
         let args = build_installer_ssh_args(&opts);
         let target = format!("{}@{}", opts.user, opts.host);
         let target_idx = args.iter().position(|a| a == &target).expect("target found");
@@ -1155,6 +1377,44 @@ mod tests {
         assert_eq!(args[target_idx + 2], "-s");
         assert_eq!(args[target_idx + 3], "--");
         assert!(!args.contains(&"sh".to_string()));
+
+        let sudo_args = build_installer_ssh_args_with_sudo(&opts, true);
+        let sudo_target_idx = sudo_args.iter().position(|a| a == &target).expect("target found");
+        assert_eq!(
+            &sudo_args[sudo_target_idx + 1..sudo_target_idx + 8],
+            &["sudo", "-S", "-p", "''", "bash", "-s", "--"]
+        );
+    }
+
+    #[test]
+    fn test_read_password_line_and_askpass_guard_cleanup() {
+        let pw = read_password_line_from_reader(std::io::Cursor::new("s3cret_pass!\r\nignored\n"))
+            .expect("password read");
+        assert_eq!(pw, "s3cret_pass!");
+
+        assert!(read_password_line_from_reader(std::io::Cursor::new("")).is_err());
+        assert!(read_password_line_from_reader(std::io::Cursor::new("\n")).is_err());
+
+        let (dir, script) = {
+            let guard = AskpassGuard::new().expect("askpass guard created");
+            assert!(guard.dir.exists());
+            assert!(guard.script.exists());
+            let content = std::fs::read_to_string(&guard.script).expect("read script");
+            assert!(content.contains(ASKPASS_ENV_VAR));
+            assert!(!content.contains("s3cret_pass!"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let dir_mode = std::fs::metadata(&guard.dir).unwrap().permissions().mode() & 0o777;
+                let script_mode =
+                    std::fs::metadata(&guard.script).unwrap().permissions().mode() & 0o777;
+                assert_eq!(dir_mode, 0o700);
+                assert_eq!(script_mode, 0o700);
+            }
+            (guard.dir.clone(), guard.script.clone())
+        };
+        assert!(!script.exists());
+        assert!(!dir.exists());
     }
 
     #[test]

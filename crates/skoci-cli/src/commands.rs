@@ -1,8 +1,8 @@
 use futures_util::StreamExt;
 use skoci_api::error::{SkociError, SkociResult};
 use skoci_api::models::{
-    ApiResponse, LEGACY_CONFIG_PATH, MAX_APP_NAME_LEN, PROJECT_CONFIG_PATH, PROJECT_DIR,
-    PROJECT_DOCKERFILE_PATH, PROJECT_IGNORE_PATH,
+    ApiResponse, MAX_APP_NAME_LEN, PROJECT_CONFIG_PATH, PROJECT_DIR, PROJECT_DOCKERFILE_PATH,
+    PROJECT_IGNORE_PATH,
 };
 use skoci_api::requests::{
     ApproveRequest, DbBackupRequest, DbRestoreRequest, DefaultAppRequest, DeployRequest,
@@ -255,6 +255,21 @@ fn validate_app_name_for_init(app_name: &str) -> SkociResult<()> {
     ))
 }
 
+fn read_existing_app_name(path: &Path) -> Option<String> {
+    let cfg_path = ConfigLoader::locate_config(path)?;
+    let content = std::fs::read_to_string(cfg_path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("app:") {
+            let val = rest.trim().trim_matches(['"', '\'']).trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn init_project(
     path: impl AsRef<Path>,
     app_override: Option<&str>,
@@ -269,8 +284,12 @@ pub fn init_project(
         })?;
     }
 
+    crate::env::migrate_legacy_project_layout(path)?;
+
     let app_name = if let Some(app) = app_override {
         app.trim().to_string()
+    } else if let Some(existing) = read_existing_app_name(path) {
+        existing
     } else if let Some(suggested) = ProjectDetector::suggest_app_name(path) {
         suggested
     } else {
@@ -291,22 +310,6 @@ pub fn init_project(
 
     let detection = ProjectDetector::detect(path);
 
-    let legacy_yaml = path.join(LEGACY_CONFIG_PATH);
-    if legacy_yaml.exists() {
-        let mut notes = detection.notes;
-        notes.push(
-            "Project already configured via legacy skoci.yaml; this file is still honoured."
-                .to_string(),
-        );
-        return Ok(InitResponse {
-            detected_framework: detection.framework.name().to_string(),
-            created_files: Vec::new(),
-            app_name,
-            skipped_files: vec![LEGACY_CONFIG_PATH.to_string()],
-            notes,
-        });
-    }
-
     let skoci_dir = path.join(PROJECT_DIR);
     if !skoci_dir.exists() {
         std::fs::create_dir_all(&skoci_dir).map_err(|e| {
@@ -315,6 +318,11 @@ pub fn init_project(
                 "Ensure the directory can be created and permissions are sufficient",
             )
         })?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&skoci_dir, std::fs::Permissions::from_mode(0o700));
     }
 
     let mut created_files = Vec::new();
@@ -375,7 +383,15 @@ pub fn init_project(
 }
 
 pub fn validate_project(path: impl AsRef<Path>) -> SkociResult<ValidateResponse> {
+    validate_project_with_options(path, false)
+}
+
+pub fn validate_project_with_options(
+    path: impl AsRef<Path>,
+    verbose: bool,
+) -> SkociResult<ValidateResponse> {
     let path = path.as_ref();
+    crate::env::migrate_legacy_project_layout(path)?;
     let config_path = ConfigLoader::locate_config(path).ok_or_else(|| {
         SkociError::config_invalid(
             "skoci.yaml file not found",
@@ -384,6 +400,21 @@ pub fn validate_project(path: impl AsRef<Path>) -> SkociResult<ValidateResponse>
     })?;
 
     let cfg = ConfigLoader::load_config(&config_path)?;
+    let (files, bytes, excluded_sensitive) = if verbose {
+        let df = if cfg.build.dockerfile.is_empty() {
+            PROJECT_DOCKERFILE_PATH
+        } else {
+            cfg.build.dockerfile.as_str()
+        };
+        let listing = skoci_client::package::list_context_files(path, df)?;
+        (
+            Some(listing.files),
+            Some(listing.bytes),
+            Some(listing.excluded_sensitive),
+        )
+    } else {
+        (None, None, None)
+    };
 
     Ok(ValidateResponse {
         config_path: config_path.display().to_string(),
@@ -393,7 +424,94 @@ pub fn validate_project(path: impl AsRef<Path>) -> SkociResult<ValidateResponse>
         dockerfile: cfg.build.dockerfile,
         context: cfg.build.context,
         required_secrets: cfg.env.secrets,
+        files,
+        bytes,
+        excluded_sensitive,
     })
+}
+
+pub struct ConnectCredentials<'a> {
+    pub name: &'a str,
+    pub server_url: &'a str,
+    pub token: &'a str,
+    pub pin: Option<&'a str>,
+    pub project_env: bool,
+    pub no_profile: bool,
+}
+
+pub fn persist_connect_credentials_at(
+    project_root: &Path,
+    profile_path: &Path,
+    creds: &ConnectCredentials<'_>,
+) -> SkociResult<Vec<String>> {
+    let mut stores = Vec::new();
+
+    if creds.project_env {
+        crate::env::write_project_env_at(project_root, creds.server_url, creds.token, creds.pin)?;
+        crate::env::ensure_gitignore_ignores_env(project_root)?;
+        stores.push(".skoci/env (mode 0600)".to_string());
+    }
+
+    if !creds.no_profile {
+        let mut config = skoci_client::profile::load_profiles_from(profile_path)?;
+        config.upsert(creds.name, creds.server_url, creds.token, creds.pin)?;
+        config.current = Some(creds.name.to_string());
+        skoci_client::profile::save_profiles_to(profile_path, &config)?;
+        stores.push(format!(
+            "~/.config/skoci/servers.json (profile '{}', mode 0600)",
+            creds.name
+        ));
+    }
+
+    Ok(stores)
+}
+
+pub fn agent_guide_text() -> &'static str {
+    r#"# Skoci Operational Guide for AI Agents
+
+Skoci is a secure, deterministic agent-native deployment platform.
+
+## Standard Workflow:
+1. **Bootstrap or Connect to Server**:
+   • Bootstrap a fresh VPS over SSH (installs Skoci, mints a scoped token, and saves the pinned profile):
+     `skoci server setup --host <ip> --user <user>`
+   • Connect to an existing server (bare-IP HTTPS requires the server SPKI pin):
+     `skoci connect --server https://<ip>:8443 --token <token> --pin sha256:<64 hex>`
+   Credentials live in `~/.config/skoci/servers.json` (mode 0600); pass `--project-env` only when CI or per-repo `.skoci/env` (0600) is needed.
+   NEVER print tokens to logs or commit them to public files.
+
+2. **Initialize Project**:
+   `skoci init`
+   Skoci automatically detects the framework and generates `.skoci/skoci.yaml`, `.skoci/Dockerfile`, and `.skoci/ignore`.
+   Use `skoci validate --verbose` to inspect the exact file list that `skoci deploy` will upload.
+
+3. **Deploy Application**:
+   `skoci deploy --json`
+   Use the `--json` flag to receive structured output (`ApiResponse<DeployResponse>`).
+   On failure, inspect `error.fix` for an immediate actionable fix command.
+
+4. **Exit Code Handling**:
+   • Exit Code 0: Success.
+   • Exit Code 1: Operational error (check error message & fix).
+   • Exit Code 2: Action requires human approval. Wait for approval or prompt the user to run `sudo skoci approvals` and `sudo skoci approve <id>` on the server.
+   • Exit Code 3: Authentication error or quota rate limit (unauthorized, scope_violation, rate_limited).
+
+5. **Promotion & Approval Flow (Exit Code 2)**:
+   • Master token promotes directly without approval.
+   • For a scoped agent token (`sk_agent_*`), an app's FIRST promotion to production (when no production route exists yet) succeeds immediately without creating an approval request.
+   • Every later promotion to production by a scoped agent token produces an approval request with status `pending_approval` (`appr_…`) and exits with code 2.
+   • A server started with `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` (configured via `skoci server setup --strict-approvals`) gates the first promotion too.
+   • The agent CANNOT approve its own request. There is no auto-approve flag.
+   • When `skoci promote` exits 2 with `pending_approval`, extract and surface `Request ID: appr_…` to the human operator.
+   • The human operator must approve the request on the server by running `sudo skoci approve <id>` (server-side admin commands require `sudo` because `/etc/skoci/skoci.env` is `0600 root:root`).
+   • `skoci approvals --json` lists pending requests under `data[]`.
+   • Note: MCP intentionally exposes only the listing tool (`skoci_approvals`), not approve or reject tools.
+
+6. **Agent Security Rules**:
+   • NEVER use raw SSH if the task can be performed via Skoci CLI/API.
+   • Server-side admin commands (`skoci approve`, `skoci reject`, `skoci token create`, etc. when using local master credentials on the VPS) require `sudo` because `/etc/skoci/skoci.env` is `0600 root:root`.
+   • NEVER display secret values or tokens on console.
+   • Use `skoci secret set <KEY> <VALUE>` to inject secure environment variables."#
 }
 
 pub async fn stream_events_and_render(
@@ -645,6 +763,14 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
     if json {
         skoci_client::profile::suppress_desync_warning();
     }
+    if let Commands::Deploy { ref path, .. } = cmd {
+        for dir in [Path::new("."), path.as_path()] {
+            if let Err(err) = crate::env::migrate_legacy_project_layout(dir) {
+                output::print_error(&err, json);
+                return error_exit_code(&err);
+            }
+        }
+    }
     let client = if !matches!(
         cmd,
         Commands::Connect { .. }
@@ -681,7 +807,12 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             pin,
             name,
             no_profile,
+            project_env,
         } => {
+            if let Err(err) = crate::env::migrate_legacy_project_layout(Path::new(".")) {
+                output::print_error(&err, json);
+                return error_exit_code(&err);
+            }
             let normalized_server = match normalize_server_url(&server) {
                 Ok(s) => s,
                 Err(e) => {
@@ -772,42 +903,36 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                 }
             }
 
-            if let Err(err) =
-                crate::env::write_project_env(&normalized_server, &resolved_token, pin.as_deref())
-            {
-                output::print_error(&err, json);
-                return 1;
-            }
-
-            if let Err(err) = crate::env::ensure_gitignore_ignores_env(Path::new(".")) {
-                output::print_error(&err, json);
-                return 1;
-            }
-
-            if !no_profile {
-                if let Err(err) = skoci_client::profile::save_server(
-                    &name,
-                    &normalized_server,
-                    &resolved_token,
-                    pin.as_deref(),
-                    true,
-                ) {
-                    if !json {
-                        eprintln!("Warning: Failed to save server to profile store: {err}");
-                    }
-                } else if !json {
-                    println!(
-                        "Saved profile '{name}' to ~/.config/skoci/servers.json (set as current)"
-                    );
+            let stores = match persist_connect_credentials_at(
+                Path::new("."),
+                &skoci_client::profile::default_profile_path(),
+                &ConnectCredentials {
+                    name: &name,
+                    server_url: &normalized_server,
+                    token: &resolved_token,
+                    pin: pin.as_deref(),
+                    project_env,
+                    no_profile,
+                },
+            ) {
+                Ok(s) => s,
+                Err(err) => {
+                    output::print_error(&err, json);
+                    return 1;
                 }
-            }
+            };
 
             if json {
                 output::print_json(&doc_resp);
             } else {
-                println!(
-                    "✓ Successfully connected and saved configuration to .skoci/env (mode 0600)\n"
-                );
+                if stores.is_empty() {
+                    println!("✓ Successfully connected (no credential store written)\n");
+                } else {
+                    println!(
+                        "✓ Successfully connected and saved configuration to {}\n",
+                        stores.join(" and ")
+                    );
+                }
                 if let Some(doc) = &doc_resp.data {
                     output::render_doctor(doc);
                 }
@@ -833,11 +958,7 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
                         }
                     }
 
-                    let config_file = if path.join(LEGACY_CONFIG_PATH).exists() {
-                        LEGACY_CONFIG_PATH
-                    } else {
-                        PROJECT_CONFIG_PATH
-                    };
+                    let config_file = PROJECT_CONFIG_PATH;
 
                     let resolved_server_url = (|| {
                         let project_env = crate::env::read_project_env_at(&path);
@@ -879,20 +1000,22 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             }
         },
 
-        Commands::Validate { path } => match validate_project(&path) {
-            Ok(res) => {
-                if json {
-                    output::print_json(&ApiResponse::ok(res, "Configuration is valid"));
-                } else {
-                    output::render_validate(&res);
+        Commands::Validate { path, verbose } => {
+            match validate_project_with_options(&path, verbose) {
+                Ok(res) => {
+                    if json {
+                        output::print_json(&ApiResponse::ok(res, "Configuration is valid"));
+                    } else {
+                        output::render_validate(&res);
+                    }
+                    0
                 }
-                0
+                Err(err) => {
+                    output::print_error(&err, json);
+                    1
+                }
             }
-            Err(err) => {
-                output::print_error(&err, json);
-                1
-            }
-        },
+        }
 
         Commands::Deploy {
             env,
@@ -900,6 +1023,10 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
             detach,
             commit,
         } => {
+            if let Err(err) = crate::env::migrate_legacy_project_layout(&path) {
+                output::print_error(&err, json);
+                return error_exit_code(&err);
+            }
             if let Err(code) = verify_version_compatibility(&client, json).await {
                 return code;
             }
@@ -1930,46 +2057,7 @@ pub async fn run_command(cmd: Commands, global: GlobalOpts, json: bool) -> i32 {
         },
 
         Commands::AgentGuide => {
-            println!(
-                r#"# Skoci Operational Guide for AI Agents
-
-Skoci is a secure, deterministic agent-native deployment platform.
-
-## Standard Workflow:
-1. **Connect to Server**:
-   `skoci connect --server <url> --token <token>`
-   Configuration is stored in `.skoci/env` (permissions 0600) and added to `.gitignore`.
-   NEVER print tokens to logs or commit them to public files.
-
-2. **Initialize Project**:
-   `skoci init`
-   Skoci automatically detects the framework and generates `.skoci/skoci.yaml`, `.skoci/Dockerfile`, and `.skoci/ignore`.
-
-3. **Deploy Application**:
-   `skoci deploy --json`
-   Use the `--json` flag to receive structured output (`ApiResponse<DeployResponse>`).
-   On failure, inspect `error.fix` for an immediate actionable fix command.
-
-4. **Exit Code Handling**:
-   • Exit Code 0: Success.
-   • Exit Code 1: Operational error (check error message & fix).
-   • Exit Code 2: Action requires human approval. Wait for approval or prompt the user to run `skoci approvals` and `skoci approve <id>`.
-   • Exit Code 3: Authentication error or quota rate limit (unauthorized, scope_violation, rate_limited).
-
-5. **Promotion & Approval Flow (Exit Code 2)**:
-   • Master token promotes directly without approval.
-   • Scoped agent token (`sk_agent_*`) always produces an approval request with status `pending_approval` and exits 2.
-   • The agent CANNOT approve its own request. There is no auto-approve flag.
-   • When `skoci promote` exits 2 with `pending_approval`, extract and surface `Request ID: appr_…` to the human operator.
-   • The human operator must approve the request on the server by running `skoci approve <id>`.
-   • `skoci approvals --json` lists pending requests under `data[]`.
-   • Note: MCP intentionally exposes only the listing tool (`skoci_approvals`), not approve or reject tools.
-
-6. **Agent Security Rules**:
-   • NEVER use raw SSH if the task can be performed via Skoci CLI/API.
-   • NEVER display secret values or tokens on console.
-   • Use `skoci secret set <KEY> <VALUE>` to inject secure environment variables."#
-            );
+            println!("{}", agent_guide_text());
             0
         }
     }
@@ -2134,21 +2222,20 @@ mod tests {
         let root = temp_dir.join(format!("test_init_legacy_{unique_id}"));
         std::fs::create_dir_all(&root).unwrap();
 
-        let legacy_file = root.join(LEGACY_CONFIG_PATH);
+        let legacy_file = root.join("skoci.yaml");
         let legacy_content = "version: 1\napp: legacy-custom-app\n";
         std::fs::write(&legacy_file, legacy_content).unwrap();
 
         let res = init_project(&root, None).unwrap();
-        assert_eq!(res.created_files.len(), 0);
-        assert!(res.skipped_files.contains(&LEGACY_CONFIG_PATH.to_string()));
-        assert!(res.notes.iter().any(|n| n.contains("legacy skoci.yaml")));
+        assert_eq!(res.app_name, "legacy-custom-app");
+        assert!(res.skipped_files.contains(&PROJECT_CONFIG_PATH.to_string()));
 
-        // Legacy file must be completely untouched
-        let read_back = std::fs::read_to_string(&legacy_file).unwrap();
+        // Root skoci.yaml was migrated to .skoci/skoci.yaml and its content preserved
+        assert!(!legacy_file.exists());
+        let migrated_file = root.join(PROJECT_CONFIG_PATH);
+        assert!(migrated_file.is_file());
+        let read_back = std::fs::read_to_string(&migrated_file).unwrap();
         assert_eq!(read_back, legacy_content);
-
-        // No .skoci/ directory should have been created
-        assert!(!root.join(PROJECT_DIR).exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2213,6 +2300,45 @@ env:
         assert_eq!(res.context, ".");
         assert_eq!(res.required_secrets, vec!["DATABASE_URL"]);
         assert!(res.config_path.contains("skoci.yaml"));
+        assert!(res.files.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_validate_project_verbose_lists_upload_files() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_validate_verbose_{unique_id}"));
+        let skoci_dir = root.join(".skoci");
+        std::fs::create_dir_all(&skoci_dir).unwrap();
+        let config_yaml = r#"version: 1
+app: my-verbose-app
+build:
+  dockerfile: .skoci/Dockerfile
+  context: .
+run:
+  port: 8080
+"#;
+        std::fs::write(skoci_dir.join("skoci.yaml"), config_yaml).unwrap();
+        std::fs::write(skoci_dir.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+        std::fs::write(root.join("index.html"), "<h1>hello</h1>\n").unwrap();
+        std::fs::write(root.join(".env"), "SECRET=1\n").unwrap();
+
+        let plain = validate_project_with_options(&root, false).unwrap();
+        assert!(plain.files.is_none());
+        assert!(plain.bytes.is_none());
+        assert!(plain.excluded_sensitive.is_none());
+
+        let verbose = validate_project_with_options(&root, true).unwrap();
+        let files = verbose.files.expect("files should be populated in verbose mode");
+        assert!(files.contains(&"index.html".to_string()));
+        assert!(files.contains(&".skoci/skoci.yaml".to_string()));
+        assert!(files.contains(&".skoci/Dockerfile".to_string()));
+        assert!(!files.contains(&".env".to_string()));
+        assert!(verbose.bytes.unwrap() > 0);
+        let excluded = verbose.excluded_sensitive.unwrap();
+        assert!(excluded.iter().any(|e| e.contains(".env")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2306,5 +2432,67 @@ run:
         assert!(!root.join(".skoci").exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_connect_credential_store_selection() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_connect_store_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let profile_path = root.join("config").join("servers.json");
+
+        // 1. Default (project_env = false): writes servers.json only, no .skoci/env
+        let stores = persist_connect_credentials_at(
+            &root,
+            &profile_path,
+            &ConnectCredentials {
+                name: "default",
+                server_url: "https://1.2.3.4:8443",
+                token: "sk_tok_123",
+                pin: Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+                project_env: false,
+                no_profile: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(stores.len(), 1);
+        assert!(stores[0].contains("servers.json"));
+        assert!(!root.join(".skoci/env").exists());
+        assert!(profile_path.is_file());
+
+        // 2. With --project-env (project_env = true): writes .skoci/env and .gitignore
+        let stores_proj = persist_connect_credentials_at(
+            &root,
+            &profile_path,
+            &ConnectCredentials {
+                name: "default",
+                server_url: "https://1.2.3.4:8443",
+                token: "sk_tok_123",
+                pin: Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+                project_env: true,
+                no_profile: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(stores_proj.len(), 2);
+        assert!(stores_proj.iter().any(|s| s.contains(".skoci/env")));
+        assert!(root.join(".skoci/env").is_file());
+        assert!(root.join(".gitignore").is_file());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_agent_guide_updated_content() {
+        let guide = agent_guide_text();
+        assert!(guide.contains("skoci server setup --host <ip> --user <user>"));
+        assert!(guide.contains("skoci connect --server https://<ip>:8443 --token <token> --pin sha256:<64 hex>"));
+        assert!(guide.contains("~/.config/skoci/servers.json"));
+        assert!(guide.contains("FIRST promotion to production"));
+        assert!(guide.contains("sudo skoci approve <id>"));
+        assert!(guide.contains("SKOCI_REQUIRE_APPROVAL_ALWAYS=true"));
+        assert!(guide.contains("--strict-approvals"));
+        assert!(guide.contains("/etc/skoci/skoci.env"));
     }
 }

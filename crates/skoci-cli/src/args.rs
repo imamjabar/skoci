@@ -27,6 +27,11 @@ pub enum Commands {
         name: String,
         #[arg(long, help = "Skip saving to the global profile store")]
         no_profile: bool,
+        #[arg(
+            long,
+            help = "Also write credentials to project .skoci/env (0600) for CI or per-repo overrides"
+        )]
+        project_env: bool,
     },
 
     #[command(about = "Detect framework and initialize project configuration")]
@@ -40,6 +45,12 @@ pub enum Commands {
     Validate {
         #[arg(default_value = ".")]
         path: PathBuf,
+        #[arg(
+            long,
+            short = 'v',
+            help = "List files that would be packaged and uploaded by skoci deploy"
+        )]
+        verbose: bool,
     },
 
     #[command(about = "Deploy project to Skoci server")]

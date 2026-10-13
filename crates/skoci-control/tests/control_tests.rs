@@ -61,6 +61,7 @@ async fn setup_test_state(max_upload_mb: u64) -> (AppState, TestDir) {
         public_ip: None,
         control_tls_bind: None,
         allow_magic_dns_production: false,
+        require_approval_always: false,
     });
 
     let secret_cipher = Arc::new(SecretCipher::from_key([42u8; 32]));
@@ -487,6 +488,7 @@ async fn test_master_token_min_length_validation() {
         public_ip: None,
         control_tls_bind: None,
         allow_magic_dns_production: false,
+        require_approval_always: false,
     };
 
     let res = skoci_control::server::run_server(cfg).await;
@@ -840,13 +842,14 @@ fn test_resolve_project_config_prefers_dot_skoci_d1() {
 }
 
 #[test]
-fn test_resolve_project_config_accepts_legacy_root_config() {
+fn test_resolve_project_config_rejects_legacy_root_config() {
     let temp = TestDir::new();
     let root = temp.path();
     std::fs::write(root.join("skoci.yaml"), "version: 1\napp: legacy\n").unwrap();
 
-    let resolved = skoci_control::deploy::resolve_project_config(root).unwrap();
-    assert_eq!(resolved, root.join("skoci.yaml"));
+    let err = skoci_control::deploy::resolve_project_config(root).unwrap_err();
+    assert_eq!(err.code, "config_invalid");
+    assert!(err.fix.contains("skoci init"), "{}", err.fix);
 }
 
 #[test]
@@ -857,7 +860,6 @@ fn test_resolve_project_config_missing_names_both_locations() {
     let err = skoci_control::deploy::resolve_project_config(temp.path()).unwrap_err();
     assert_eq!(err.code, "config_invalid");
     assert!(err.message.contains(".skoci/skoci.yaml"), "{}", err.message);
-    assert!(err.message.contains("skoci.yaml"), "{}", err.message);
     assert!(err.fix.contains(".skoci/skoci.yaml"), "{}", err.fix);
 }
 
@@ -1004,4 +1006,185 @@ async fn test_domain_set_primary_requires_admin() {
 
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+fn agent_subject(app: &str) -> skoci_control::auth::Subject {
+    skoci_control::auth::Subject::Agent {
+        app: app.to_string(),
+        name: "agent-1".to_string(),
+        id: "abc123def456".to_string(),
+    }
+}
+
+fn production_route(app: &str) -> skoci_control::db::RouteRecord {
+    skoci_control::db::RouteRecord {
+        app: app.to_string(),
+        env: "production".to_string(),
+        container: format!("skoci-{app}-production-v1"),
+        host_port: 3000,
+        version: "v1".to_string(),
+        hosts: vec![format!("{app}.example.com")],
+        deployed_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn test_first_promotion_by_agent_needs_no_approval() {
+    use skoci_control::api::promote::promotion_requires_approval;
+
+    let (state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("fresh-app").unwrap();
+
+    let needs = promotion_requires_approval(&state, &agent_subject("fresh-app"), "fresh-app").unwrap();
+    assert!(!needs);
+    assert!(state.db.list_pending_approvals(Some("fresh-app")).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_promotion_by_agent_with_live_production_needs_approval() {
+    use skoci_control::api::promote::promotion_requires_approval;
+
+    let (state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("live-app").unwrap();
+    state.db.upsert_route(&production_route("live-app")).unwrap();
+
+    assert!(promotion_requires_approval(&state, &agent_subject("live-app"), "live-app").unwrap());
+    assert!(!promotion_requires_approval(&state, &skoci_control::auth::Subject::Admin, "live-app").unwrap());
+}
+
+#[tokio::test]
+async fn test_require_approval_always_restores_approval_for_first_promotion() {
+    use skoci_control::api::promote::promotion_requires_approval;
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    let mut config = (*state.config).clone();
+    config.require_approval_always = true;
+    state.config = Arc::new(config);
+    state.db.ensure_app("fresh-app").unwrap();
+
+    assert!(promotion_requires_approval(&state, &agent_subject("fresh-app"), "fresh-app").unwrap());
+    assert!(!promotion_requires_approval(&state, &skoci_control::auth::Subject::Admin, "fresh-app").unwrap());
+}
+
+struct ProbeServer {
+    port: u16,
+    serving: Arc<std::sync::atomic::AtomicBool>,
+    connections: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+async fn spawn_probe_server(serving_from_start: bool) -> ProbeServer {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let serving = Arc::new(AtomicBool::new(serving_from_start));
+    let connections = Arc::new(AtomicUsize::new(0));
+
+    let serving_task = serving.clone();
+    let connections_task = connections.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            connections_task.fetch_add(1, Ordering::SeqCst);
+            let ready = serving_task.load(Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let status = if ready { "200 OK" } else { "503 Service Unavailable" };
+                let resp = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+
+    ProbeServer { port, serving, connections }
+}
+
+fn state_probing_port(state: &mut AppState, port: u16) {
+    let mut config = (*state.config).clone();
+    config.http_bind = format!("127.0.0.1:{port}").parse().unwrap();
+    state.config = Arc::new(config);
+}
+
+#[tokio::test]
+async fn test_wait_for_public_url_serving_url_costs_one_probe() {
+    use skoci_control::deploy::wait_for_public_url_with_budget;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    let server = spawn_probe_server(true).await;
+    state_probing_port(&mut state, server.port);
+
+    let started = Instant::now();
+    let ready = wait_for_public_url_with_budget(
+        &state,
+        "http://myapp.example.com",
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+        Duration::from_secs(1),
+        |_| {},
+    )
+    .await;
+
+    assert!(ready);
+    assert_eq!(server.connections.load(Ordering::SeqCst), 1);
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn test_wait_for_public_url_waits_until_url_starts_serving() {
+    use skoci_control::deploy::wait_for_public_url_with_budget;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    let server = spawn_probe_server(false).await;
+    state_probing_port(&mut state, server.port);
+
+    let serving = server.serving.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        serving.store(true, Ordering::SeqCst);
+    });
+
+    let ready = wait_for_public_url_with_budget(
+        &state,
+        "http://myapp.example.com",
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+        Duration::from_millis(50),
+        |_| {},
+    )
+    .await;
+
+    assert!(ready);
+    assert!(server.connections.load(Ordering::SeqCst) > 1);
+}
+
+#[tokio::test]
+async fn test_wait_for_public_url_gives_up_at_deadline() {
+    use skoci_control::deploy::wait_for_public_url_with_budget;
+    use std::time::{Duration, Instant};
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    let server = spawn_probe_server(false).await;
+    state_probing_port(&mut state, server.port);
+
+    let started = Instant::now();
+    let ready = wait_for_public_url_with_budget(
+        &state,
+        "http://myapp.example.com",
+        Duration::from_millis(300),
+        Duration::from_secs(60),
+        Duration::from_millis(50),
+        |_| {},
+    )
+    .await;
+
+    assert!(!ready);
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

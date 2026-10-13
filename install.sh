@@ -48,9 +48,10 @@ CLI_VERSION="latest"
 CLIENT_ONLY=0
 MAGIC_DNS=0
 HARDEN_SSH=0
-SETUP_UFW=0
+NO_UFW=0
 CLI_SSH_PORT=""
 ALLOW_MAGIC_DNS_PRODUCTION=0
+STRICT_APPROVALS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain)
@@ -96,8 +97,8 @@ while [ $# -gt 0 ]; do
       HARDEN_SSH=1
       shift
       ;;
-    --setup-ufw)
-      SETUP_UFW=1
+    --no-ufw)
+      NO_UFW=1
       shift
       ;;
     --ssh-port)
@@ -113,6 +114,10 @@ while [ $# -gt 0 ]; do
       ALLOW_MAGIC_DNS_PRODUCTION=1
       shift
       ;;
+    --strict-approvals)
+      STRICT_APPROVALS=1
+      shift
+      ;;
     -h|--help)
       echo "Usage: install.sh [options]"
       echo ""
@@ -124,9 +129,10 @@ while [ $# -gt 0 ]; do
       echo "  --no-tls            Disable TLS (HTTP only)"
       echo "  --client-only       Install Skoci CLI client only"
       echo "  --harden-ssh        Harden SSH daemon (disable password auth)"
-      echo "  --setup-ufw         Configure and enable UFW firewall"
+      echo "  --no-ufw            Skip UFW firewall configuration"
       echo "  --ssh-port <port>   SSH port for firewall rules and hardening"
       echo "  --allow-magic-dns-production  Allow magic-DNS hostnames in production"
+      echo "  --strict-approvals  Require manual approval for all production promotions"
       echo "  -h, --help          Show this help message"
       exit 0
       ;;
@@ -358,19 +364,12 @@ if ! id -u skoci >/dev/null 2>&1; then
 fi
 $SUDO usermod -aG docker skoci
 
-if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
-  if id -u "$INVOKING_USER" >/dev/null 2>&1; then
-    $SUDO usermod -aG skoci "$INVOKING_USER"
-    echo -e "${GREEN}✓ Added user '${INVOKING_USER}' to 'skoci' group.${NC}"
-  fi
-fi
-
 # Setup Directories & Permissions
 $SUDO mkdir -p /etc/skoci /var/lib/skoci /var/lib/skoci/backups
-$SUDO chown root:skoci /etc/skoci
-$SUDO chmod 0750 /etc/skoci
+$SUDO chown root:root /etc/skoci
+$SUDO chmod 0700 /etc/skoci
 $SUDO chown -R skoci:skoci /var/lib/skoci
-$SUDO chmod 0750 /var/lib/skoci
+$SUDO chmod 0700 /var/lib/skoci
 
 # Setup Master Token
 echo -e "\n${BOLD}[3/4] Configuring Token & Network...${NC}"
@@ -388,10 +387,6 @@ if [ -z "$MASTER_TOKEN" ]; then
   HEX="$(openssl rand -hex 24 2>/dev/null || od -vN 24 -An -tx1 /dev/urandom | tr -d ' \n')"
   MASTER_TOKEN="sk_master_${HEX}"
 fi
-
-echo "$MASTER_TOKEN" | $SUDO tee /etc/skoci/master_token >/dev/null
-$SUDO chown root:skoci /etc/skoci/master_token
-$SUDO chmod 0640 /etc/skoci/master_token
 
 # Public IP & Base Domain
 is_ipv4() {
@@ -447,13 +442,19 @@ if [ "$ALLOW_MAGIC_DNS_PRODUCTION" = "1" ]; then
   ENV_CONTENT="${ENV_CONTENT}
 SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true"
 fi
+if [ "$STRICT_APPROVALS" = "1" ]; then
+  ENV_CONTENT="${ENV_CONTENT}
+SKOCI_REQUIRE_APPROVAL_ALWAYS=true"
+fi
+if [ -n "$CLI_EMAIL" ]; then
+  ENV_CONTENT="${ENV_CONTENT}
+SKOCI_ACME_EMAIL=${CLI_EMAIL}"
+fi
 
 echo "$ENV_CONTENT" | $SUDO tee /etc/skoci/skoci.env >/dev/null
-if [ -n "$CLI_EMAIL" ]; then
-  echo "SKOCI_ACME_EMAIL=${CLI_EMAIL}" | $SUDO tee -a /etc/skoci/skoci.env >/dev/null
-fi
-$SUDO chown root:skoci /etc/skoci/skoci.env
-$SUDO chmod 0640 /etc/skoci/skoci.env
+$SUDO chown root:root /etc/skoci/skoci.env
+$SUDO chmod 0600 /etc/skoci/skoci.env
+$SUDO rm -f /etc/skoci/master_token
 
 # Port Conflict Check
 if command -v ss >/dev/null 2>&1; then
@@ -537,7 +538,7 @@ if [ -z "$SSH_PORT" ]; then
 fi
 
 # Firewall Configuration (UFW)
-if [ "$SETUP_UFW" = "1" ]; then
+if [ "$NO_UFW" = "0" ]; then
   if ! command -v ufw >/dev/null 2>&1; then
     echo -e "\n${YELLOW}Notice: ufw is not installed. Skipping firewall configuration.${NC}"
     echo "To configure the firewall manually, run:"
@@ -553,7 +554,7 @@ if [ "$SETUP_UFW" = "1" ]; then
     echo "Configuring UFW firewall (SSH port: ${SSH_PORT})..."
     if ! $SUDO ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1; then
       echo -e "${RED}Could not add the UFW rule for SSH port ${SSH_PORT}; leaving the firewall untouched to avoid locking you out.${NC}" >&2
-      echo -e "${YELLOW}Run 'sudo ufw allow ${SSH_PORT}/tcp' manually, then re-run with --setup-ufw.${NC}" >&2
+      echo -e "${YELLOW}Run 'sudo ufw allow ${SSH_PORT}/tcp' manually, then re-run install.sh.${NC}" >&2
     else
       $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
       $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
@@ -567,15 +568,6 @@ if [ "$SETUP_UFW" = "1" ]; then
       echo -e "${YELLOW}Port 8787 is no longer published externally (127.0.0.1 only).${NC}"
       echo -e "Remove old rule: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
     fi
-  fi
-elif command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qw "active"; then
-  echo "Configuring UFW firewall rules for active firewall..."
-  $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
-  $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
-  $SUDO ufw allow 8443/tcp >/dev/null 2>&1 || true
-  if $SUDO ufw status 2>/dev/null | grep -q "8787"; then
-    echo -e "${YELLOW}Port 8787 is no longer published externally (127.0.0.1 only).${NC}"
-    echo -e "Remove old rule: ${BOLD}sudo ufw delete allow 8787/tcp${NC}"
   fi
 fi
 
@@ -702,10 +694,13 @@ echo -e "• ${BOLD}Control URL:${NC}          https://${PUBLIC_IP}:8443"
 if [ -n "$PIN" ]; then
   echo -e "• ${BOLD}TLS SPKI Pin:${NC}         ${PIN}"
 fi
-echo -e "• ${BOLD}Master Token:${NC}         Stored securely at /etc/skoci/master_token"
-echo -e "                          (Read with: ${BOLD}sudo cat /etc/skoci/master_token${NC})"
+echo -e "• ${BOLD}Master Token:${NC}         Stored securely in /etc/skoci/skoci.env"
+echo -e "                          (Read with: ${BOLD}sudo grep '^SKOCI_MASTER_TOKEN=' /etc/skoci/skoci.env | cut -d= -f2-${NC})"
 if [ "$ALLOW_MAGIC_DNS_PRODUCTION" = "1" ]; then
   echo -e "• ${YELLOW}Warning:${NC}              Magic-DNS hostnames are allowed in production (--allow-magic-dns-production enabled)"
+fi
+if [ "$STRICT_APPROVALS" = "1" ]; then
+  echo -e "• ${BOLD}Approval Policy:${NC}      Strict approvals enabled (all production promotions require approval)"
 fi
 
 if [ -n "$PIN" ]; then
@@ -723,9 +718,6 @@ fi
 echo -e "\n${BOLD}Next Steps:${NC}"
 echo -e "1. Create a token for your laptop/agent (on this server):"
 echo -e "   ${BOLD}sudo skoci token create --app <app> --name laptop${NC}"
-if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
-  echo -e "   (If newly added to the skoci group, re-login or logout first to run skoci without sudo)"
-fi
 
 echo -e "\n2. On your laptop/developer workstation:"
 if [ -n "$PIN" ]; then

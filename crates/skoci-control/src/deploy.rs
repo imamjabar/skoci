@@ -769,7 +769,7 @@ async fn execute_pipeline(
             None,
         );
         for url in &urls {
-            if probe_public_url(state, url).await {
+            if wait_for_public_url(state, url, &buffer).await {
                 buffer.emit(
                     DeployStage::Smoke,
                     StageStatus::Log,
@@ -903,7 +903,7 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
 pub fn resolve_project_config(build_dir: &Path) -> SkociResult<PathBuf> {
     let config_path = ConfigLoader::locate_config(build_dir).ok_or_else(|| {
         SkociError::config_invalid(
-            "No project configuration in the upload (looked for .skoci/skoci.yaml, then skoci.yaml)",
+            "No project configuration in the upload (expected .skoci/skoci.yaml)",
             "Run 'skoci init' to generate .skoci/skoci.yaml, then deploy again",
         )
     })?;
@@ -1286,6 +1286,98 @@ pub async fn probe_public_url(state: &AppState, url: &str) -> bool {
             probe_https(addr, &host_header, &host_clean, timeout).await
         }
         _ => false,
+    }
+}
+
+const PUBLIC_URL_HTTP_WAIT_BUDGET: Duration = Duration::from_secs(10);
+const PUBLIC_URL_ACME_WAIT_BUDGET: Duration = Duration::from_secs(60);
+const PUBLIC_URL_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PUBLIC_URL_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const POST_CERT_MAX_FAILURES: u32 = 3;
+
+pub async fn wait_for_public_url(
+    state: &AppState,
+    url: &str,
+    buffer: &JobEventBuffer,
+) -> bool {
+    wait_for_public_url_with_budget(
+        state,
+        url,
+        PUBLIC_URL_HTTP_WAIT_BUDGET,
+        PUBLIC_URL_ACME_WAIT_BUDGET,
+        PUBLIC_URL_POLL_INTERVAL,
+        |msg| {
+            buffer.emit(
+                DeployStage::Smoke,
+                StageStatus::Log,
+                msg,
+                95,
+                None,
+                None,
+            );
+        },
+    )
+    .await
+}
+
+pub async fn wait_for_public_url_with_budget<F>(
+    state: &AppState,
+    url: &str,
+    http_budget: Duration,
+    acme_budget: Duration,
+    poll_interval: Duration,
+    mut on_progress: F,
+) -> bool
+where
+    F: FnMut(String),
+{
+    let Some((scheme, _host_header, host_clean)) = parse_probe_target(url) else {
+        return false;
+    };
+    let host_key = host_clean.to_ascii_lowercase();
+    let tracks_cert = scheme == "https"
+        && state.config.tls == TlsMode::Acme
+        && host_key.parse::<IpAddr>().is_err();
+    let total_budget = if tracks_cert { acme_budget } else { http_budget };
+    let log_interval = PUBLIC_URL_LOG_INTERVAL.max(poll_interval);
+
+    let start = Instant::now();
+    let mut last_log = start;
+    let mut failures_with_cert = 0u32;
+
+    loop {
+        if probe_public_url(state, url).await {
+            return true;
+        }
+
+        let cert_issued = tracks_cert
+            && state
+                .proxy_status
+                .as_ref()
+                .is_some_and(|status| status.has_issued_cert(&host_key));
+        if cert_issued {
+            failures_with_cert += 1;
+            if failures_with_cert >= POST_CERT_MAX_FAILURES {
+                return false;
+            }
+        }
+
+        let remaining = total_budget.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return false;
+        }
+
+        if last_log.elapsed() >= log_interval {
+            let secs = start.elapsed().as_secs();
+            on_progress(if tracks_cert && !cert_issued {
+                format!("Waiting for TLS certificate for {host_clean} ({secs}s elapsed)...")
+            } else {
+                format!("Waiting for {url} to start serving ({secs}s elapsed)...")
+            });
+            last_log = Instant::now();
+        }
+
+        tokio::time::sleep(poll_interval.min(remaining)).await;
     }
 }
 

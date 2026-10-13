@@ -14,8 +14,8 @@ skoci connect --server <server-public-ip> --token sk_agent_toko_xxxxxxxxxxxx --p
 
 The control plane is reachable at `https://<public-ip>:8443` over TLS pinned to the server's SPKI public key (`sha256:...`). Connections do not depend on third-party wildcard DNS.
 
-* **Global Server Profiles:** Connection profiles are saved securely in `~/.config/skoci/servers.json` (permissions `0600`).
-* **Project Override:** A local `.skoci/env` file (permissions `0600`) is created in your repository and automatically added to `.gitignore`. Legacy `.env.skoci` is still read for projects created before 0.4.1.
+* **Global Server Profiles (Default):** `skoci connect` saves connection profiles in `~/.config/skoci/servers.json` (permissions `0600`) by default.
+* **Project Override (`--project-env`):** Pass `skoci connect --project-env` when you also want a repository-local `.skoci/env` file (permissions `0600`, automatically added to `.gitignore`) for CI or per-repo overrides. An existing `.skoci/env` is always read when present, and a legacy `.env.skoci` is automatically migrated to `.skoci/env`.
 ---
 
 ## 2. Initialize the Project (`skoci init`)
@@ -28,9 +28,9 @@ skoci init
 ```
 
 Skoci automatically detects your application framework:
-* **Static HTML:** presence of `index.html` → Nginx alpine, port 80, automatic `/healthz` endpoint.
+* **Static HTML:** presence of `index.html` → `nginxinc/nginx-unprivileged:1.27-alpine` (`USER nginx`), port 8080, automatic `/healthz` endpoint, internal-file `404` rules.
 * **Node.js with `start` script:** `package.json` → Dockerfile `node:22-alpine`, port 3000.
-* **Frontend build (Vite/React without `start`):** built with Node, then served by Nginx, port 80.
+* **Frontend build (Vite/React without `start`):** built with Node (`node:22-alpine`), then served by `nginxinc/nginx-unprivileged:1.27-alpine` (`USER nginx`), port 8080.
 * **Python / FastAPI / Flask / Django:** `requirements.txt` or `pyproject.toml` → port 8000.
 * **Go:** `go.mod` → static binary `CGO_ENABLED=0`, port 8080.
 * **Rust:** `Cargo.toml` → multi-stage cargo build, port 8080.
@@ -50,9 +50,9 @@ The candidate name is validated upfront (must be 1–40 lowercase alphanumeric c
 
 ### Generated Artifacts & Container Sandboxing
 Initialization creates everything inside the `.skoci/` directory:
-1. `.skoci/skoci.yaml`: Declarative contract for your application (lookup falls back to root `skoci.yaml` for older projects).
-2. `.skoci/Dockerfile`: Container image recipe (if not already present; configured via `build.dockerfile: .skoci/Dockerfile`). Generated Dockerfiles delete `.skoci/` from the built container image (it is present in the build context because the server requires the config) and run as a non-root user (`node` for Node, `appuser` for Python, Rust, and Go) where the base image supports it.
-3. `.skoci/ignore`: Upload filter for `skoci deploy` preventing sensitive or unnecessary files from being uploaded (a user's own `.dockerignore` is still honoured when `.skoci/ignore` is absent). The `.skoci/env` credential file is never uploaded.
+1. `.skoci/skoci.yaml`: Declarative contract for your application (commit to git). A legacy root `skoci.yaml` is migrated automatically to `.skoci/skoci.yaml` by `init`, `validate`, `deploy`, and `connect`; the loader only reads `.skoci/skoci.yaml`.
+2. `.skoci/Dockerfile`: Container image recipe (commit to git; skipped if you already have your own; configured via `build.dockerfile: .skoci/Dockerfile`). Generated Dockerfiles delete `.skoci/` from the built container image (including `/usr/share/nginx/html/.skoci` in both `Static` and `StaticBuild` templates) and run as a non-root user (`node` for Node, `appuser` for Python, Rust, and Go, `nginx` on port `8080` for Static and StaticBuild). The generated nginx config for static sites also returns `404` for dotfiles, internal extensions (`*.md`, `*.py`, `*.sh`, `*.sql`, `*.yaml`, `*.toml`, `*.lock`, `*.log`, `.env`, etc.), and named manifests (`package.json`, `yarn.lock`, `requirements.txt`, `Makefile`, `Dockerfile*`), while keeping data `*.json` servable.
+3. `.skoci/ignore`: Explicit upload filter for `skoci deploy` (commit to git). `skoci deploy` applies, in order: built-in defaults (plus the non-overridable sensitive-file deny list), the project-root `.gitignore`, and `.skoci/ignore` (or `.dockerignore` when `.skoci/ignore` is absent). Parent-directory `.gitignore` files, global gitignore, and `.git/info/exclude` are not applied. The `.skoci/env` credential file is never uploaded.
 ### Why Your Laptop Does Not Need Docker
 The generated `.skoci/Dockerfile` is just a build recipe. Container compilation runs entirely on your remote VPS. Your local machine or AI agent sandbox only archives the project files and uploads them over HTTPS.
 
@@ -60,7 +60,7 @@ The generated `.skoci/Dockerfile` is just a build recipe. Container compilation 
 
 ## 3. Customizing `.skoci/skoci.yaml`
 
-The `.skoci/skoci.yaml` file (or legacy `skoci.yaml`) uses a structured schema:
+The `.skoci/skoci.yaml` file uses a structured schema:
 
 ```yaml
 version: 1
@@ -103,15 +103,17 @@ Secrets are encrypted with **ChaCha20-Poly1305** using the node key (`/var/lib/s
 
 ## 5. Offline Configuration Validation (`skoci validate`)
 
-Before deploying, validate `.skoci/skoci.yaml` offline with zero network calls:
+Before deploying, validate `.skoci/skoci.yaml` and inspect the upload manifest offline with zero network calls:
 
 ```bash
 skoci validate
+# List exact files that skoci deploy would upload, total size, and excluded paths:
+skoci validate --verbose
 # Or structured JSON output:
-skoci validate --json
+skoci validate --verbose --json
 ```
 
-`skoci validate [path]` inspects the configuration path, application name, Dockerfile path, build context, declared production and preview domains, and required secrets.
+`skoci validate [path]` inspects the configuration path, application name, Dockerfile path, build context, declared production and preview domains, and required secrets. Passing `--verbose` (`-v`) also runs the upload filter and returns the exact `files` list, total `bytes`, and `excluded_sensitive` paths that `skoci deploy` would exclude.
 
 * **Exit 0 (Valid):** Configuration is well-formed and passes all rule checks.
 * **Exit 1 (Invalid):** Configuration file missing, syntax error, or invalid fields; outputs structured `{code, message, fix}`.
@@ -126,14 +128,14 @@ skoci deploy --env preview
 ```
 
 ### Skoci Deployment Pipeline Stages:
-1. **Packaging & Upload:** Project files are packed respecting `.skoci/ignore` (or `.dockerignore`) and uploaded over HTTPS.
-2. **Extract:** Server extracts the archive (preserving executable bits for non-root containers) and validates configuration (`.skoci/skoci.yaml`, falling back to `skoci.yaml`).
+1. **Packaging & Upload:** Project files are packed using the explicit filter chain (built-in defaults and sensitive-file deny list, project-root `.gitignore`, then `.skoci/ignore` or `.dockerignore`) and uploaded over HTTPS.
+2. **Extract:** Server extracts the archive (preserving executable bits for non-root containers) and validates `.skoci/skoci.yaml`.
 3. **Build:** Server builds the Docker image `skoci/<app>:<version>` with live streaming logs.
 4. **Services:** Server ensures database containers (if declared) are healthy and ready.
 5. **Start:** The new container starts with secrets injected via a secure temporary env-file.
 6. **Health Check:** Reverse proxy polls `run.health` until the container returns HTTP 2xx/3xx.
 7. **Cutover:** Reverse proxy atomically swaps routing targets without downtime.
-8. **Smoke Test:** HTTP GET check (`GET /`) verifies the new container is answering public traffic.
+8. **Smoke Test:** HTTP GET check (`GET /`) verifies the new container is answering, then polls the public URL until ACME TLS certificate issuance finishes (~7–10 s for a brand-new hostname) so a healthy first deploy completes as `live` without `unready_urls`.
 9. **Cleanup:** Old container is stopped and removed after a 5-second drain window.
 
 ### Deployment Result States:
@@ -207,27 +209,32 @@ skoci logs --tail 50
 
 ## 9. Promoting to Production (Human Gate & Approval Flow)
 
-By default, shipping to production requires human approval:
+Promote a verified preview deployment to production:
 
 ```bash
 skoci promote "All preview tests passed, ready for production"
 ```
 
-The promotion behavior depends on the token used:
-* **Master Token (Human Admin):** If run on the server with the master token, `skoci promote` promotes directly to production without creating a pending approval.
-* **Scoped Agent Token (`sk_agent_*`):** Always returns exit code 2 (*pending approval*), status `pending_approval`, and prints `Request ID: appr_…`.
-  - The agent **cannot** approve its own request (there is no auto-approve flag).
-  - The agent surfaces the `request_id` to a human operator.
+The promotion behavior depends on the token and whether the application already has live production traffic:
+* **Master Token (Human Admin):** If run on the server with `sudo` (using the master token from `/etc/skoci/skoci.env`), `skoci promote` promotes directly to production without creating a pending approval.
+* **Scoped Agent Token (`sk_agent_*`):**
+  - **First promotion:** When the application has no live production deployment yet, the first promotion succeeds immediately and goes live (no existing production traffic is at risk).
+  - **Subsequent promotions:** Every later promotion returns exit code 2 (*pending approval*), status `pending_approval`, and prints `Request ID: appr_…`. The agent **cannot** approve its own request (there is no auto-approve flag) and must surface the `request_id` to a human operator.
+  - **Strict approvals (`--strict-approvals`):** If the server was configured with `skoci server setup --strict-approvals` (or `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` in `/etc/skoci/skoci.env`), the first promotion also requires human approval.
 
-A human operator approves it via:
-* **Web Dashboard:** Open `https://<server-public-ip>:8443` in your browser, log in with the master token, and click **Approve** in the Approvals tab.
+A human operator approves a pending promotion via:
+* **Web Dashboard:** Open `https://<server-public-ip>:8443` (or `https://skoci.<base-domain>`) in your browser, log in with the master token, and click **Approve** in the Approvals tab.
 * **Server CLI:**
   ```bash
   sudo skoci approve appr_4e052b4e...
   ```
 Once approved, the production container becomes active and traffic is routed to `https://toko.<base-domain>`.
 
-> **Magic DNS in Production:** Magic-DNS hostnames (`sslip.io`) are refused in production by default. To allow them for a temporary demo, an operator must enable the server override using `skoci server setup --allow-magic-dns-production` or by setting `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env` on the server and restarting the service (`sudo systemctl restart skoci`).
+### Preview → Production Without a Custom Domain (`sslip.io`)
+Magic-DNS hostnames (`sslip.io`) are refused in production by default. For an operator evaluating the full preview → production workflow without a domain:
+1. **Enable the server override:** Provision with `skoci server setup --host <server-public-ip> --user root --allow-magic-dns-production` (without `--domain`, magic DNS `<dashed-ip>.sslip.io` is enabled automatically), or set `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env` on the server and run `sudo systemctl restart skoci`.
+2. **Deploy to preview:** `skoci deploy --env preview` builds the container and serves it at `https://<app>-preview.<dashed-ip>.sslip.io`.
+3. **Promote to production:** `skoci promote "Initial production release"` goes live immediately at `https://<app>.<dashed-ip>.sslip.io` on the first promotion (unless `--strict-approvals` is enabled). Subsequent promotions return `Request ID: appr_…` (exit code 2), which the operator approves with `sudo skoci approve <request_id>`.
 
 ---
 

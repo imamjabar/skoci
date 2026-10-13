@@ -12,9 +12,9 @@ Skoci supports provisioning managed database accessory services that run in isol
 
 ---
 
-## 2. Declaring Databases in `skoci.yaml`
+## 2. Declaring Databases in `.skoci/skoci.yaml`
 
-Databases are declared under the `services` section of `skoci.yaml` in your application repository:
+Databases are declared under the `services` section of `.skoci/skoci.yaml` in your application repository:
 
 ```yaml
 version: 1
@@ -97,6 +97,6 @@ By default on Skoci servers, **database restoration by an agent always requires 
 2. Skoci records the restore request and returns status `pending_approval` with a `request_id`.
 3. A human operator validates and approves the restore via the **Web Dashboard** at `https://skoci.<base-domain>` or via the server CLI:
    ```bash
-   skoci approve req_restore_9876
+   sudo skoci approve req_restore_9876
    ```
 4. Skoci atomically restores the data archive into the database container.

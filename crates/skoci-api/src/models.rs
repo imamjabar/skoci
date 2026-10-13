@@ -15,7 +15,7 @@ pub const CONTROL_TLS_PORT: u16 = 8443;
 pub const PROJECT_DIR: &str = ".skoci";
 /// Project config, relative to the project root.
 pub const PROJECT_CONFIG_PATH: &str = ".skoci/skoci.yaml";
-/// Pre-0.4.1 project config location, still read so existing projects keep deploying.
+/// Pre-0.4.1 project config location; the CLI migrates it into `.skoci/` before any deploy.
 pub const LEGACY_CONFIG_PATH: &str = "skoci.yaml";
 /// Generated container recipe, relative to the project root.
 pub const PROJECT_DOCKERFILE_PATH: &str = ".skoci/Dockerfile";
@@ -23,16 +23,13 @@ pub const PROJECT_DOCKERFILE_PATH: &str = ".skoci/Dockerfile";
 pub const PROJECT_IGNORE_PATH: &str = ".skoci/ignore";
 /// Per-project server credentials, mode 0600, never uploaded.
 pub const PROJECT_ENV_PATH: &str = ".skoci/env";
-/// Pre-0.4.1 credential file, still read.
+/// Pre-0.4.1 credential file; the CLI migrates it into `.skoci/env` before any deploy.
 pub const LEGACY_ENV_PATH: &str = ".env.skoci";
 
 /// Paths that an ignore rule must never remove from a deployment archive.
 pub fn is_protected_upload_path(rel_path: &str, dockerfile: &str) -> bool {
     let p = rel_path.trim_start_matches("./");
-    p == PROJECT_CONFIG_PATH
-        || p == LEGACY_CONFIG_PATH
-        || p == PROJECT_DIR
-        || p == dockerfile.trim_start_matches("./")
+    p == PROJECT_CONFIG_PATH || p == PROJECT_DIR || p == dockerfile.trim_start_matches("./")
 }
 
 /// Paths that must never enter a deployment archive, even when an ignore rule allows them.

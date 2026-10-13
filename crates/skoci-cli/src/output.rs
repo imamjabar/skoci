@@ -140,6 +140,12 @@ pub struct ValidateResponse {
     pub dockerfile: String,
     pub context: String,
     pub required_secrets: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded_sensitive: Option<Vec<String>>,
 }
 
 pub fn render_validate(val: &ValidateResponse) {
@@ -167,6 +173,28 @@ pub fn render_validate(val: &ValidateResponse) {
     } else {
         for secret in &val.required_secrets {
             println!("  • {}", secret);
+        }
+    }
+
+    if let Some(files) = &val.files {
+        let bytes = val.bytes.unwrap_or(0);
+        println!("\nUpload Context ({} files, {} bytes):", files.len(), bytes);
+        if files.is_empty() {
+            println!("  (no files)");
+        } else {
+            for path in files {
+                println!("  • {path}");
+            }
+        }
+        if let Some(excluded) = &val.excluded_sensitive {
+            println!("\nExcluded Sensitive Paths:");
+            if excluded.is_empty() {
+                println!("  (none)");
+            } else {
+                for ex in excluded {
+                    println!("  • {ex}");
+                }
+            }
         }
     }
 }

@@ -192,7 +192,7 @@ impl ProjectDetector {
                         }
                         return Detection {
                             framework: Framework::StaticBuild,
-                            port: 80,
+                            port: 8080,
                             health: "/healthz".to_string(),
                             services,
                             notes,
@@ -297,7 +297,7 @@ impl ProjectDetector {
             notes.push("Detected static website (HTML/CSS/JS) with nginx web server.".to_string());
             return Detection {
                 framework: Framework::Static,
-                port: 80,
+                port: 8080,
                 health: "/healthz".to_string(),
                 services,
                 notes,
@@ -312,7 +312,7 @@ impl ProjectDetector {
             );
             return Detection {
                 framework: Framework::Static,
-                port: 80,
+                port: 8080,
                 health: "/healthz".to_string(),
                 services,
                 notes,
@@ -438,22 +438,27 @@ RUN {install_cmd}
 COPY . .
 RUN npm run build
 
-FROM nginx:1.27-alpine
-RUN printf 'server {{\n    listen 80;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {{\n        access_log off;\n        return 200 '\''ok'\'';\n    }}\n    location ~ /\\. {{\n        deny all;\n        return 404;\n    }}\n    location / {{\n        try_files $uri $uri.html $uri/ /index.html =404;\n    }}\n}}\n' > /etc/nginx/conf.d/default.conf
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+USER root
+RUN printf 'server {{\n    listen 8080;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {{\n        access_log off;\n        return 200 '\''ok'\'';\n    }}\n    location ~ /\\. {{\n        deny all;\n        return 404;\n    }}\n    location ~* \\.(md|markdown|py|sh|bash|rb|pl|sql|db|sqlite|sqlite3|toml|ini|lock|bak|log|yaml|yml|env)$ {{\n        deny all;\n        return 404;\n    }}\n    location ~* /(package\\.json|package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|composer\\.json|composer\\.lock|requirements\\.txt|Makefile|Dockerfile[^/]*)$ {{\n        deny all;\n        return 404;\n    }}\n    location / {{\n        try_files $uri $uri.html $uri/ /index.html =404;\n    }}\n}}\n' > /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/{out_dir} /usr/share/nginx/html
+RUN rm -rf /usr/share/nginx/html/.skoci
 RUN chmod -R a+rX /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
+USER nginx
 CMD ["nginx", "-g", "daemon off;"]
 "#
                 ))
             }
             Framework::Static => Some(
-r#"FROM nginx:1.27-alpine
-RUN printf 'server {\n    listen 80;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {\n        access_log off;\n        return 200 '\''ok'\'';\n    }\n    location ~ /\\. {\n        deny all;\n        return 404;\n    }\n    location / {\n        try_files $uri $uri.html $uri/ =404;\n    }\n}\n' > /etc/nginx/conf.d/default.conf
+r#"FROM nginxinc/nginx-unprivileged:1.27-alpine
+USER root
+RUN printf 'server {\n    listen 8080;\n    server_name localhost;\n    root /usr/share/nginx/html;\n    index index.html;\n    location = /healthz {\n        access_log off;\n        return 200 '\''ok'\'';\n    }\n    location ~ /\\. {\n        deny all;\n        return 404;\n    }\n    location ~* \\.(md|markdown|py|sh|bash|rb|pl|sql|db|sqlite|sqlite3|toml|ini|lock|bak|log|yaml|yml|env)$ {\n        deny all;\n        return 404;\n    }\n    location ~* /(package\\.json|package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|composer\\.json|composer\\.lock|requirements\\.txt|Makefile|Dockerfile[^/]*)$ {\n        deny all;\n        return 404;\n    }\n    location / {\n        try_files $uri $uri.html $uri/ =404;\n    }\n}\n' > /etc/nginx/conf.d/default.conf
 COPY . /usr/share/nginx/html
 RUN rm -rf /usr/share/nginx/html/.skoci
 RUN chmod -R a+rX /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
+USER nginx
 CMD ["nginx", "-g", "daemon off;"]
 "#.to_string(),
             ),
@@ -999,7 +1004,7 @@ mod tests {
     fn test_full_context_templates_remove_skoci_directory() {
         let d_static = Detection {
             framework: Framework::Static,
-            port: 80,
+            port: 8080,
             health: "/healthz".to_string(),
             services: BTreeMap::new(),
             notes: Vec::new(),
@@ -1007,6 +1012,17 @@ mod tests {
         let df_static = ProjectDetector::dockerfile(&d_static).unwrap();
         assert!(df_static.contains("COPY . /usr/share/nginx/html\nRUN rm -rf /usr/share/nginx/html/.skoci"));
 
+        let d_static_build = Detection {
+            framework: Framework::StaticBuild,
+            port: 8080,
+            health: "/healthz".to_string(),
+            services: BTreeMap::new(),
+            notes: Vec::new(),
+        };
+        let df_static_build = ProjectDetector::dockerfile(&d_static_build).unwrap();
+        assert!(df_static_build.contains(
+            "COPY --from=builder /app/dist /usr/share/nginx/html\nRUN rm -rf /usr/share/nginx/html/.skoci"
+        ));
         let d_node = Detection {
             framework: Framework::NodeServer,
             port: 3000,
@@ -1084,24 +1100,33 @@ mod tests {
 
         let d_static = Detection {
             framework: Framework::Static,
-            port: 80,
+            port: 8080,
             health: "/healthz".to_string(),
             services: BTreeMap::new(),
             notes: Vec::new(),
         };
         let df_static = ProjectDetector::dockerfile(&d_static).unwrap();
-        assert!(!df_static.contains("USER "));
+        assert!(df_static.contains("FROM nginxinc/nginx-unprivileged:1.27-alpine\nUSER root\n"));
+        assert!(df_static.contains("USER nginx\nCMD [\"nginx\", \"-g\", \"daemon off;\"]"));
+        assert_eq!(
+            df_static.lines().rev().find(|l| l.starts_with("USER ")),
+            Some("USER nginx")
+        );
 
         let d_static_build = Detection {
             framework: Framework::StaticBuild,
-            port: 80,
+            port: 8080,
             health: "/healthz".to_string(),
             services: BTreeMap::new(),
             notes: Vec::new(),
         };
         let df_static_build = ProjectDetector::dockerfile(&d_static_build).unwrap();
-        assert!(!df_static_build.contains("USER "));
-
+        assert!(df_static_build.contains("FROM nginxinc/nginx-unprivileged:1.27-alpine\nUSER root\n"));
+        assert!(df_static_build.contains("USER nginx\nCMD [\"nginx\", \"-g\", \"daemon off;\"]"));
+        assert_eq!(
+            df_static_build.lines().rev().find(|l| l.starts_with("USER ")),
+            Some("USER nginx")
+        );
         let d_php = Detection {
             framework: Framework::Php,
             port: 80,
@@ -1111,5 +1136,38 @@ mod tests {
         };
         let df_php = ProjectDetector::dockerfile(&d_php).unwrap();
         assert!(!df_php.contains("USER "));
+    }
+
+    #[test]
+    fn test_static_templates_deny_internal_files_and_allow_data_json() {
+        for framework in [Framework::Static, Framework::StaticBuild] {
+            let d = Detection {
+                framework,
+                port: 8080,
+                health: "/healthz".to_string(),
+                services: BTreeMap::new(),
+                notes: Vec::new(),
+            };
+            let df = ProjectDetector::dockerfile(&d).unwrap();
+
+            let dotfile_pos = df.find(r"location ~ /\\. {").expect("dotfile deny present");
+            let ext_pos = df
+                .find(r"location ~* \\.(md|markdown|py|sh|bash|rb|pl|sql|db|sqlite|sqlite3|toml|ini|lock|bak|log|yaml|yml|env)$ {")
+                .expect("extension deny present");
+            let manifest_pos = df
+                .find(r"location ~* /(package\\.json|package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|composer\\.json|composer\\.lock|requirements\\.txt|Makefile|Dockerfile[^/]*)$ {")
+                .expect("manifest deny present");
+            let catchall_pos = df.find("location / {").expect("catch-all location present");
+
+            assert!(dotfile_pos < catchall_pos);
+            assert!(ext_pos < catchall_pos);
+            assert!(manifest_pos < catchall_pos);
+
+            // Must not blanket-deny *.json so static sites can fetch data JSON paths such as /data/items.json
+            assert!(!df.contains("|json|"));
+            assert!(!df.contains("(json|"));
+            assert!(!df.contains("|json)"));
+            assert!(!df.contains(r"~* \\.json$"));
+        }
     }
 }

@@ -39,24 +39,28 @@ fn test_detect_static_html() {
 
     let d = ProjectDetector::detect(td.path());
     assert_eq!(d.framework, Framework::Static);
-    assert_eq!(d.port, 80);
+    assert_eq!(d.port, 8080);
     assert_eq!(d.health, "/healthz");
     assert!(d.services.is_empty());
 
     let dockerfile = ProjectDetector::dockerfile(&d).expect("dockerfile present");
-    assert!(dockerfile.contains("FROM nginx:1.27-alpine"));
+    assert!(dockerfile.contains("FROM nginxinc/nginx-unprivileged:1.27-alpine"));
+    assert!(dockerfile.contains("USER root"));
+    assert!(dockerfile.contains("listen 8080;"));
     assert!(dockerfile.contains("location = /healthz"));
     assert!(dockerfile.contains("try_files $uri $uri.html $uri/ =404;"));
     assert!(dockerfile.contains("chmod -R a+rX /usr/share/nginx/html"));
+    assert!(dockerfile.contains("EXPOSE 8080"));
+    assert!(dockerfile.contains("USER nginx"));
 
     let yaml = ProjectDetector::generate_skoci_yaml("my-site", &d);
     assert!(yaml.contains("app: my-site"));
-    assert!(yaml.contains("port: 80"));
+    assert!(yaml.contains("port: 8080"));
     assert!(!yaml.contains("example.com"));
 
     let parsed = ConfigLoader::parse_config(&yaml).expect("round-trip config parsing");
     assert_eq!(parsed.app, "my-site");
-    assert_eq!(parsed.run.port, 80);
+    assert_eq!(parsed.run.port, 8080);
     assert_eq!(parsed.run.health, "/healthz");
     assert!(parsed.services.is_empty());
 }
@@ -98,14 +102,53 @@ fn test_detect_static_build() {
 
     let d = ProjectDetector::detect(td.path());
     assert_eq!(d.framework, Framework::StaticBuild);
-    assert_eq!(d.port, 80);
+    assert_eq!(d.port, 8080);
     assert_eq!(d.health, "/healthz");
 
     let dockerfile = ProjectDetector::dockerfile(&d).expect("dockerfile present");
     assert!(dockerfile.contains("FROM node:22-alpine AS builder"));
-    assert!(dockerfile.contains("FROM nginx:1.27-alpine"));
+    assert!(dockerfile.contains("FROM nginxinc/nginx-unprivileged:1.27-alpine"));
+    assert!(dockerfile.contains("USER root"));
+    assert!(dockerfile.contains("listen 8080;"));
     assert!(dockerfile.contains("/app/dist /usr/share/nginx/html"));
+    assert!(dockerfile.contains("RUN rm -rf /usr/share/nginx/html/.skoci"));
     assert!(dockerfile.contains("try_files $uri $uri.html $uri/ /index.html =404;"));
+    assert!(dockerfile.contains("EXPOSE 8080"));
+    assert!(dockerfile.contains("USER nginx"));
+}
+
+#[test]
+fn test_static_and_static_build_deny_rules() {
+    let td_static = TestDir::new();
+    td_static.write_file("index.html", "<!doctype html><html><body>Hi</body></html>");
+    let d_static = ProjectDetector::detect(td_static.path());
+    let df_static = ProjectDetector::dockerfile(&d_static).expect("static dockerfile");
+
+    let td_build = TestDir::new();
+    td_build.write_file(
+        "package.json",
+        r#"{"name": "vite-app", "scripts": {"build": "vite build"}}"#,
+    );
+    td_build.write_file("dist/index.html", "<h1>App</h1>");
+    let d_build = ProjectDetector::detect(td_build.path());
+    let df_build = ProjectDetector::dockerfile(&d_build).expect("static build dockerfile");
+
+    for df in [&df_static, &df_build] {
+        let ext_rule = r"location ~* \\.(md|markdown|py|sh|bash|rb|pl|sql|db|sqlite|sqlite3|toml|ini|lock|bak|log|yaml|yml|env)$ {";
+        let manifest_rule = r"location ~* /(package\\.json|package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|composer\\.json|composer\\.lock|requirements\\.txt|Makefile|Dockerfile[^/]*)$ {";
+        let catchall = "location / {";
+
+        let ext_idx = df.find(ext_rule).expect("extension deny rule present");
+        let manifest_idx = df.find(manifest_rule).expect("manifest deny rule present");
+        let catchall_idx = df.find(catchall).expect("catch-all location present");
+        assert!(ext_idx < catchall_idx);
+        assert!(manifest_idx < catchall_idx);
+
+        // Data JSON paths (e.g. /data/items.json) must not be denied by a blanket *.json rule
+        assert!(!df.contains("|json|"));
+        assert!(!df.contains("(json|"));
+        assert!(!df.contains("|json)"));
+    }
 }
 
 #[test]
@@ -281,14 +324,11 @@ fn test_locate_config_resolution_order() {
     let td = TestDir::new();
     assert_eq!(ConfigLoader::locate_config(td.path()), None);
 
-    // Legacy config only
+    // Legacy root skoci.yaml is no longer resolved
     td.write_file("skoci.yaml", "version: 1\napp: legacy\nrun:\n  port: 8080\n");
-    assert_eq!(
-        ConfigLoader::locate_config(td.path()),
-        Some(td.path().join("skoci.yaml"))
-    );
+    assert_eq!(ConfigLoader::locate_config(td.path()), None);
 
-    // Both present: modern .skoci/skoci.yaml must take precedence
+    // Only .skoci/skoci.yaml is resolved
     td.write_file(".skoci/skoci.yaml", "version: 1\napp: modern\nrun:\n  port: 8080\n");
     assert_eq!(
         ConfigLoader::locate_config(td.path()),

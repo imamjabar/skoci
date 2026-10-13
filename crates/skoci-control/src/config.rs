@@ -26,4 +26,5 @@ pub struct ServerConfig {
     pub control_tls_bind: Option<SocketAddr>,
     /// Operator-only escape hatch: allow magic-DNS hostnames (sslip.io, ...) in production.
     pub allow_magic_dns_production: bool,
+    pub require_approval_always: bool,
 }

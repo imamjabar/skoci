@@ -16,10 +16,10 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 * **Deploy Agen 1-Perintah:** Deploy langsung dari terminal agen dengan `skoci deploy`. Tanpa membutuhkan akses SSH, dan tanpa Docker di laptop — server yang mengompilasi image.
 * **Streaming Progres & Durasi Per-Tahap:** Log build real-time, durasi tiap tahap, progress bar dengan estimasi waktu selesai, dan event pengalihan proxy.
 * **Control Plane TLS Ter-Pinning & Scoped Token:** Control plane terhubung via HTTPS di port `8443` ter-pinning ke kunci publik SPKI permanen (`sha256:...`). Token per-aplikasi (`sk_agent_<app>_*`) menggantikan kunci SSH root.
-* **Gerbang Persetujuan Manusia:** Promosi produksi, pemulihan database, dan penghapusan aplikasi memerlukan persetujuan manusia via web dashboard (`https://<server-ip>:8443`) atau CLI master.
+* **Gerbang Persetujuan Manusia:** Promosi produksi pertama sebuah aplikasi langsung aktif (karena belum ada trafik produksi yang berisiko); setiap promosi berikutnya, pemulihan database, dan penghapusan aplikasi memerlukan persetujuan manusia via web dashboard (`https://<server-ip>:8443`) atau `sudo skoci approve <id>` di server (`--strict-approvals` mewajibkan persetujuan untuk promosi pertama juga).
 * **Enkripsi Secret:** Variabel rahasia dienkripsi saat tersimpan di host dengan ChaCha20-Poly1305, disuntikkan via berkas sementara, disamarkan di log, dan tidak pernah dikembalikan ke konteks agen.
-* **HTTPS Otomatis & Verifikasi Domain:** Embedded reverse proxy menerbitkan sertifikat TLS Let's Encrypt. Pra-validasi record DNS sebelum sertifikat diterbitkan dengan `skoci domain check <host>`. Aplikasi produksi wajib menggunakan domain kustom (magic DNS `*.sslip.io` bersifat opt-in via `--magic-dns` dan ditolak di production karena risiko kontrol zona pihak ketiga dan kuota rate-limit bersama).
-* **Tiga Status Hasil Deploy:** Verifikasi rute root via smoke test: `live` (beroperasi normal), `degraded` (health check lulus, namun smoke test `GET /` gagal; periksa dengan `skoci logs`), atau `failed`. Rollback dengan satu perintah (`skoci rollback`).
+* **HTTPS Otomatis & Verifikasi Domain:** Embedded reverse proxy menerbitkan sertifikat TLS Let's Encrypt. `skoci server setup` secara otomatis mengaktifkan magic DNS (`<dashed-ip>.sslip.io`) saat `--domain` tidak disertakan sehingga deploy preview langsung mendapatkan URL HTTPS aktif, sedangkan production wajib menggunakan domain kustom yang diverifikasi dengan `skoci domain check <host>` (kecuali operator mengaktifkan `--allow-magic-dns-production`).
+* **Tiga Status Hasil Deploy:** Deployment menunggu kesiapan URL publik pada tahap smoke test lalu melaporkan status `live` (beroperasi normal), `degraded` (health check lulus, namun smoke test `GET /` gagal; periksa dengan `skoci logs`), atau `failed`. Rollback dengan satu perintah (`skoci rollback`).
 * **Database Bawaan Lengkap:** Layanan deklaratif Postgres, MySQL, dan Valkey dengan backup terjadwal (cron), snapshot instan (`skoci db backup`), dan restore yang wajib disetujui manusia.
 * **Agen yang Memperbaiki Diri:** Output JSON terstruktur (`--json`), rekomendasi `fix` yang jelas, dan kode keluar konsisten memungkinkan agen mendiagnosis dan memperbaiki error secara mandiri.
 * **Binary Sangat Ringan:** Satu binary Rust mandiri dengan konsumsi ~9 MB RSS saat idle (diukur pada build rilis Linux), menyisakan seluruh ruang memori VPS untuk aplikasi Anda.
@@ -67,11 +67,16 @@ Konfigurasi VPS jarak jauh langsung dari laptop Anda melalui SSH (Skoci >= 0.4.0
 ```bash
 skoci server setup --host <server-public-ip> --user root
 ```
-Flag setup opsional untuk provisioning server baru:
-* `--ssh-copy-id`: install public key SSH Anda pada VPS yang hanya menggunakan password (membuat `~/.ssh/id_ed25519` jika Anda belum memiliki key), alih-alih gagal.
+Saat `--domain` tidak disertakan, `skoci server setup` otomatis mengaktifkan magic DNS (`<dashed-ip>.sslip.io`) dan menampilkan peringatan, sehingga deploy preview pertama Anda langsung mendapatkan URL HTTPS yang dapat diakses (`https://<app>-preview.<dashed-ip>.sslip.io`). Untuk memakai domain milik Anda sejak awal, berikan `--domain domainanda.com` (dan opsional `--email anda@domainanda.com`), atau mulai dengan magic DNS lalu beralih kapan saja memakai `skoci domain set domainanda.com --primary`. Aturan firewall UFW (mengizinkan port SSH, 80, 443, dan 8443 dengan kebijakan default deny incoming) dikonfigurasi secara default.
+
+Flag setup yang berguna saat menyiapkan server baru:
+* `--domain <domain>` dan `--email <email>`: menyetel base domain server (`<app>.<domain>`, `<app>-preview.<domain>`, dan dashboard `skoci.<domain>`) serta alamat email kontak Let's Encrypt sejak awal sebagai pengganti `sslip.io`.
+* `--ssh-copy-id`: memasang public key SSH Anda pada VPS yang hanya mendukung autentikasi password (membuat `~/.ssh/id_ed25519` jika Anda belum memiliki key), alih-alih gagal.
+* `--ssh-password-stdin`: membaca password SSH dan `sudo -S` jarak jauh dari baris pertama stdin untuk bootstrap non-interaktif (password tidak pernah diletakkan di `argv`, menggantikan skrip pembungkus `expect` manual).
 * `--harden-ssh`: menulis `/etc/ssh/sshd_config.d/00-skoci-harden.conf` yang menonaktifkan autentikasi password dan keyboard-interactive serta menyetel `PermitRootLogin prohibit-password`. Berkas ini diurutkan sebelum drop-in bawaan distro seperti `50-cloud-init.conf`, karena `sshd` memakai nilai pertama yang dibacanya. Divalidasi dengan `sshd -t` lalu diperiksa ulang dengan `sshd -T` sebelum reload, dibatalkan jika salah satu gagal, dan dilewati jika akun tidak memiliki `authorized_keys`.
-* `--setup-ufw`: mengizinkan port SSH, 80, 443, dan 8443, lalu mengaktifkan `ufw` dengan kebijakan default deny incoming. Dilewati beserta petunjuk jika `ufw` belum terpasang.
-* `--allow-magic-dns-production`: menulis `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` ke `/etc/skoci/skoci.env` agar operator dapat mendemokan deployment production pada hostname `sslip.io` tanpa perlu mengedit berkas manual lewat SSH. Menampilkan peringatan saat setup karena hostname magic-DNS secara default ditolak di production (pemilik zona dapat menerbitkan sertifikat valid untuk hostname tersebut, dan semua pengguna berbagi kuota rate-limit Let's Encrypt).
+* `--no-ufw`: melewati konfigurasi firewall UFW (secara default, setup mengizinkan port SSH, 80, 443, dan 8443 lalu mengaktifkan `ufw` dengan default deny incoming; dilewati beserta petunjuk jika `ufw` belum terpasang).
+* `--strict-approvals`: menulis `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` ke `/etc/skoci/skoci.env` sehingga setiap promosi produksi oleh scoped agent token wajib disetujui manusia, termasuk promosi pertama aplikasi.
+* `--allow-magic-dns-production`: menulis `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` ke `/etc/skoci/skoci.env` agar operator dapat mendemokan deployment production pada hostname `sslip.io` tanpa mengedit konfigurasi manual lewat SSH. Menampilkan peringatan saat setup karena hostname magic-DNS secara default ditolak di production (pemilik zona dapat menerbitkan sertifikat valid untuk hostname tersebut, dan semua pengguna berbagi kuota rate-limit Let's Encrypt).
 
 Atau pasang langsung di terminal server Linux 64-bit Anda (pastikan port **80**, **443**, dan **8443** terbuka di firewall cloud):
 ```bash
@@ -84,7 +89,7 @@ Jika memasang manual di server, buat token agen yang dibatasi hak aksesnya khusu
 sudo skoci token create --app my-app --name laptop
 sudo skoci server fingerprint
 ```
-Kedua perintah berjalan tanpa flag tambahan di server: CLI membaca `/etc/skoci/skoci.env` dan menargetkan control plane lokal. `skoci server setup` melakukannya untuk Anda dan tidak pernah mencetak token.
+`/etc/skoci` (`0700 root:root`) dan `/etc/skoci/skoci.env` (`0600 root:root`) hanya dapat dibaca oleh `root` dan `/etc/skoci/skoci.env` adalah satu-satunya tempat penyimpanan `SKOCI_MASTER_TOKEN`, sehingga perintah admin di server memerlukan `sudo`. Baca master token dengan `sudo grep '^SKOCI_MASTER_TOKEN=' /etc/skoci/skoci.env | cut -d= -f2-`. `skoci server setup` membuatkan scoped token secara otomatis dan tidak pernah mencetaknya ke layar.
 
 ### 3. Hubungkan Laptop ke Server
 Di komputer kerja Anda, pasang client dan hubungkan workspace Anda menggunakan IP server, token, dan pin sertifikat SPKI:
@@ -92,13 +97,13 @@ Di komputer kerja Anda, pasang client dan hubungkan workspace Anda menggunakan I
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only
 skoci connect --server <server-public-ip> --token <token> --pin sha256:<spki-pin>
 ```
-Profil disimpan di `~/.config/skoci/servers.json` (0600) dan `.skoci/env` (0600, masuk `.gitignore`). Berkas legacy `.env.skoci` tetap dibaca untuk proyek sebelum 0.4.1.
+Secara default, `skoci connect` hanya menyimpan profil di `~/.config/skoci/servers.json` (`0600`). Tambahkan `--project-env` jika ingin menulis `.skoci/env` (`0600`, otomatis ditambahkan ke `.gitignore`) untuk kebutuhan CI atau konfigurasi khusus per-repositori. Berkas `.skoci/env` tetap dibaca bila ada, dan berkas legacy `.env.skoci` dimigrasikan otomatis ke `.skoci/env`.
 
 ### 4. Inisialisasi & Deploy ke Preview
 Masuk ke repositori proyek Anda:
 ```bash
 skoci init
-skoci validate
+skoci validate --verbose
 skoci deploy --env preview
 ```
 `skoci init` mendeteksi manifest proyek dan menggunakan namanya sebagai nama default aplikasi (`name` di `package.json` setelah awalan `@scope/` dibuang, lalu `[package] name` di `Cargo.toml`, lalu nama di `pyproject.toml` `[project]`/`[tool.poetry]`), dan hanya beralih ke nama direktori jika manifest tidak ditemukan. Nama akhir divalidasi langsung di awal (1–40 karakter alfanumerik huruf kecil dan tanda hubung), sehingga nama yang tidak valid gagal seketika di `init` disertai panduan perbaikan alih-alih gagal saat deploy sebagai `scope_violation`.
@@ -109,28 +114,34 @@ your-project/
 ├── .gitignore        # bertambah satu baris: .skoci/env
 ├── your files …      # tidak disentuh
 └── .skoci/
-    ├── skoci.yaml    # konfigurasi aplikasi
-    ├── Dockerfile    # resep hasil generate (dilewati jika Anda sudah punya sendiri)
-    ├── ignore        # filter unggahan; .dockerignore Anda dipakai jika berkas ini tidak ada
-    └── env           # URL server, token, pin (0600, tidak pernah diunggah)
+    ├── skoci.yaml    # konfigurasi aplikasi (commit ke git)
+    ├── Dockerfile    # resep hasil generate, dilewati jika sudah ada (commit ke git)
+    ├── ignore        # filter unggahan; .dockerignore dipakai jika berkas ini tidak ada (commit ke git)
+    └── env           # opsional: hanya ditulis oleh 'skoci connect --project-env' (0600, tidak pernah diunggah)
 ```
-Dockerfile yang digenerate menghapus direktori `.skoci/` dari container image akhir (direktori ini masuk dalam konteks build karena server memerlukan konfigurasinya) dan berjalan sebagai pengguna non-root (`node`, `appuser`) pada template yang didukung image dasar. Berkas `.skoci/env` tidak pernah diunggah dan tetap dikecualikan. Berkas `skoci.yaml` atau `Dockerfile` yang ditulis oleh versi lama, atau oleh Anda sendiri, tetap dibaca dari root proyek.
+Berkas legacy `skoci.yaml` dan `.env.skoci` di root proyek otomatis dimigrasikan ke `.skoci/skoci.yaml` dan `.skoci/env` oleh `skoci init`, `skoci validate`, `skoci deploy`, dan `skoci connect`; pemuat konfigurasi hanya membaca `.skoci/skoci.yaml`. Dockerfile yang digenerate menghapus direktori `.skoci/` dari container image akhir (termasuk `/usr/share/nginx/html/.skoci` pada template statis dan static-build) serta berjalan sebagai pengguna non-root (`node`, `appuser`, atau `nginx`). Template statis dan static-build menggunakan `nginxinc/nginx-unprivileged:1.27-alpine` pada port `8080` (`port: 8080` di `.skoci/skoci.yaml`) dan mengembalikan `404` untuk dotfile, ekstensi kode/konfigurasi/database/log internal (`*.md`, `*.py`, `*.sh`, `*.sql`, `*.yaml`, `*.toml`, `*.lock`, `*.log`, `.env`), serta manifest proyek (`package.json`, `yarn.lock`, `requirements.txt`, `Makefile`, `Dockerfile*`), sementara berkas data `*.json` tetap dapat disajikan.
 
-`skoci validate [path]` (mendukung `--json`) memvalidasi `.skoci/skoci.yaml` secara offline tanpa jaringan dan tanpa melakukan deployment. Perintah ini memeriksa jalur konfigurasi, nama aplikasi, Dockerfile/konteks, domain produksi dan preview yang dideklarasikan, serta secret yang dibutuhkan. Berhenti dengan kode keluar 0 jika valid, atau 1 jika tidak valid disertai detail galat terstruktur (`code`, `message`, `fix`).
+`skoci validate [path]` (mendukung `--json`) memvalidasi `.skoci/skoci.yaml` secara offline tanpa panggilan jaringan dan tanpa melakukan deployment, memeriksa jalur konfigurasi, nama aplikasi, Dockerfile/konteks, domain produksi dan preview yang dideklarasikan, serta secret yang dibutuhkan (keluar dengan kode 0 jika valid, 1 jika tidak valid disertai `{code, message, fix}`). Gunakan `--verbose` (`-v`) untuk menampilkan daftar berkas persis yang akan diunggah oleh `skoci deploy`, total ukuran byte, dan jalur sensitif atau terabaikan yang dikecualikan. `skoci deploy` menerapkan filter unggahan secara eksplisit dan berurutan: aturan bawaan (beserta deny list berkas sensitif yang tidak dapat dikesampingkan), `.gitignore` di root proyek, lalu `.skoci/ignore` (atau `.dockerignore` bila `.skoci/ignore` tidak ada). Berkas `.gitignore` di direktori induk, gitignore global pengguna, dan `.git/info/exclude` tidak ikut diterapkan. Saat deploy berlangsung, tahap smoke test menunggu kesiapan URL publik hingga penerbitan sertifikat ACME selesai (~7–10 detik untuk hostname baru), sehingga deploy pertama yang sehat langsung berstatus `live` tanpa `unready_urls`.
 
 ### 5. Promosikan ke Production & Setujui
-Production membutuhkan domain milik Anda. Arahkan A record ke server, tambahkan ke `.skoci/skoci.yaml` pada bagian `domains:`, verifikasi, lalu ajukan promosi:
+Secara default, production membutuhkan domain milik Anda. Arahkan `A` record ke server, tambahkan ke `.skoci/skoci.yaml` pada bagian `domains:`, verifikasi, lalu ajukan promosi:
 ```bash
 skoci domain check app.yourdomain.com
 skoci promote "Semua pengujian preview lolos, siap rilis produksi"
 ```
-Dijalankan dengan scoped agent token (`sk_agent_*`), perintah berhenti di kode keluar 2, berstatus `pending_approval`, dan mencetak `Request ID: appr_…`. Agen tidak dapat menyetujui permintaannya sendiri dan harus menyampaikan request ID tersebut kepada operator manusia. Setujui melalui web dashboard di `https://<server-public-ip>:8443` atau lewat terminal server:
-```bash
-sudo skoci approve <request_id>
-```
-Master token di server berperan sebagai manusia: promosi langsung berjalan tanpa permintaan persetujuan.
+Saat dijalankan menggunakan scoped agent token (`sk_agent_*`):
+* **Promosi pertama:** Jika aplikasi belum memiliki deployment production aktif, promosi pertama langsung berhasil dan aktif melayani trafik (tidak ada trafik produksi berjalan yang berisiko).
+* **Promosi berikutnya:** Setiap promosi selanjutnya berhenti di kode keluar 2, berstatus `pending_approval`, dan mencetak `Request ID: appr_…`. Agen tidak dapat menyetujui permintaannya sendiri dan harus menyampaikan request ID tersebut kepada operator manusia, yang menyetujuinya melalui web dashboard di `https://<server-public-ip>:8443` (atau `https://skoci.<base-domain>`) atau di terminal server:
+  ```bash
+  sudo skoci approve <request_id>
+  ```
+* **Persetujuan ketat (`--strict-approvals`):** Jika server disiapkan dengan `skoci server setup --strict-approvals` (atau `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` di `/etc/skoci/skoci.env`), promosi pertama juga wajib disetujui manusia.
+* **Master token:** Menjalankan perintah di server menggunakan master token akan mempromosikan langsung tanpa permintaan persetujuan.
 
-`skoci promote` menolak hostname magic-DNS (`sslip.io`, `nip.io`) di production karena pemilik zona dapat menerbitkan sertifikat valid untuk hostname Anda. Untuk demo sementara, operator dapat mengesampingkannya DI SERVER lewat `skoci server setup --allow-magic-dns-production` atau dengan menyetel `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` di `/etc/skoci/skoci.env` + `systemctl restart skoci`. (Nilai boolean pada pengaturan server di `/etc/skoci/skoci.env` menerima `true/false`, `1/0`, `yes/no`, dan `on/off`, tidak sensitif huruf besar/kecil). Ini merupakan keputusan operator server sepenuhnya dan sengaja tidak disediakan flag deploy di sisi klien.
+**Alur Preview → Production tanpa domain kustom (`sslip.io`):** Secara default, `skoci promote` menolak hostname magic-DNS (`sslip.io`, `nip.io`) di production karena pemilik zona pihak ketiga dapat menerbitkan sertifikat valid untuk hostname Anda dan semua pengguna berbagi kuota rate-limit Let's Encrypt. Untuk mencoba alur lengkap dari awal hingga akhir tanpa domain:
+1. Aktifkan override di sisi server saat setup (`skoci server setup --host <server-public-ip> --user root --allow-magic-dns-production`) atau setel `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` di `/etc/skoci/skoci.env` lalu jalankan `sudo systemctl restart skoci` (pengaturan boolean di `/etc/skoci/skoci.env` menerima `true/false`, `1/0`, `yes/no`, dan `on/off`, tidak sensitif huruf besar/kecil).
+2. Deploy ke preview: `skoci deploy --env preview` langsung menyajikan aplikasi di `https://<app>-preview.<dashed-ip>.sslip.io`.
+3. Promosikan ke production: `skoci promote "Rilis perdana"` langsung aktif di `https://<app>.<dashed-ip>.sslip.io` pada promosi pertama, sedangkan promosi berikutnya mengembalikan `Request ID: appr_…` (kode keluar 2) untuk disetujui lewat `sudo skoci approve <request_id>`.
 
 ### 6. Beralih dari sslip.io ke Domain Kustom
 Setelah Anda membeli domain, konfigurasikan sebagai base domain utama server Anda:
@@ -166,7 +177,7 @@ Salin dan tempelkan instruksi prompt ini ke asisten coding AI Anda (Claude Code,
 Operational Rules:
 1. Selalu jalankan perintah dengan `--json` untuk output terstruktur (contoh: `skoci deploy --json`).
 2. Jika perintah gagal, periksa `error.code` dan jalankan perintah yang disarankan pada `error.fix`.
-3. Kode keluar 2 berarti membutuhkan persetujuan manusia (deploy produksi, restore db, hapus app). Laporkan `request_id` kepada pengguna agar dapat disetujui di dashboard pada https://<server-ip>:8443 atau via `skoci approve <request_id>`.
+3. Kode keluar 2 berarti membutuhkan persetujuan manusia (promosi produksi lanjutan, atau promosi pertama bila `--strict-approvals` aktif, serta restore db dan hapus app). Laporkan `request_id` kepada pengguna agar dapat disetujui di dashboard pada https://<server-ip>:8443 atau via `sudo skoci approve <request_id>`.
 4. Jangan pernah mencoba atau meminta akses SSH. Semua interaksi berjalan via HTTPS ter-pinning menggunakan scoped token.
 5. Deployment produksi wajib menggunakan domain kustom asli (magic DNS *.sslip.io ditolak). Verifikasi DNS sebelum deploy dengan `skoci domain check <host>`.
 6. Perlakukan deployment `degraded` sebagai kegagalan yang perlu diselidiki: periksa log dengan `skoci logs --tail 100 --json` dan jangan promosikan ke produksi.
@@ -180,11 +191,11 @@ Operational Rules:
 * **Bebas Injeksi Shell:** Perintah Docker dan sistem dijalankan sebagai vektor argumen terstruktur (`tokio::process::Command`); input dari user atau agen tidak pernah disisipkan ke string shell.
 * **Scoped Token Terisolasi & Input via Stdin:** Token agen (`sk_agent_<app>_*`) disimpan sebagai hash SHA-256; batasan aplikasi ditegakkan di SQLite. Token dan secret dapat dialirkan via stdin untuk mencegah kebocoran pada daftar proses (`ps`, `/proc`) atau riwayat shell.
 * **Kebijakan Tanpa SSH & SPKI Pinning:** Tidak ada private key SSH yang disimpan pada workstation pengembang atau lingkungan agen. Semua komunikasi diarahkan via `https://<server-ip>:8443` yang dipin ke kunci SPKI permanen server (`sha256:...`).
-* **Enkripsi Secret & Sanitasi Environment:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600` yang langsung dihapus, dan disamarkan sebagai `[REDACTED]` di log. Kredensial client di `.skoci/env` (atau legacy `.env.skoci`) dibatasi pada allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`), dan subprocess dijalankan dengan environment yang bersih.
-* **Deny List Pengemasan:** Perintah deploy secara otomatis mengecualikan berkas sensitif (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`) dan mematuhi `.skoci/ignore` (atau `.dockerignore`), serta kompresi arsip menggunakan izin privat `0600`.
+* **Enkripsi Secret & Sanitasi Environment:** Variabel rahasia dienkripsi dengan ChaCha20-Poly1305 pada node, diinjeksi melalui berkas sementara `0600` yang langsung dihapus, dan disamarkan sebagai `[REDACTED]` di log. `/etc/skoci` (`0700 root:root`) dan `/etc/skoci/skoci.env` (`0600 root:root`) menyimpan `SKOCI_MASTER_TOKEN` secara eksklusif (`/var/lib/skoci` berizin `0700 skoci:skoci`). Kredensial client di `.skoci/env` dibatasi pada allowlist (`SKOCI_SERVER_URL`, `SKOCI_TOKEN`, `SKOCI_SERVER_PIN`), dan subprocess dijalankan dengan environment yang bersih.
+* **Filter Unggahan Eksplisit & Deny List Pengemasan:** `skoci deploy` menerapkan aturan bawaan, deny list berkas sensitif yang tidak dapat dikesampingkan (`.env*`, `*.pem`, `*.key`, `id_*`, `.npmrc`, `.aws/`, `.ssh/`), `.gitignore` di root proyek, dan `.skoci/ignore` (atau `.dockerignore`), tanpa mewarisi gitignore direktori induk atau global. Periksa daftar unggahan secara rinci dengan `skoci validate --verbose`.
 * **Isolasi Kontrol Lokal & Pinned TLS Bind:** API hanya mengikat `127.0.0.1:8787` secara lokal dan `0.0.0.0:8443` dengan TLS ter-pinning SPKI. Pada listener HTTPS publik (port 443), header `:authority`/`Host` wajib cocok dengan TLS SNI (mencegah domain fronting dengan HTTP `421 Misdirected Request`).
 * **Proteksi Kepemilikan Host:** Domain kustom dan auto-host dipartisi secara ketat; klaim silang atau pembajakan host antar-aplikasi ditolak.
-* **Gerbang Persetujuan Manusia & Pinning ID Image:** Rilis produksi, pemulihan database, dan operasi destruktif mewajibkan persetujuan manusia yang dikunci pada image ID Docker yang tidak dapat diubah (mencegah manipulasi TOCTOU).
+* **Gerbang Persetujuan Manusia & Pinning ID Image:** Promosi produksi pertama sebuah aplikasi langsung berhasil secara default (`--strict-approvals` / `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` mewajibkan persetujuan untuk promosi pertama juga); setiap promosi berikutnya, pemulihan database, dan operasi destruktif mewajibkan persetujuan manusia yang dikunci pada image ID Docker yang tidak dapat diubah (mencegah manipulasi TOCTOU).
 * **Hardening Systemd:** Layanan server diamankan dengan `UMask=0077`, `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`, `RestrictNamespaces=true`, dan `LimitNOFILE=65536`.
 * **Log Audit & Provenance Build:** Setiap operasi mutasi dicatat pada log audit append-only. Binary rilis resmi dilengkapi atestasi provenance GitHub Actions (`gh attestation verify`).
 
@@ -217,6 +228,14 @@ Dockerfile yang dihasilkan berubah: kini menghapus `.skoci/` dari image yang dib
 rm .skoci/Dockerfile && skoci init && skoci deploy
 ```
 Dockerfile yang Anda tulis sendiri tetap aman; `skoci init` tidak pernah menimpa berkas yang sudah ada.
+
+### Ke 0.5.0
+* **Kontainer Static & StaticBuild:** Dockerfile situs statis hasil generate kini menggunakan `nginxinc/nginx-unprivileged:1.27-alpine` (`USER nginx`), mendengarkan pada port **8080**, menghapus `.skoci/` dari web root, serta mengembalikan `404` untuk dotfile, ekstensi kode/konfigurasi/log/database internal, dan manifest proyek. Buat ulang resep kontainer (`rm .skoci/Dockerfile && skoci init`) dan pastikan `.skoci/skoci.yaml` menyetel `port: 8080` di bawah `run:` sebelum melakukan deploy ulang.
+* **Commit `.skoci/ignore` ke git:** Simpan `.skoci/ignore` (bersama `.skoci/skoci.yaml` dan `.skoci/Dockerfile`) di dalam git. Menghapus direktori `.skoci/` akan menghilangkan aturan pengecualian unggahan yang Anda tulis dan berisiko mempublikasikan berkas internal.
+* **Perubahan flag firewall:** Konfigurasi firewall UFW kini aktif secara default pada `skoci server setup` (flag opt-in UFW versi lama telah dihapus); gunakan `--no-ufw` untuk melewati konfigurasi UFW.
+* **Izin berkas server & `sudo`:** Direktori `/etc/skoci` (`0700 root:root`) dan `/etc/skoci/skoci.env` (`0600 root:root`) kini khusus `root`, berkas token terpisah warisan versi lama di `/etc/skoci/` dihapus saat upgrade, `/var/lib/skoci` berizin `0700 skoci:skoci`, dan pengguna SSH tidak lagi dimasukkan ke grup `skoci`. Jalankan perintah admin di server menggunakan `sudo` (`sudo skoci approve <id>`, `sudo skoci token create`, dll.), dan baca master token dengan `sudo grep '^SKOCI_MASTER_TOKEN=' /etc/skoci/skoci.env | cut -d= -f2-`.
+* **Aturan abaikan unggahan yang eksplisit:** `skoci deploy` kini hanya menerapkan aturan bawaan, `.gitignore` di root proyek, dan `.skoci/ignore` (atau `.dockerignore`). Berkas `.gitignore` di direktori induk, gitignore global, dan `.git/info/exclude` tidak lagi diterapkan secara diam-diam — pindahkan aturan yang masih diperlukan ke `.skoci/ignore`.
+* **Audit unggahan & migrasi tata letak otomatis:** Berkas legacy `skoci.yaml` dan `.env.skoci` di root otomatis dimigrasikan ke `.skoci/skoci.yaml` dan `.skoci/env`, serta `skoci connect` kini hanya menulis `~/.config/skoci/servers.json` kecuali diberi flag `--project-env`. Jalankan `skoci validate --verbose` satu kali setelah upgrade untuk memeriksa daftar berkas yang akan diunggah oleh `skoci deploy`.
 
 ### Dari 0.1
 

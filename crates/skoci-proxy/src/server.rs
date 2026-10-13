@@ -269,7 +269,7 @@ impl ProxyStatus {
         self.inner.bind_errors.write().push(err);
     }
 
-    pub(crate) fn has_issued_cert(&self, host: &str) -> bool {
+    pub fn has_issued_cert(&self, host: &str) -> bool {
         let certs = self.inner.certificates.read();
         certs.get(host).map(|s| s.issued).unwrap_or(false)
     }

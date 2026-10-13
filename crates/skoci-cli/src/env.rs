@@ -1,5 +1,5 @@
 use std::path::Path;
-use skoci_api::models::{LEGACY_ENV_PATH, PROJECT_DIR, PROJECT_ENV_PATH};
+use skoci_api::models::{PROJECT_DIR, PROJECT_ENV_PATH};
 use skoci_api::{SkociError, SkociResult};
 pub fn parse_env_file_content(content: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
@@ -78,20 +78,12 @@ pub fn load_env_files() {
 
 pub fn load_env_files_at(root: &Path) {
     let modern = root.join(PROJECT_ENV_PATH);
-    let target = if modern.exists() {
-        Some(modern)
-    } else {
-        let legacy = root.join(LEGACY_ENV_PATH);
-        if legacy.exists() {
-            Some(legacy)
-        } else {
-            None
-        }
-    };
-
-    if let Some(path) = target {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let pairs = filter_skoci_env_pairs_with_source(parse_env_file_content(&content), &path.display().to_string());
+    if modern.exists() {
+        if let Ok(content) = std::fs::read_to_string(&modern) {
+            let pairs = filter_skoci_env_pairs_with_source(
+                parse_env_file_content(&content),
+                &modern.display().to_string(),
+            );
             for (k, v) in pairs {
                 // Credentials stay out of the process environment: the resolver takes them as an
                 // explicit project-env layer, which is what makes a flag outrank the file and what
@@ -126,7 +118,7 @@ pub fn local_master_token_from_path(path: &Path) -> Option<String> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             eprintln!("Permission denied reading {}: {e}", path.display());
-            eprintln!("Fix: sudo usermod -aG skoci $USER then log in again, or use sudo.");
+            eprintln!("Fix: Re-run the command with sudo (e.g. 'sudo skoci approve <id>').");
             None
         }
         Err(_) => None,
@@ -141,10 +133,6 @@ pub fn read_project_env_at(root: &Path) -> Option<(String, String, Option<String
     let modern = root.join(PROJECT_ENV_PATH);
     if modern.exists() {
         return read_project_env_from_path(&modern);
-    }
-    let legacy = root.join(LEGACY_ENV_PATH);
-    if legacy.exists() {
-        return read_project_env_from_path(&legacy);
     }
     None
 }
@@ -185,6 +173,11 @@ pub fn write_project_env_at(root: &Path, server_url: &str, token: &str, pin: Opt
                 "Check directory write permissions",
             )
         })?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&project_dir, std::fs::Permissions::from_mode(0o700));
     }
 
     let target_path = root.join(PROJECT_ENV_PATH);
@@ -268,6 +261,119 @@ pub fn ensure_gitignore_ignores_env(root: &Path) -> SkociResult<()> {
         })?;
     }
     Ok(())
+}
+
+pub fn migrate_legacy_project_layout(root: &Path) -> SkociResult<Option<String>> {
+    use skoci_api::models::{LEGACY_CONFIG_PATH, LEGACY_ENV_PATH, PROJECT_CONFIG_PATH};
+
+    let legacy_cfg = root.join(LEGACY_CONFIG_PATH);
+    let legacy_env = root.join(LEGACY_ENV_PATH);
+    let has_legacy_cfg = legacy_cfg.is_file();
+    let has_legacy_env = legacy_env.is_file();
+
+    if !has_legacy_cfg && !has_legacy_env {
+        return Ok(None);
+    }
+
+    let modern_cfg = root.join(PROJECT_CONFIG_PATH);
+    let modern_env = root.join(PROJECT_ENV_PATH);
+    let need_move_cfg = has_legacy_cfg && !modern_cfg.exists();
+    let need_move_env = has_legacy_env && !modern_env.exists();
+
+    if need_move_cfg || need_move_env {
+        let project_dir = root.join(PROJECT_DIR);
+        if !project_dir.exists() {
+            std::fs::create_dir_all(&project_dir).map_err(|e| {
+                SkociError::internal(
+                    format!("Failed to create {} directory: {e}", project_dir.display()),
+                    "Check directory write permissions",
+                )
+            })?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&project_dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    let mut actions = Vec::new();
+
+    if has_legacy_cfg {
+        if modern_cfg.exists() {
+            actions.push(format!(
+                "kept existing {PROJECT_CONFIG_PATH} (left legacy {LEGACY_CONFIG_PATH} untouched)"
+            ));
+        } else {
+            std::fs::rename(&legacy_cfg, &modern_cfg)
+                .or_else(|_| {
+                    std::fs::copy(&legacy_cfg, &modern_cfg)?;
+                    std::fs::remove_file(&legacy_cfg)
+                })
+                .map_err(|e| {
+                    SkociError::internal(
+                        format!(
+                            "Failed to migrate {LEGACY_CONFIG_PATH} to {PROJECT_CONFIG_PATH}: {e}"
+                        ),
+                        "Check directory write permissions",
+                    )
+                })?;
+            actions.push(format!("{LEGACY_CONFIG_PATH} -> {PROJECT_CONFIG_PATH}"));
+        }
+    }
+
+    if has_legacy_env {
+        if modern_env.exists() {
+            actions.push(format!(
+                "kept existing {PROJECT_ENV_PATH} (left legacy {LEGACY_ENV_PATH} untouched)"
+            ));
+        } else {
+            let content = std::fs::read(&legacy_env).map_err(|e| {
+                SkociError::internal(
+                    format!("Failed to read legacy {LEGACY_ENV_PATH}: {e}"),
+                    "Check file read permissions",
+                )
+            })?;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            use std::io::Write;
+            let mut f = opts.open(&modern_env).map_err(|e| {
+                SkociError::internal(
+                    format!("Failed to create {PROJECT_ENV_PATH}: {e}"),
+                    "Check write permissions in .skoci directory",
+                )
+            })?;
+            f.write_all(&content).map_err(|e| {
+                let _ = std::fs::remove_file(&modern_env);
+                SkociError::internal(
+                    format!("Failed to write {PROJECT_ENV_PATH}: {e}"),
+                    "Check disk space and permissions",
+                )
+            })?;
+            drop(f);
+            std::fs::remove_file(&legacy_env).map_err(|e| {
+                SkociError::internal(
+                    format!("Failed to remove legacy {LEGACY_ENV_PATH}: {e}"),
+                    "Check directory write permissions",
+                )
+            })?;
+            let _ = ensure_gitignore_ignores_env(root);
+            actions.push(format!("{LEGACY_ENV_PATH} -> {PROJECT_ENV_PATH}"));
+        }
+    }
+
+    if actions.is_empty() {
+        Ok(None)
+    } else {
+        let line = format!("Migrated legacy project layout: {}", actions.join(", "));
+        eprintln!("{line}");
+        Ok(Some(line))
+    }
 }
 
 #[cfg(test)]
@@ -380,27 +486,100 @@ HTTP_PROXY=http://attacker.proxy
     }
 
     #[test]
-    fn test_read_project_env_precedence() {
+    fn test_read_project_env_reads_modern_only() {
         let temp_dir = std::env::temp_dir();
         let unique_id = uuid::Uuid::new_v4().simple();
-        let root = temp_dir.join(format!("test_env_prec_{unique_id}"));
+        let root = temp_dir.join(format!("test_env_modern_only_{unique_id}"));
         std::fs::create_dir_all(&root).unwrap();
 
-        // 1. Only legacy .env.skoci exists
-        let legacy_file = root.join(LEGACY_ENV_PATH);
-        std::fs::write(&legacy_file, "SKOCI_SERVER_URL=https://legacy.example.com\nSKOCI_TOKEN=legacy_token\n").unwrap();
-        let parsed = read_project_env_at(&root).unwrap();
-        assert_eq!(parsed.0, "https://legacy.example.com");
-        assert_eq!(parsed.1, "legacy_token");
+        // Legacy .env.skoci is not read directly by read_project_env_at
+        let legacy_file = root.join(".env.skoci");
+        std::fs::write(
+            &legacy_file,
+            "SKOCI_SERVER_URL=https://legacy.example.com\nSKOCI_TOKEN=legacy_token\n",
+        )
+        .unwrap();
+        assert_eq!(read_project_env_at(&root), None);
 
-        // 2. Both .skoci/env and legacy .env.skoci exist: .skoci/env wins
+        // Modern .skoci/env is read
         let skoci_dir = root.join(PROJECT_DIR);
         std::fs::create_dir_all(&skoci_dir).unwrap();
         let modern_file = root.join(PROJECT_ENV_PATH);
-        std::fs::write(&modern_file, "SKOCI_SERVER_URL=https://modern.example.com\nSKOCI_TOKEN=modern_token\n").unwrap();
+        std::fs::write(
+            &modern_file,
+            "SKOCI_SERVER_URL=https://modern.example.com\nSKOCI_TOKEN=modern_token\n",
+        )
+        .unwrap();
         let parsed = read_project_env_at(&root).unwrap();
         assert_eq!(parsed.0, "https://modern.example.com");
         assert_eq!(parsed.1, "modern_token");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_migrate_legacy_project_layout() {
+        let temp_dir = std::env::temp_dir();
+        let unique_id = uuid::Uuid::new_v4().simple();
+        let root = temp_dir.join(format!("test_migrate_layout_{unique_id}"));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // 1. Modern-only or empty project is untouched
+        assert_eq!(migrate_legacy_project_layout(&root).unwrap(), None);
+        assert!(!root.join(".skoci").exists());
+
+        // 2. Legacy skoci.yaml and .env.skoci move to .skoci/skoci.yaml and .skoci/env
+        std::fs::write(root.join("skoci.yaml"), "version: 1\napp: migrated-app\n").unwrap();
+        std::fs::write(
+            root.join(".env.skoci"),
+            "SKOCI_SERVER_URL=https://1.2.3.4:8443\nSKOCI_TOKEN=tok_migrated\n",
+        )
+        .unwrap();
+
+        let msg = migrate_legacy_project_layout(&root).unwrap().unwrap();
+        assert!(msg.contains("skoci.yaml -> .skoci/skoci.yaml"));
+        assert!(msg.contains(".env.skoci -> .skoci/env"));
+        assert!(!root.join("skoci.yaml").exists());
+        assert!(!root.join(".env.skoci").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join(".skoci/skoci.yaml")).unwrap(),
+            "version: 1\napp: migrated-app\n"
+        );
+        let parsed = read_project_env_at(&root).unwrap();
+        assert_eq!(parsed.0, "https://1.2.3.4:8443");
+        assert_eq!(parsed.1, "tok_migrated");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = std::fs::metadata(root.join(".skoci")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700);
+            let env_mode = std::fs::metadata(root.join(".skoci/env")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(env_mode, 0o600);
+        }
+
+        // 3. Re-running on already-modern project is a no-op
+        assert_eq!(migrate_legacy_project_layout(&root).unwrap(), None);
+
+        // 4. When both modern and legacy exist, modern is kept and legacy is left untouched
+        std::fs::write(root.join("skoci.yaml"), "version: 1\napp: stale-legacy\n").unwrap();
+        std::fs::write(
+            root.join(".env.skoci"),
+            "SKOCI_SERVER_URL=https://stale\nSKOCI_TOKEN=stale\n",
+        )
+        .unwrap();
+        let msg_both = migrate_legacy_project_layout(&root).unwrap().unwrap();
+        assert!(msg_both.contains("kept existing .skoci/skoci.yaml"));
+        assert!(msg_both.contains("kept existing .skoci/env"));
+        assert_eq!(
+            std::fs::read_to_string(root.join(".skoci/skoci.yaml")).unwrap(),
+            "version: 1\napp: migrated-app\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("skoci.yaml")).unwrap(),
+            "version: 1\napp: stale-legacy\n"
+        );
+        assert!(root.join(".env.skoci").exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }

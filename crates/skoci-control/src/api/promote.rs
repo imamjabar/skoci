@@ -1,15 +1,31 @@
 use axum::extract::State;
 use axum::response::Response;
 use axum::Json;
-use skoci_api::error::SkociError;
-use skoci_api::models::ENV_PREVIEW;
+use skoci_api::error::{SkociError, SkociResult};
+use skoci_api::models::{ENV_PREVIEW, ENV_PRODUCTION};
 use skoci_api::requests::PromoteRequest;
 use skoci_api::responses::{DeployAccepted, PromoteResponse};
 
+use crate::auth::Subject;
 use crate::db::ApprovalRecord;
 use crate::deploy::{run_deploy_pipeline, DeployJobOptions, JobKind};
 use crate::http::{api_reply, AuthSubject};
 use crate::state::AppState;
+
+/// Approval protects live production traffic; an app without a production route has none.
+pub fn promotion_requires_approval(
+    state: &AppState,
+    subject: &Subject,
+    app: &str,
+) -> SkociResult<bool> {
+    if subject.is_admin() {
+        return Ok(false);
+    }
+    if state.config.require_approval_always {
+        return Ok(true);
+    }
+    Ok(state.db.get_route(app, ENV_PRODUCTION)?.is_some())
+}
 
 pub async fn handle_promote(
     State(state): State<AppState>,
@@ -56,7 +72,12 @@ pub async fn handle_promote(
         Err(e) => return api_reply::<()>(Err(e)),
     }
 
-    if !subject.is_admin() {
+    let needs_approval = match promotion_requires_approval(&state, &subject, &body.app) {
+        Ok(v) => v,
+        Err(e) => return api_reply::<()>(Err(e)),
+    };
+
+    if needs_approval {
         // Agent generates approval
         let approval_id = format!("appr_{}", uuid::Uuid::new_v4().simple());
         let rec = ApprovalRecord {

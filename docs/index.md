@@ -13,7 +13,7 @@
    The CLI and MCP (Model Context Protocol) share a single API source of truth (`skoci-api`) with 100% parity. Every output supports structured JSON (`--json`), errors include actionable remediation `{code, message, fix}`, and built-in skills are provided for various harnesses (OMP, Claude Code, Pi, Codex, OpenClaw).
 
 3. **Dashboard for Validation, Not Configuration:**
-   All application configurations live in your Git repository (`.skoci/skoci.yaml` or legacy `skoci.yaml`). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions, and trigger 1-click rollbacks.
+   All application configurations live in your Git repository (`.skoci/skoci.yaml`; a legacy root `skoci.yaml` is migrated automatically). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions, and trigger 1-click rollbacks.
 
 4. **Secure by Design:**
    - **Zero Shell Concatenation:** Docker commands use structured argument vectors (`tokio::process::Command`), immune to prompt injection.
@@ -45,6 +45,8 @@ Run remote setup from your workstation (requires Skoci >= 0.4.0):
 ```bash
 skoci server setup --host <server-ip> --user root
 ```
+When `--domain` is omitted, `skoci server setup` automatically enables magic DNS (`<dashed-ip>.sslip.io`) with a warning so your first preview deploy gets a working HTTPS URL immediately, and configures UFW firewall rules by default (`--no-ufw` to skip). Pass `--domain <your-domain>` to configure a custom base domain upfront, or switch later with `skoci domain set <your-domain> --primary`.
+
 Or run directly in your server terminal:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash
@@ -62,17 +64,17 @@ On your local developer workstation, link your workspace to the pinned control p
 ```bash
 skoci connect --server <server-ip> --token sk_agent_toko_xxxx --pin sha256:<spki-pin>
 ```
-Credentials and pins are saved in `~/.config/skoci/servers.json` and `.skoci/env` (legacy `.env.skoci` is also supported).
+Credentials and pins are saved in `~/.config/skoci/servers.json` (`0600`) by default; pass `--project-env` to also write `.skoci/env` (`0600`, for CI or per-repository overrides; a legacy `.env.skoci` is migrated automatically).
 
 ### 4. Deploy from Project Repository
 Navigate to your application repository directory:
 ```bash
 cd ~/projects/toko
 skoci init
-skoci validate
+skoci validate --verbose
 skoci deploy --env preview
 ```
-`skoci validate` checks `.skoci/skoci.yaml` offline before deploying.
+`skoci validate --verbose` checks `.skoci/skoci.yaml` offline and lists the exact files to be uploaded before deploying.
 
 Your application builds remotely on Docker and goes live with real-time progress streaming.
 ---

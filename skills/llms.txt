@@ -12,34 +12,34 @@
 ## Exit Codes & Statuses
 - 0: Success (`live`)
 - 1: General error (action failed, build failed, invalid config from validate/init)
-- 2: Approval pending/required (production promotion via scoped token, database restore, app delete)
+- 2: Approval pending/required (subsequent production promotions via scoped token, or first when `--strict-approvals` is active; database restore; app delete)
 - 3: Authentication / TLS error (unauthorized, scope_violation, pin_required, pin_mismatch, rate_limited)
 - Deploy Statuses: `live` (healthy), `degraded` (health check passed, GET / failed), `failed` (build/startup error)
 
 ## Agent Rules & Guidelines
 1. Always run commands with `--json` for machine-parsable outputs.
 2. In case of error, inspect `error.code`, read the `error.fix` recommendation, and execute the suggested fix.
-3. Never use or request SSH access after initial server setup. Connect using `skoci connect --server <server-ip> --token <token> --pin sha256:<spki-pin>`.
+3. Never use or request SSH access after initial server setup. Connect using `skoci connect --server <server-ip> --token <token> --pin sha256:<spki-pin>` (writes `~/.config/skoci/servers.json` `0600` by default; pass `--project-env` to also write `.skoci/env`).
 4. Never print, log, or echo tokens (`sk_agent_*`, `sk_master_*`).
-5. Production deployments require genuine custom domains (magic DNS `*.sslip.io` is rejected by default; operator override: `skoci server setup --allow-magic-dns-production` or `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env`; accepted booleans: `true/false`, `1/0`, `yes/no`, `on/off`). Verify DNS before deploying with `skoci domain check <host>`.
+5. Production deployments require genuine custom domains (magic DNS `*.sslip.io` is auto-enabled by `skoci server setup` when `--domain` is omitted for preview, but rejected in production by default; operator override: `skoci server setup --allow-magic-dns-production` or `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env`; accepted booleans: `true/false`, `1/0`, `yes/no`, `on/off`). Verify DNS before deploying with `skoci domain check <host>`.
 6. Treat `degraded` deployments as a failure to investigate: check logs with `skoci logs --tail 100 --json` and never promote a degraded deployment.
-7. Promotion & Approval Flow: Master token promotes directly. Scoped agent token (`sk_agent_*`) always produces an approval request (exit code 2, `pending_approval`). The agent cannot approve its own request and must surface `Request ID: appr_…` to a human operator who runs `skoci approve <request_id>` on the server or via the web dashboard.
+7. Promotion & Approval Flow: Master token promotes directly. With a scoped agent token (`sk_agent_*`), an app's first promotion to production goes live immediately by default (unless `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` is set via `skoci server setup --strict-approvals`); every subsequent promotion produces an approval request (exit code 2, `pending_approval`). The agent cannot approve its own request and must surface `Request ID: appr_…` to a human operator who runs `sudo skoci approve <request_id>` on the server or approves via the web dashboard.
 8. The project build always executes on the server inside Docker. The local machine does not require Docker.
 ## Agent Workflow
 1. Connect: `skoci connect --server <server-ip> --token sk_agent_<app>_<hex> --pin sha256:<spki-pin>`
-2. Initialize: `skoci init` (infers app name from `package.json`, `Cargo.toml`, or `pyproject.toml`, falling back to directory name; validates format upfront; generates `.skoci/skoci.yaml`, non-root `.skoci/Dockerfile`, `.skoci/ignore`; strips `.skoci/` from built image)
-3. Validate: `skoci validate [path] --json` (offline validation of `.skoci/skoci.yaml`, domains, and secrets; exit 0 valid, 1 invalid)
+2. Initialize: `skoci init` (migrates legacy `skoci.yaml`/`.env.skoci` to `.skoci/`; infers app name from `package.json`, `Cargo.toml`, or `pyproject.toml`, falling back to directory name; validates format upfront; generates `.skoci/skoci.yaml`, non-root `.skoci/Dockerfile` including `nginxinc/nginx-unprivileged:1.27-alpine` on port 8080 with internal-file 404 rules for static sites, and `.skoci/ignore`; strips `.skoci/` from built image)
+3. Validate: `skoci validate [path] [--verbose] --json` (offline validation of `.skoci/skoci.yaml`, domains, and secrets; `--verbose` lists exact files to upload, total bytes, and excluded paths using explicit filter order: built-in defaults, project-root `.gitignore`, `.skoci/ignore` or `.dockerignore`; exit 0 valid, 1 invalid)
 4. Configure: Adjust `.skoci/skoci.yaml` (`app`, `run.port`, `domains`, `services`).
 5. Verify Domain: `skoci domain check <host>` (ensures A/AAAA points to server before cert issuance)
 6. Set Secrets: `skoci secret set <KEY> <VALUE>` (encrypted on host)
 7. Deploy to Preview: `skoci deploy --env preview --json` (verify status is `live`, not `degraded`)
 8. Verify: Check health check, URLs, and smoke test status
-9. Promote to Production: `skoci promote "<reason>" --json` (returns request ID for human approval)
+9. Promote to Production: `skoci promote "<reason>" --json` (first promotion goes live immediately by default; subsequent promotions return exit code 2 and request ID for `sudo skoci approve <id>`)
 10. Monitor: `skoci status --json` and `skoci logs --json`
 ## CLI Commands Reference
-- `skoci server setup --host <ip> --user <u> [--ssh-copy-id] [--harden-ssh] [--setup-ufw] [--allow-magic-dns-production]` (one-time setup of remote VPS from laptop, Skoci >= 0.4.0)
-- `skoci validate [<path>] [--json]` (offline validation of `.skoci/skoci.yaml`, no network/deploy, exit 0 valid, 1 invalid)
-- `skoci connect --server <ip> --token <token> [--pin <spki-pin>] [--name <profile-name>]`
+- `skoci server setup --host <ip> [--user <u>] [--port <n>] [--ssh-key <path>] [--ssh-copy-id] [--ssh-password-stdin] [--app <app>] [--version <tag>] [--magic-dns] [--domain <domain>] [--email <email>] [--harden-ssh] [--no-ufw] [--strict-approvals] [--yes] [--allow-magic-dns-production]` (one-time setup of remote VPS from laptop, Skoci >= 0.4.0)
+- `skoci validate [<path>] [--verbose] [--json]` (offline validation of `.skoci/skoci.yaml` and upload manifest, no network/deploy, exit 0 valid, 1 invalid)
+- `skoci connect --server <ip> [--token <token>] [--pin <spki-pin>] [--name <profile-name>] [--no-profile] [--project-env]`
 - `skoci domain check <host>` / `skoci domain add <host>`
 - `skoci domain set <host> --primary [--force]` (admin/master token only: moves the server's base domain, re-points live routes to `<app>.<host>`, dashboard to `skoci.<host>`)
 - `skoci deploy [--env preview|production] [--detach] [--commit <sha>]`
@@ -51,7 +51,7 @@
 - `skoci secret list`
 - `skoci promote "<reason>" [--version <v>]`
 - `skoci approvals`
-- `skoci approve <request_id>` / `skoci reject <request_id>` (admin only)
+- `sudo skoci approve <request_id>` / `sudo skoci reject <request_id>` (admin only on server)
 - `skoci rollback [--env preview] [--to <version>]`
 - `skoci doctor`
 - `skoci db backup [service=db]`
