@@ -229,6 +229,10 @@ rm .skoci/Dockerfile && skoci init && skoci deploy
 ```
 Keep a Dockerfile you wrote yourself; `skoci init` never overwrites an existing file.
 
+### To 0.5.1
+* **`--ssh-password-stdin` fix:** The password bootstrap could die with `ssh-copy-id failed` before the key was installed, because `ssh-copy-id`'s own output was discarded while it was still writing. Upgrade the client (`curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only`) before bootstrapping a password-only server.
+* **Stale `skoci` group members:** Installing or upgrading now removes every human account from the `skoci` group, undoing the pre-0.5.0 membership that allowed reading the master token without `sudo`. Nothing to do by hand.
+
 ### To 0.5.0
 * **Static & StaticBuild containers:** Generated static-site Dockerfiles now use `nginxinc/nginx-unprivileged:1.27-alpine` (`USER nginx`), listen on port **8080**, strip `.skoci/` from the web root, and return `404` for dotfiles, internal code/config/log/database extensions, and project manifests. Regenerate the recipe (`rm .skoci/Dockerfile && skoci init`) and ensure `.skoci/skoci.yaml` sets `port: 8080` under `run:` before redeploying.
 * **Commit `.skoci/ignore` to git:** Keep `.skoci/ignore` (along with `.skoci/skoci.yaml` and `.skoci/Dockerfile`) tracked in version control. Deleting `.skoci/` discards hand-written upload exclusions and can republish internal files.

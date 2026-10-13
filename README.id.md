@@ -229,6 +229,10 @@ rm .skoci/Dockerfile && skoci init && skoci deploy
 ```
 Dockerfile yang Anda tulis sendiri tetap aman; `skoci init` tidak pernah menimpa berkas yang sudah ada.
 
+### Ke 0.5.1
+* **Perbaikan `--ssh-password-stdin`:** Bootstrap dengan kata sandi bisa gagal dengan pesan `ssh-copy-id failed` sebelum kunci terpasang, karena keluaran `ssh-copy-id` dibuang saat proses tersebut masih menulis. Perbarui klien (`curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s -- --client-only`) sebelum melakukan bootstrap ke server yang hanya menerima kata sandi.
+* **Anggota grup `skoci` yang tertinggal:** Proses instalasi maupun upgrade kini mengeluarkan seluruh akun manusia dari grup `skoci`, membatalkan keanggotaan era pra-0.5.0 yang membuat master token dapat dibaca tanpa `sudo`. Tidak ada langkah manual yang diperlukan.
+
 ### Ke 0.5.0
 * **Kontainer Static & StaticBuild:** Dockerfile situs statis hasil generate kini menggunakan `nginxinc/nginx-unprivileged:1.27-alpine` (`USER nginx`), mendengarkan pada port **8080**, menghapus `.skoci/` dari web root, serta mengembalikan `404` untuk dotfile, ekstensi kode/konfigurasi/log/database internal, dan manifest proyek. Buat ulang resep kontainer (`rm .skoci/Dockerfile && skoci init`) dan pastikan `.skoci/skoci.yaml` menyetel `port: 8080` di bawah `run:` sebelum melakukan deploy ulang.
 * **Commit `.skoci/ignore` ke git:** Simpan `.skoci/ignore` (bersama `.skoci/skoci.yaml` dan `.skoci/Dockerfile`) di dalam git. Menghapus direktori `.skoci/` akan menghilangkan aturan pengecualian unggahan yang Anda tulis dan berisiko mempublikasikan berkas internal.

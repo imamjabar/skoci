@@ -364,6 +364,15 @@ if ! id -u skoci >/dev/null 2>&1; then
 fi
 $SUDO usermod -aG docker skoci
 
+# Pre-0.5.0 installs added humans to the 'skoci' group to read the master token.
+# The token is root-only now, so drop every member except the daemon account.
+STALE_GROUP_MEMBERS="$(getent group skoci | cut -d: -f4 | tr ',' ' ')"
+for member in $STALE_GROUP_MEMBERS; do
+  [ "$member" = "skoci" ] && continue
+  $SUDO gpasswd -d "$member" skoci >/dev/null 2>&1 || true
+  echo -e "${YELLOW}Removed '${member}' from the 'skoci' group; server admin commands now require sudo.${NC}"
+done
+
 # Setup Directories & Permissions
 $SUDO mkdir -p /etc/skoci /var/lib/skoci /var/lib/skoci/backups
 $SUDO chown root:root /etc/skoci

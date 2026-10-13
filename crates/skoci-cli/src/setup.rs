@@ -715,12 +715,10 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
                         .env("DISPLAY", "none")
                         .env(ASKPASS_ENV_VAR, password)
                         .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .status()
+                        .output()
                         .await;
                     drop(askpass);
-                    res
+                    res.map(|out| (out.status, String::from_utf8_lossy(&out.stderr).trim().to_string()))
                 } else {
                     tokio::process::Command::new("ssh-copy-id")
                         .arg("-i")
@@ -733,12 +731,24 @@ async fn do_server_setup(mut opts: SetupOptions, json: bool) -> SkociResult<Serv
                         .stderr(std::process::Stdio::inherit())
                         .status()
                         .await
+                        .map(|status| (status, String::new()))
                 };
                 match copy_res {
-                    Ok(status) => {
+                    Ok((status, stderr)) => {
                         if !status.success() {
+                            let detail = if stderr.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {stderr}")
+                            };
                             return Err(SkociError::bad_request(
-                                format!("ssh-copy-id failed with exit code {}", status.code().unwrap_or(-1)),
+                                format!(
+                                    "ssh-copy-id failed ({}){detail}",
+                                    status
+                                        .code()
+                                        .map(|c| format!("exit code {c}"))
+                                        .unwrap_or_else(|| "terminated by signal".to_string())
+                                ),
                                 format!(
                                     "Verify password and run 'ssh-copy-id -i {} -p {} {}@{}' manually",
                                     pub_key.display(), opts.port, opts.user, opts.host
