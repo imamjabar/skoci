@@ -47,21 +47,13 @@ async fn setup_test_state(max_upload_mb: u64) -> (AppState, TestDir) {
     let db = Database::open_in_memory().expect("db");
 
     let config = Arc::new(ServerConfig {
-        bind: "127.0.0.1:8787".parse().unwrap(),
         data_dir: data_dir.clone(),
         master_token: MASTER_TOKEN.to_string(),
         http_bind: "127.0.0.1:80".parse().unwrap(),
         https_bind: "127.0.0.1:443".parse().unwrap(),
-        base_domain: None,
-        api_domain: None,
         tls: TlsMode::Off,
-        acme_email: None,
-        acme_staging: false,
         max_upload_mb,
-        public_ip: None,
-        control_tls_bind: None,
-        allow_magic_dns_production: false,
-        require_approval_always: false,
+        ..ServerConfig::default()
     });
 
     let secret_cipher = Arc::new(SecretCipher::from_key([42u8; 32]));
@@ -474,21 +466,13 @@ async fn test_upload_over_limit_returns_413() {
 async fn test_master_token_min_length_validation() {
     let temp_dir = TestDir::new();
     let cfg = ServerConfig {
-        bind: "127.0.0.1:8787".parse().unwrap(),
         data_dir: temp_dir.path().to_path_buf(),
         master_token: "too_short".to_string(), // < 32 chars
         http_bind: "127.0.0.1:80".parse().unwrap(),
         https_bind: "127.0.0.1:443".parse().unwrap(),
-        base_domain: None,
-        api_domain: None,
         tls: TlsMode::Off,
-        acme_email: None,
-        acme_staging: false,
         max_upload_mb: 10,
-        public_ip: None,
-        control_tls_bind: None,
-        allow_magic_dns_production: false,
-        require_approval_always: false,
+        ..ServerConfig::default()
     };
 
     let res = skoci_control::server::run_server(cfg).await;
@@ -1187,4 +1171,355 @@ async fn test_wait_for_public_url_gives_up_at_deadline() {
 
     assert!(!ready);
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+#[tokio::test]
+async fn test_two_jobs_for_same_app_different_envs_rejected_with_conflict() {
+    let (state, _temp) = setup_test_state(10).await;
+    let b1 = state.jobs.register_job("my-app", "preview", "dep_preview_1");
+    assert!(b1.is_ok());
+
+    let b2 = state.jobs.register_job("my-app", "production", "dep_prod_2");
+    assert!(b2.is_err());
+    let err = b2.err().unwrap();
+    assert_eq!(err.code, "conflict");
+    assert!(err.message.contains("dep_preview_1"));
+    assert!(err.message.contains("my-app"));
+
+    // Different app can register concurrently
+    let b3 = state.jobs.register_job("other-app", "production", "dep_other_1");
+    assert!(b3.is_ok());
+
+    // Finishing first job allows a new job on my-app
+    state.jobs.finish_job("my-app", "preview", "dep_preview_1");
+    let b4 = state.jobs.register_job("my-app", "production", "dep_prod_2");
+    assert!(b4.is_ok());
+}
+
+#[tokio::test]
+async fn test_delete_holding_app_slot_blocks_concurrent_job_and_releases_on_failure() {
+    let (state, _temp) = setup_test_state(10).await;
+
+    // Acquire delete guard
+    {
+        let guard = state.jobs.acquire_delete_guard("delete-app");
+        assert!(guard.is_ok());
+
+        // Concurrent job for the same app is rejected with conflict
+        let res = state.jobs.register_job("delete-app", "preview", "dep_blocked");
+        assert!(res.is_err());
+        assert_eq!(res.err().unwrap().code, "conflict");
+
+        // Concurrent delete attempt also rejected with conflict
+        let res_del = state.jobs.acquire_delete_guard("delete-app");
+        assert!(res_del.is_err());
+        assert_eq!(res_del.err().unwrap().code, "conflict");
+    } // guard dropped, simulating delete failure or completion
+
+    // Slot is released: job can now be registered
+    let res = state.jobs.register_job("delete-app", "preview", "dep_allowed");
+    assert!(res.is_ok());
+}
+
+#[tokio::test]
+async fn test_agent_rollback_production_to_previous_version_allowed_no_approval_row() {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use skoci_control::api::promote::rollback_requires_approval;
+    use skoci_control::db::{DeploymentRecord, RouteRecord};
+
+    let (state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("roll-app").unwrap();
+
+    let now = Utc::now();
+    let dep1 = DeploymentRecord {
+        id: "dep_1".to_string(),
+        app: "roll-app".to_string(),
+        env: "production".to_string(),
+        version: "v1".to_string(),
+        kind: "deploy".to_string(),
+        status: "superseded".to_string(),
+        commit_hash: "abc".to_string(),
+        image: "skoci/roll-app:v1".to_string(),
+        container: "c1".to_string(),
+        host_port: Some(8080),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(100),
+        finished_at: Some(now - ChronoDuration::seconds(90)),
+        error_json: None,
+        evidence_json: None,
+    };
+    state.db.insert_deployment(&dep1).unwrap();
+
+    let dep2 = DeploymentRecord {
+        id: "dep_2".to_string(),
+        app: "roll-app".to_string(),
+        env: "production".to_string(),
+        version: "v2".to_string(),
+        kind: "deploy".to_string(),
+        status: "live".to_string(),
+        commit_hash: "def".to_string(),
+        image: "skoci/roll-app:v2".to_string(),
+        container: "c2".to_string(),
+        host_port: Some(8081),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(80),
+        finished_at: Some(now - ChronoDuration::seconds(70)),
+        error_json: None,
+        evidence_json: None,
+    };
+    state.db.insert_deployment(&dep2).unwrap();
+
+    state.db.upsert_route(&RouteRecord {
+        app: "roll-app".to_string(),
+        env: "production".to_string(),
+        container: "c2".to_string(),
+        host_port: 8081,
+        version: "v2".to_string(),
+        hosts: vec!["roll-app.example.com".to_string()],
+        deployed_at: now - ChronoDuration::seconds(70),
+    }).unwrap();
+
+    // Rolling back to v1 (immediately previous version): allowed without approval
+    let needs = rollback_requires_approval(&state, &agent_subject("roll-app"), "roll-app", "production", "v1").unwrap();
+    assert!(!needs);
+    assert!(state.db.list_pending_approvals(Some("roll-app")).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_agent_rollback_production_to_older_version_requires_approval_and_creates_row() {
+    use axum::extract::State;
+    use axum::Json;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use skoci_api::requests::RollbackRequest;
+    use skoci_control::api::promote::rollback_requires_approval;
+    use skoci_control::api::rollback::handle_rollback;
+    use skoci_control::db::{DeploymentRecord, RouteRecord};
+    use skoci_control::http::AuthSubject;
+
+    let (state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("roll-old-app").unwrap();
+
+    let now = Utc::now();
+    // v1: oldest
+    state.db.insert_deployment(&DeploymentRecord {
+        id: "dep_1".to_string(),
+        app: "roll-old-app".to_string(),
+        env: "production".to_string(),
+        version: "v1".to_string(),
+        kind: "deploy".to_string(),
+        status: "superseded".to_string(),
+        commit_hash: "abc".to_string(),
+        image: "skoci/roll-old-app:v1".to_string(),
+        container: "c1".to_string(),
+        host_port: Some(8080),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(200),
+        finished_at: Some(now - ChronoDuration::seconds(190)),
+        error_json: None,
+        evidence_json: None,
+    }).unwrap();
+
+    // v2: immediately previous
+    state.db.insert_deployment(&DeploymentRecord {
+        id: "dep_2".to_string(),
+        app: "roll-old-app".to_string(),
+        env: "production".to_string(),
+        version: "v2".to_string(),
+        kind: "deploy".to_string(),
+        status: "superseded".to_string(),
+        commit_hash: "def".to_string(),
+        image: "skoci/roll-old-app:v2".to_string(),
+        container: "c2".to_string(),
+        host_port: Some(8081),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(100),
+        finished_at: Some(now - ChronoDuration::seconds(90)),
+        error_json: None,
+        evidence_json: None,
+    }).unwrap();
+
+    // v3: currently live
+    state.db.insert_deployment(&DeploymentRecord {
+        id: "dep_3".to_string(),
+        app: "roll-old-app".to_string(),
+        env: "production".to_string(),
+        version: "v3".to_string(),
+        kind: "deploy".to_string(),
+        status: "live".to_string(),
+        commit_hash: "ghi".to_string(),
+        image: "skoci/roll-old-app:v3".to_string(),
+        container: "c3".to_string(),
+        host_port: Some(8082),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(50),
+        finished_at: Some(now - ChronoDuration::seconds(40)),
+        error_json: None,
+        evidence_json: None,
+    }).unwrap();
+
+    state.db.upsert_route(&RouteRecord {
+        app: "roll-old-app".to_string(),
+        env: "production".to_string(),
+        container: "c3".to_string(),
+        host_port: 8082,
+        version: "v3".to_string(),
+        hosts: vec!["roll-old-app.example.com".to_string()],
+        deployed_at: now - ChronoDuration::seconds(40),
+    }).unwrap();
+
+    // Target version is v1 (older historical version, not v2): requires approval
+    let needs = rollback_requires_approval(&state, &agent_subject("roll-old-app"), "roll-old-app", "production", "v1").unwrap();
+    assert!(needs);
+
+    // Call handle_rollback as agent
+    let req = RollbackRequest {
+        app: "roll-old-app".to_string(),
+        env: "production".to_string(),
+        target_version: Some("v1".to_string()),
+    };
+    let resp = handle_rollback(State(state.clone()), AuthSubject(agent_subject("roll-old-app")), Json(req)).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Check approval row was created with action = "rollback"
+    let approvals = state.db.list_pending_approvals(Some("roll-old-app")).unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].action, "rollback");
+    assert_eq!(approvals[0].app, "roll-old-app");
+
+    // Check nothing was registered in jobs registry (nothing deployed)
+    assert!(state.jobs.get_running_deployment("roll-old-app").is_none());
+}
+
+#[tokio::test]
+async fn test_require_approval_always_gates_both_rollback_cases() {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use skoci_control::api::promote::rollback_requires_approval;
+    use skoci_control::db::{DeploymentRecord, RouteRecord};
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    let mut config = (*state.config).clone();
+    config.require_approval_always = true;
+    state.config = Arc::new(config);
+
+    state.db.ensure_app("strict-app").unwrap();
+    let now = Utc::now();
+    state.db.insert_deployment(&DeploymentRecord {
+        id: "dep_1".to_string(),
+        app: "strict-app".to_string(),
+        env: "production".to_string(),
+        version: "v1".to_string(),
+        kind: "deploy".to_string(),
+        status: "superseded".to_string(),
+        commit_hash: "abc".to_string(),
+        image: "skoci/strict-app:v1".to_string(),
+        container: "c1".to_string(),
+        host_port: Some(8080),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(100),
+        finished_at: Some(now - ChronoDuration::seconds(90)),
+        error_json: None,
+        evidence_json: None,
+    }).unwrap();
+
+    state.db.insert_deployment(&DeploymentRecord {
+        id: "dep_2".to_string(),
+        app: "strict-app".to_string(),
+        env: "production".to_string(),
+        version: "v2".to_string(),
+        kind: "deploy".to_string(),
+        status: "live".to_string(),
+        commit_hash: "def".to_string(),
+        image: "skoci/strict-app:v2".to_string(),
+        container: "c2".to_string(),
+        host_port: Some(8081),
+        triggered_by: "human".to_string(),
+        created_at: now - ChronoDuration::seconds(80),
+        finished_at: Some(now - ChronoDuration::seconds(70)),
+        error_json: None,
+        evidence_json: None,
+    }).unwrap();
+
+    state.db.upsert_route(&RouteRecord {
+        app: "strict-app".to_string(),
+        env: "production".to_string(),
+        container: "c2".to_string(),
+        host_port: 8081,
+        version: "v2".to_string(),
+        hosts: vec!["strict-app.example.com".to_string()],
+        deployed_at: now - ChronoDuration::seconds(70),
+    }).unwrap();
+
+    // Immediately previous version v1: requires approval because require_approval_always is true
+    assert!(rollback_requires_approval(&state, &agent_subject("strict-app"), "strict-app", "production", "v1").unwrap());
+
+    // Older / arbitrary version v0: also requires approval
+    assert!(rollback_requires_approval(&state, &agent_subject("strict-app"), "strict-app", "production", "v0").unwrap());
+
+    // Admin still never requires approval
+    assert!(!rollback_requires_approval(&state, &skoci_control::auth::Subject::Admin, "strict-app", "production", "v1").unwrap());
+}
+
+#[tokio::test]
+async fn test_preview_rollback_by_agent_allowed() {
+    use skoci_control::api::promote::rollback_requires_approval;
+
+    let (mut state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("prev-app").unwrap();
+
+    let needs = rollback_requires_approval(&state, &agent_subject("prev-app"), "prev-app", "preview", "v1").unwrap();
+    assert!(!needs);
+
+    // Even with require_approval_always = true, preview rollback remains ungated
+    let mut config = (*state.config).clone();
+    config.require_approval_always = true;
+    state.config = Arc::new(config);
+
+    let needs_strict = rollback_requires_approval(&state, &agent_subject("prev-app"), "prev-app", "preview", "v1").unwrap();
+    assert!(!needs_strict);
+}
+
+#[tokio::test]
+async fn test_admin_approved_rollback_executes() {
+    use axum::extract::State;
+    use axum::Json;
+    use skoci_api::requests::ApproveRequest;
+    use skoci_control::api::approval::handle_approve;
+    use skoci_control::db::ApprovalRecord;
+    use skoci_control::http::AuthSubject;
+
+    let (state, _temp) = setup_test_state(10).await;
+    state.db.ensure_app("appr-rb-app").unwrap();
+
+    let appr_id = "appr_rollback_test_1";
+    state.db.insert_approval(&ApprovalRecord {
+        id: appr_id.to_string(),
+        app: "appr-rb-app".to_string(),
+        action: "rollback".to_string(),
+        detail: "Rollback version v1 to production".to_string(),
+        reason: "Agent requested".to_string(),
+        status: "pending".to_string(),
+        requested_by: "agent-1".to_string(),
+        decided_by: None,
+        payload_json: Some(json!({ "version": "v1", "env": "production" }).to_string()),
+        created_at: chrono::Utc::now(),
+    }).unwrap();
+
+    let approve_req = ApproveRequest {
+        request_id: appr_id.to_string(),
+        note: Some("Approved by lead".to_string()),
+    };
+
+    let resp = handle_approve(
+        State(state.clone()),
+        AuthSubject(skoci_control::auth::Subject::Admin),
+        Json(approve_req),
+    ).await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Approval updated to "approved"
+    let approval = state.db.get_approval(appr_id).unwrap().unwrap();
+    assert_eq!(approval.status, "approved");
+
+    // The job was registered in state.jobs (app is now locked by the running deployment)
+    assert!(state.jobs.get_running_deployment("appr-rb-app").is_some());
 }

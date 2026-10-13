@@ -159,12 +159,7 @@ pub async fn handle_delete_app(
 }
 
 pub async fn delete_app_resources(state: &AppState, app: &str) -> SkociResult<Vec<String>> {
-    if let Some(running) = state.jobs.get_running_deployment(app) {
-        return Err(skoci_api::error::SkociError::conflict(
-            format!("Deployment {running} for '{app}' is still running"),
-            format!("Wait until finished ('skoci watch {running}'), then delete again"),
-        ));
-    }
+    let _guard = state.jobs.acquire_delete_guard(app)?;
 
     // 1. Remove routes from proxy router
     let routes = state.db.list_routes_for_app(app)?;

@@ -169,6 +169,34 @@ async fn main() -> anyhow::Result<()> {
                 .transpose()
                 .map_err(|e| anyhow::anyhow!("Invalid SKOCI_REQUIRE_APPROVAL_ALWAYS: {e}"))?
                 .unwrap_or(false);
+            let retention_deployments_per_app = std::env::var("SKOCI_RETENTION_DEPLOYMENTS_PER_APP")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| parse_loose_u32(&v))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid SKOCI_RETENTION_DEPLOYMENTS_PER_APP: {e}"))?
+                .unwrap_or(skoci_control::config::DEFAULT_RETENTION_DEPLOYMENTS_PER_APP);
+            let retention_deployments_max_age_days = std::env::var("SKOCI_RETENTION_DEPLOYMENTS_MAX_AGE_DAYS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| parse_loose_u32(&v))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid SKOCI_RETENTION_DEPLOYMENTS_MAX_AGE_DAYS: {e}"))?
+                .unwrap_or(skoci_control::config::DEFAULT_RETENTION_DEPLOYMENTS_MAX_AGE_DAYS);
+            let retention_approvals_max_age_days = std::env::var("SKOCI_RETENTION_APPROVALS_MAX_AGE_DAYS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| parse_loose_u32(&v))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid SKOCI_RETENTION_APPROVALS_MAX_AGE_DAYS: {e}"))?
+                .unwrap_or(skoci_control::config::DEFAULT_RETENTION_APPROVALS_MAX_AGE_DAYS);
+            let retention_audit_logs_max_age_days = std::env::var("SKOCI_RETENTION_AUDIT_LOGS_MAX_AGE_DAYS")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| parse_loose_u32(&v))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("Invalid SKOCI_RETENTION_AUDIT_LOGS_MAX_AGE_DAYS: {e}"))?
+                .unwrap_or(skoci_control::config::DEFAULT_RETENTION_AUDIT_LOGS_MAX_AGE_DAYS);
             let base_domain = run.base_domain.filter(|d| !d.trim().is_empty());
             let api_domain = run
                 .api_domain
@@ -193,6 +221,10 @@ async fn main() -> anyhow::Result<()> {
                 control_tls_bind: parse_control_tls_bind(&run.control_tls_bind)?,
                 allow_magic_dns_production: run.allow_magic_dns_production,
                 require_approval_always,
+                retention_deployments_per_app,
+                retention_deployments_max_age_days,
+                retention_approvals_max_age_days,
+                retention_audit_logs_max_age_days,
             };
             skoci_control::server::run_server(cfg).await?;
         }
@@ -292,6 +324,13 @@ fn parse_loose_bool(raw: &str) -> Result<bool, String> {
     }
 }
 
+fn parse_loose_u32(raw: &str) -> Result<u32, String> {
+    let trimmed = raw.trim();
+    trimmed
+        .parse::<u32>()
+        .map_err(|e| format!("invalid unsigned integer '{raw}': {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +356,15 @@ mod tests {
                 "error message must name accepted values: {err_msg}"
             );
         }
+    }
+
+    #[test]
+    fn test_parse_loose_u32() {
+        assert_eq!(parse_loose_u32("30"), Ok(30));
+        assert_eq!(parse_loose_u32("  90  "), Ok(90));
+        assert_eq!(parse_loose_u32("0"), Ok(0));
+        assert!(parse_loose_u32("-5").is_err());
+        assert!(parse_loose_u32("abc").is_err());
+        assert!(parse_loose_u32("").is_err());
     }
 }

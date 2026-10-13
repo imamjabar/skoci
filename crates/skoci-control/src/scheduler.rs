@@ -115,13 +115,58 @@ fn parse_field(raw: &str, min: u32, max: u32) -> SkociResult<HashSet<u32>> {
     Ok(set)
 }
 
+pub async fn run_retention_maintenance(state: &AppState) {
+    let policy = crate::db::RetentionPolicy {
+        deployments_keep_per_app: state.config.retention_deployments_per_app as usize,
+        deployments_max_age_days: Some(state.config.retention_deployments_max_age_days),
+        approvals_max_age_days: state.config.retention_approvals_max_age_days,
+        audit_logs_max_age_days: state.config.retention_audit_logs_max_age_days,
+    };
+
+    match state.db.prune_retention(&policy) {
+        Ok(report) => {
+            if report.pruned_deployments > 0
+                || report.pruned_approvals > 0
+                || report.pruned_audit_logs > 0
+            {
+                tracing::info!(
+                    deployments = report.pruned_deployments,
+                    approvals = report.pruned_approvals,
+                    audit_logs = report.pruned_audit_logs,
+                    "Database retention pruning completed"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e.message, "Database retention pruning failed");
+        }
+    }
+
+    // Safe buildx builder cache prune (keep 5 GB of build cache)
+    // Does not touch active tagged images or running containers.
+    if let Err(e) = state.docker.prune_builder_cache(Some(5 * 1024 * 1024 * 1024)).await {
+        tracing::debug!(error = %e.message, "Builder cache prune skipped or failed");
+    }
+}
+
 pub async fn start_backup_scheduler(state: AppState) {
     tracing::info!("Backup scheduler active");
     let mut last_minute: Option<u32> = None;
+    let mut last_retention_hour: Option<u32> = None;
 
     loop {
         let now = Utc::now();
         let current_minute = now.minute();
+        let current_hour = now.hour();
+
+        // Run retention maintenance on startup, then hourly
+        if last_retention_hour != Some(current_hour) {
+            last_retention_hour = Some(current_hour);
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                run_retention_maintenance(&state_clone).await;
+            });
+        }
 
         // Only run once per minute
         if last_minute != Some(current_minute) {
@@ -174,5 +219,17 @@ pub async fn start_backup_scheduler(state: AppState) {
         }
 
         sleep(Duration::from_secs(10)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cron_expr_parse_and_is_due() {
+        let cron = CronExpr::parse("0 * * * *").unwrap();
+        assert!(cron.minutes.contains(&0));
+        assert!(!cron.minutes.contains(&1));
     }
 }

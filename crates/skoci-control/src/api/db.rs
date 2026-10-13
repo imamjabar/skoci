@@ -139,6 +139,14 @@ pub async fn handle_db_restore(
         .await
     {
         Ok(resp) => {
+            tracing::info!(
+                app = %body.app,
+                service = %body.service,
+                backup_id = %body.backup_id,
+                "Database restore succeeded for {}/{}",
+                body.app,
+                body.service
+            );
             let _ = state.db.record_audit(
                 &subject.identifier(),
                 "admin",
@@ -148,6 +156,18 @@ pub async fn handle_db_restore(
             );
             api_reply(Ok(resp))
         }
-        Err(e) => api_reply::<()>(Err(e)),
+        Err(e) => {
+            tracing::error!(
+                app = %body.app,
+                service = %body.service,
+                backup_id = %body.backup_id,
+                error = %e.message,
+                fix = %e.fix,
+                "Database restore failed for {}/{}",
+                body.app,
+                body.service
+            );
+            api_reply::<()>(Err(e))
+        }
     }
 }

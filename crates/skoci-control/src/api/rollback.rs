@@ -4,7 +4,8 @@ use axum::Json;
 use skoci_api::error::SkociError;
 use skoci_api::requests::RollbackRequest;
 use skoci_api::responses::DeployAccepted;
-
+use crate::api::promote::rollback_requires_approval;
+use crate::db::ApprovalRecord;
 use crate::deploy::{run_deploy_pipeline, DeployJobOptions, JobKind};
 use crate::http::{api_accepted, api_reply, AuthSubject};
 use crate::state::AppState;
@@ -54,6 +55,52 @@ pub async fn handle_rollback(
             prev_dep.version
         }
     };
+
+    // Check if rollback requires approval
+    let needs_approval = match rollback_requires_approval(
+        &state,
+        &subject,
+        &body.app,
+        &body.env,
+        &target_version,
+    ) {
+        Ok(v) => v,
+        Err(e) => return api_reply::<()>(Err(e)),
+    };
+
+    if needs_approval {
+        let approval_id = format!("appr_{}", uuid::Uuid::new_v4().simple());
+        let rec = ApprovalRecord {
+            id: approval_id.clone(),
+            app: body.app.clone(),
+            action: "rollback".to_string(),
+            detail: format!("Rollback version {target_version} to {}", body.env),
+            reason: format!("Rollback to version {target_version}"),
+            status: "pending".to_string(),
+            requested_by: subject.identifier(),
+            decided_by: None,
+            payload_json: serde_json::to_string(&serde_json::json!({
+                "version": target_version,
+                "env": body.env,
+            }))
+            .ok(),
+            created_at: chrono::Utc::now(),
+        };
+
+        if let Err(e) = state.db.insert_approval(&rec) {
+            return api_reply::<()>(Err(e));
+        }
+
+        let _ = state.db.record_audit(
+            &subject.identifier(),
+            "agent",
+            "rollback_request",
+            &format!("{}/{}", body.app, body.env),
+            &format!("Approval request {approval_id} created for version {target_version}"),
+        );
+
+        return api_reply::<()>(Err(SkociError::approval_required(&approval_id, "rollback")));
+    }
 
     let image_tag = format!("skoci/{}:{}", body.app, target_version);
     match state.docker.image_exists(&image_tag).await {

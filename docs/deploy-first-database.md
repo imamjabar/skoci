@@ -100,3 +100,13 @@ By default on Skoci servers, **database restoration by an agent always requires 
    sudo skoci approve req_restore_9876
    ```
 4. Skoci atomically restores the data archive into the database container.
+
+### Survivable Restores & Safety Snapshots
+To ensure database restores are survivable and never cause unrecoverable data loss:
+* **Automatic Pre-Restore Safety Snapshot:** Before modifying or overwriting any target database, Skoci automatically takes a safety snapshot (`<service>-pre-restore-<timestamp>`).
+* **Single-Transaction Postgres Restore:** PostgreSQL restores execute within a single transaction (`--single-transaction`), rolling back cleanly if any error occurs during restoration.
+* **Safety Snapshot in Failure Remediation:** If a restore fails, the error's `fix` field explicitly provides the exact command and safety snapshot ID to recover:
+  ```bash
+  skoci db restore --app <app> --service <service> --backup <safety_id>
+  ```
+* **Retention Protection:** Pre-restore safety snapshots are permanently exempt from scheduled retention pruning.

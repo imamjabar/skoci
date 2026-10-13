@@ -135,17 +135,20 @@ skoci deploy --env preview
 5. **Start:** The new container starts with secrets injected via a secure temporary env-file.
 6. **Health Check:** Reverse proxy polls `run.health` until the container returns HTTP 2xx/3xx.
 7. **Cutover:** Reverse proxy atomically swaps routing targets without downtime.
-8. **Smoke Test:** HTTP GET check (`GET /`) verifies the new container is answering, then polls the public URL until ACME TLS certificate issuance finishes (~7–10 s for a brand-new hostname) so a healthy first deploy completes as `live` without `unready_urls`.
-9. **Cleanup:** Old container is stopped and removed after a 5-second drain window.
+8. **Smoke Test:** HTTP GET check (`GET /`) verifies the new container is answering, then polls the public URL until ACME TLS certificate issuance finishes (~7–10 s for a brand-new hostname) so a healthy first deploy completes as `live` without `unready_urls`. If the smoke test fails on an app with an existing route, Skoci automatically reverts traffic to the previous container (router and SQLite), removes the broken new container, and keeps the previous version serving.
+9. **Cleanup & Failure Guards:** Old container is stopped and removed after a 5-second drain window. Built-in cleanup guards ensure that unusable containers (host-port lookup failure), failed health checks (container and its unreferenced image), and cutover failures are cleaned up immediately without leaving orphaned resources; image pruning runs after both successful and failed deploys.
 
 ### Deployment Result States:
 Every deployment finishes in one of three distinct result states:
 
 * **`live` (Success):** The container started, passed the internal health probe (`run.health`), and the reverse proxy smoke test (`GET /`) answered 2xx, 3xx, or 401. Your application is active and serving traffic.
 * **`degraded` (Warning):** The container started and passed internal health checks, but the smoke test (`GET /`) did **not** return 2xx/3xx/401 (e.g. returned HTTP 502, 500, or connection refused on the root path).
-  - **What It Means:** The application container is running, but end-user requests to `/` are failing.
+  - **What It Means:** End-user requests to `/` are failing. If the app had an existing live route, Skoci automatically reverts routing to the previous container, removes the broken container, and keeps the previous version serving without downtime while completing with status `degraded`. If the app had no previous route, the container stays live as `degraded` so the operator can inspect it.
   - **What to Do:** Inspect application logs immediately with `skoci logs --tail 100`. Verify that your web application binds to `0.0.0.0` (not `127.0.0.1`), that required environment variables are set, and that the root route (`/`) is properly handled.
 * **`failed` (Error):** Image build failed, container exited unexpectedly during startup, or readiness probes timed out. The previous container (if any) remains live.
+
+### Per-App Concurrency Lock
+Deploy, promote, rollback, and delete operations on the same app are mutually exclusive. A concurrent operation returns error code `conflict` (exit code 1 or HTTP 409) naming the running deployment or deletion ID.
 
 Your preview application is immediately accessible at your configured preview domain (e.g. `https://toko-preview.sumopod.id`).
 
@@ -248,3 +251,11 @@ skoci rollback --env production --to v20261011031108
 ```
 
 Skoci relaunches the previous image without rebuilding, waits for health checks to pass, and swaps traffic. The current container keeps serving traffic until the rollback container is confirmed healthy.
+
+### Rollback Approval Policy
+* **Admin / Master Token:** Rollback proceeds immediately without requiring approval.
+* **Scoped Agent Token (`sk_agent_*`):**
+  - **Last Known-Good Version:** Rolling production back to the version that was live immediately before proceeds without approval.
+  - **Older Historical Versions:** Rolling back to any older version files an approval request (`appr_…`, exit code 2, action `rollback`) that a human operator approves via the web dashboard or on the server with `sudo skoci approve <request_id>`.
+  - **Strict Approvals (`--strict-approvals`):** If the server was provisioned with `--strict-approvals` or `SKOCI_REQUIRE_APPROVAL_ALWAYS=true`, every production rollback requires human approval.
+  - **Preview Rollbacks:** Always ungated.

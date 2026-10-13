@@ -76,14 +76,16 @@ All tools are derived from a single API source of truth (`skoci-api`), guarantee
 
 Certain actions are **deliberately absent from the MCP tool definition** to preserve human-in-the-loop security:
 
-1. **Approving a promotion or database restore (`skoci approve` / `/api/approve`):** Agents can request promotion to production (`skoci_promote`) or a database restoration (`skoci_db_restore`).
-   - **Master Token:** Promotes directly to production without requiring approval.
-   - **Scoped Agent Token (`sk_agent_*`):** An application's **first** promotion to production succeeds immediately by default because no live production traffic exists yet. Every **subsequent** promotion (and every database restore or app deletion) produces an approval request with status `pending_approval` and exits with code 2. A server configured with `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` (`skoci server setup --strict-approvals`) gates the first promotion too.
+1. **Approving a promotion, historical rollback, or database restore (`skoci approve` / `/api/approve`):** Agents can request promotion to production (`skoci_promote`), database restoration (`skoci_db_restore`), or rollbacks (`skoci rollback`).
+   - **Master Token:** Promotes or rolls back directly on the server without requiring approval.
+   - **Scoped Agent Token (`sk_agent_*`):**
+     - **Promotions:** An application's **first** promotion to production succeeds immediately by default because no live production traffic exists yet. Every **subsequent** promotion (and every database restore or app deletion) produces an approval request with status `pending_approval` and exits with code 2. A server configured with `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` (`skoci server setup --strict-approvals`) gates the first promotion too.
+     - **Rollbacks:** Rolling production back to the immediately preceding version (last known-good) is allowed without approval. Rolling back to any older historical version files an approval request (`appr_…`, exit code 2, action `rollback`). When `--strict-approvals` is active, every production rollback requires human approval. Preview rollbacks are never gated.
    - **No Auto-Approve:** The agent **CANNOT** approve its own request, and there is no auto-approve flag.
    - **MCP Tool Restrictions:** MCP intentionally exposes only the listing tool (`skoci_approvals`), not approve or reject tools.
    - **Human Escalation:** When exit code 2 is returned, the agent must extract and surface `Request ID: appr_…` to the human operator, who approves via the Web Dashboard at `https://<server-ip>:8443` or on the server via `sudo skoci approve <request_id>` (server-side admin commands require `sudo` because `/etc/skoci/skoci.env` is `0600 root:root`).
    - If an agent attempts to invoke `/api/approve` with a scoped token, the system rejects it with an `unauthorized` error.
-2. **Upgrading the server (`skoci server upgrade`):** Upgrading the server binary and restarting the background systemd service are host-level administrative operations. They affect all running containers, the reverse proxy, and control plane connectivity. Upgrades must be initiated deliberately by the human operator, not triggered automatically by an AI agent during an application deployment session.
+2. **Upgrading the server:** There is no `skoci server upgrade` CLI command. Upgrades of the server binary and background systemd service are host-level operations performed deliberately by a human operator re-running the installer on the server (`curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | bash -s --` with any original server flags, or `--version <tag>`). Because Skoci enforces a minor-version lock between CLI and daemon (a 0.6.x CLI refuses to communicate with a 0.5.x server), the operator must upgrade the server first, then the client. Upgrades must not be triggered automatically by an AI agent during an application deployment session.
 ---
 
 ## 4. Standard Exit Codes & Deployment Result States
@@ -94,15 +96,20 @@ Skoci returns consistent exit codes for agent automation:
 | :---: | :--- | :--- | :--- |
 | `0` | `Success` | Command completed successfully (e.g. `skoci deploy` -> `live`, `skoci validate` -> valid). | Proceed to next workflow step. |
 | `1` | `General Error` | Build failure, health check timeout, or invalid config (`skoci validate` / `skoci init`). | Inspect the `fix` field in the JSON error and remediate. |
-| `2` | `Approval Pending` | Action requires human approval (subsequent `skoci promote` with scoped token, or first under `--strict-approvals`, `db restore`, `app delete`). | Extract `Request ID: appr_…` and surface to human operator for `sudo skoci approve <id>`. |
+| `2` | `Approval Pending` | Action requires human approval (subsequent `skoci promote` with scoped token, or first under `--strict-approvals`; historical production `skoci rollback` older than last known-good; `db restore`; `app delete`). | Extract `Request ID: appr_…` and surface to human operator for `sudo skoci approve <id>`. |
 | `3` | `Auth Error` | `unauthorized`, `scope_violation`, or `rate_limited`. | Check token, pin, and application scope permissions. |
 
 ### Handling `degraded` Deployment Results
 When `skoci deploy --json` completes, inspect `data.status`:
 * `live`: Container started, health checks passed, and smoke test (`GET /`) returned 2xx/3xx/401. Deployment is fully healthy.
 * `degraded`: Container started and passed health checks, but smoke test (`GET /`) failed (e.g. 502, 500, or connection refused).
+  - **Automatic Revert Behavior:** When a smoke test fails on an app that has an existing live route, Skoci automatically reverts the route to the previous container in both proxy router and SQLite database, stops and removes the broken container, and leaves the previous version serving traffic. The deployment status completes as `degraded` pointing at `skoci logs <app>`. If the app had no previous route, the new container stays live as `degraded` so the operator can inspect it without taking the app offline.
+  - **Pipeline Cleanup Guards:** Unusable containers (host-port lookup failure), failed health checks (container and its unreferenced image), and cutover failures are cleaned up immediately; image pruning also runs after failed deploys.
   - **Agent Action:** **Treat `degraded` as a failure to investigate.** Do NOT report success to the user and do NOT attempt to promote a degraded version to production. Run `skoci logs --tail 100 --json` to diagnose the error, fix the root route or listening address, and redeploy.
 * `failed`: Compilation or startup failure. Inspect `error.fix` and resolve.
+
+### Per-App Concurrency Lock
+Deploy, promote, rollback, and delete operations on the same app are mutually exclusive. A concurrent operation returns error code `conflict` (exit code 1 or HTTP 409) naming the running deployment or deletion ID (`Wait for the current deployment to finish before starting a new one`).
 ---
 
 ## 5. Error Handling: `{code, message, fix}`
@@ -133,6 +140,6 @@ The agent reads the `fix` field and executes the suggested fix directly without 
 4. **Understand Manifest App Naming:** `skoci init` determines default application names from `package.json` (`@scope/` stripped), `Cargo.toml`, or `pyproject.toml` before falling back to directory names, validating format upfront.
 5. **Production Requires Real Domains:** Production deployments reject magic DNS hostnames (`*.sslip.io`). Verify domain DNS before deploying with `skoci domain check <host>`. (Operators can override this for demos via `skoci server setup --allow-magic-dns-production` or `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true`).
 6. **Treat `degraded` as an Issue:** When a deploy reports `status: "degraded"`, do not promote. Read `skoci logs --tail 100 --json`, remediate the failure, and deploy again.
-7. **Human Gate & Approval Protocol:** Never attempt to approve promotions. With a scoped agent token, an app's first promotion goes live immediately by default (`--strict-approvals` gates the first one too), while subsequent promotions exit 2 with `pending_approval`; extract `Request ID: appr_…` and ask the human operator to approve via `sudo skoci approve <id>` on the server or in the web dashboard.
-8. **Never print tokens:** Do not output secret tokens into chat context or repository files.
+7. **Human Gate & Approval Protocol:** Never attempt to approve promotions or rollbacks. With a scoped agent token, an app's first promotion goes live immediately by default (`--strict-approvals` gates the first one too), while subsequent promotions and historical rollbacks (older than last known-good) exit 2 with `pending_approval`; extract `Request ID: appr_…` and ask the human operator to approve via `sudo skoci approve <id>` on the server or in the web dashboard.
+8. **Never print tokens & Rely on Log Redaction:** Do not output secret tokens into chat context or repository files. Application and build logs automatically mask registered secrets, Skoci tokens (`sk_agent_…`, `sk_master_…`), and `Authorization: Bearer …` headers as `[REDACTED]`.
 9. **Follow `fix` guidance:** When an error occurs, inspect and execute the remedy in `error.fix`.

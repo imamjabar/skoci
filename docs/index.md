@@ -13,12 +13,12 @@
    The CLI and MCP (Model Context Protocol) share a single API source of truth (`skoci-api`) with 100% parity. Every output supports structured JSON (`--json`), errors include actionable remediation `{code, message, fix}`, and built-in skills are provided for various harnesses (OMP, Claude Code, Pi, Codex, OpenClaw).
 
 3. **Dashboard for Validation, Not Configuration:**
-   All application configurations live in your Git repository (`.skoci/skoci.yaml`; a legacy root `skoci.yaml` is migrated automatically). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions, and trigger 1-click rollbacks.
+   All application configurations live in your Git repository (`.skoci/skoci.yaml`; a legacy root `skoci.yaml` is migrated automatically). The web dashboard acts as human Mission Control: inspect container health, verify deployment evidence (`skoci.evidence.json`), approve production promotions and historical rollbacks, and trigger 1-click rollbacks.
 
 4. **Secure by Design:**
    - **Zero Shell Concatenation:** Docker commands use structured argument vectors (`tokio::process::Command`), immune to prompt injection.
    - **Zero SSH for Agents:** Agents communicate exclusively over HTTPS REST API using scoped per-app tokens (`sk_agent_<app>_*`).
-   - **Secret Encryption:** Secrets are encrypted at rest on the node (ChaCha20-Poly1305), masked in logs, and never returned to LLM context.
+   - **Secret Encryption:** Secrets and accessory database credentials are encrypted at rest on the node (ChaCha20-Poly1305 with protected `/var/lib/skoci/node.key`), masked in logs (along with Skoci tokens and Authorization headers), and never returned to LLM context.
    - **Server-Side Build:** Your local machine does not need Docker; container compilation runs entirely on the remote server.
 
 ---

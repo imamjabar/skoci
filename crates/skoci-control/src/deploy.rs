@@ -78,7 +78,7 @@ pub async fn run_deploy_pipeline(
     }
 
     match res {
-        Ok((_deploy_response, _evidence)) => {
+        Ok((deploy_response, _evidence)) => {
             let duration_ms = start_time.elapsed().as_millis() as u64;
             tracing::info!(
                 deployment_id = %opts.deployment_id,
@@ -87,12 +87,17 @@ pub async fn run_deploy_pipeline(
             );
 
             // Record audit
+            let msg = if deploy_response.status == "degraded" {
+                format!("Version {} deployed (degraded)", opts.version)
+            } else {
+                format!("Version {} successfully deployed", opts.version)
+            };
             let _ = state.db.record_audit(
                 &opts.actor,
                 actor_type(&opts.actor),
                 opts.kind.as_str(),
                 &format!("{}/{}", opts.app, opts.env),
-                &format!("Version {} successfully deployed", opts.version),
+                &msg,
             );
         }
         Err(err) => {
@@ -101,6 +106,9 @@ pub async fn run_deploy_pipeline(
                 error = %err.message,
                 "Deployment failed"
             );
+
+            // Prune old images even after a failed deploy
+            prune_old_images(&state, &opts.app).await;
 
             buffer.emit(
                 DeployStage::Done,
@@ -590,13 +598,17 @@ async fn execute_pipeline(
 
     run_res?;
 
-    let host_port = state
-        .docker
-        .host_port(&container_name, cfg.run.port)
-        .await
-        .map_err(|e| {
-            SkociError::docker_error(format!("Failed to read container port: {e}"))
-        })?;
+    let host_port = match state.docker.host_port(&container_name, cfg.run.port).await {
+        Ok(port) => port,
+        Err(e) => {
+            let _ = state.docker.stop_container(&container_name, 5).await;
+            let _ = state.docker.remove_container(&container_name).await;
+            remove_image_if_unreferenced(state, &image_tag, &opts.version).await;
+            return Err(SkociError::docker_error(format!(
+                "Failed to read container port: {e}"
+            )));
+        }
+    };
 
     rec.container = container_name.clone();
     rec.host_port = Some(host_port);
@@ -624,9 +636,7 @@ async fn execute_pipeline(
         None,
     );
 
-    let target_addr: SocketAddr = format!("127.0.0.1:{host_port}")
-        .parse()
-        .map_err(|e| SkociError::internal(format!("Failed to parse target address: {e}"), "Try again"))?;
+    let target_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), host_port);
 
     let health_checker = HealthChecker::new(Duration::from_secs(5));
     let health_res = health_checker
@@ -662,6 +672,7 @@ async fn execute_pipeline(
         let _ = state.docker.stop_container(&container_name, 5).await;
         let _ = state.docker.remove_container(&container_name).await;
 
+        remove_image_if_unreferenced(state, &image_tag, &opts.version).await;
         return Err(health_err);
     }
 
@@ -683,6 +694,7 @@ async fn execute_pipeline(
         None,
         None,
     );
+    let prev_route_rec = state.db.get_route(&opts.app, &opts.env).ok().flatten();
 
     let hosts = compute_hosts(&state.base_domain(), &cfg, &opts.env);
     let route = Route {
@@ -693,7 +705,15 @@ async fn execute_pipeline(
         version: opts.version.clone(),
     };
 
-    let prev_route = state.router.upsert_route(route).await?;
+    let prev_proxy_route = match state.router.upsert_route(route.clone()).await {
+        Ok(prev) => prev,
+        Err(err) => {
+            let _ = state.docker.stop_container(&container_name, 5).await;
+            let _ = state.docker.remove_container(&container_name).await;
+            remove_image_if_unreferenced(state, &image_tag, &opts.version).await;
+            return Err(err);
+        }
+    };
 
     let route_rec = RouteRecord {
         app: opts.app.clone(),
@@ -704,11 +724,22 @@ async fn execute_pipeline(
         hosts: hosts.clone(),
         deployed_at: Utc::now(),
     };
-    state.db.upsert_route(&route_rec)?;
+
+    if let Err(err) = state.db.upsert_route(&route_rec) {
+        if let Some(prev) = prev_proxy_route {
+            let _ = state.router.upsert_route(prev).await;
+        } else {
+            let _ = state.router.remove_route(&route.key()).await;
+        }
+        let _ = state.docker.stop_container(&container_name, 5).await;
+        let _ = state.docker.remove_container(&container_name).await;
+        remove_image_if_unreferenced(state, &image_tag, &opts.version).await;
+        return Err(err);
+    }
 
     // Set default app if none set yet
-    if state.db.get_setting("default_app")?.is_none() {
-        state.db.set_setting("default_app", &opts.app)?;
+    if state.db.get_setting("default_app").ok().flatten().is_none() {
+        let _ = state.db.set_setting("default_app", &opts.app);
         state.router.set_default_app(Some(opts.app.clone())).await;
     }
 
@@ -733,27 +764,71 @@ async fn execute_pipeline(
 
     let smoke_status = health_checker.probe(target_addr, "/").await.ok();
     let smoke_passed = smoke_status.map(is_smoke_status_passed).unwrap_or(false);
+    let smoke_revert_target = decide_smoke_revert(smoke_passed, prev_route_rec.as_ref());
 
-    match smoke_status {
-        Some(status) if smoke_passed => buffer.emit(
-            DeployStage::Smoke,
-            StageStatus::Ok,
-            format!("Smoke test passed (GET / → {status})"),
-            95,
-            None,
-            None,
-        ),
-        other => buffer.emit(
-            DeployStage::Smoke,
-            StageStatus::Failed,
-            format!(
-                "Smoke test failed (GET / → {}). Version remains live because health check passed; check 'skoci logs'",
-                other.map(|s| s.to_string()).unwrap_or_else(|| "no response".to_string())
-            ),
-            95,
-            None,
-            None,
-        ),
+    match (smoke_passed, smoke_revert_target) {
+        (true, _) => {
+            buffer.emit(
+                DeployStage::Smoke,
+                StageStatus::Ok,
+                format!(
+                    "Smoke test passed (GET / → {})",
+                    smoke_status.unwrap_or(200)
+                ),
+                95,
+                None,
+                None,
+            );
+        }
+        (false, Some(prev)) => {
+            buffer.emit(
+                DeployStage::Smoke,
+                StageStatus::Failed,
+                format!(
+                    "Smoke test failed (GET / → {}). Reverting route to version {}: previous version is still serving. Run 'skoci logs {}' to view logs",
+                    smoke_status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "no response".to_string()),
+                    prev.version,
+                    opts.app,
+                ),
+                95,
+                None,
+                None,
+            );
+
+            // Revert route in both router and db
+            let prev_target = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), prev.host_port);
+            let prev_proxy_route = Route {
+                app: prev.app.clone(),
+                env: prev.env.clone(),
+                hosts: prev.hosts.clone(),
+                target: prev_target,
+                version: prev.version.clone(),
+            };
+            let _ = state.router.upsert_route(prev_proxy_route).await;
+            let _ = state.db.upsert_route(prev);
+
+            // Stop and remove the NEW container; keep previous container running and untouched
+            let _ = state.docker.stop_container(&container_name, 5).await;
+            let _ = state.docker.remove_container(&container_name).await;
+        }
+        (false, None) => {
+            buffer.emit(
+                DeployStage::Smoke,
+                StageStatus::Failed,
+                format!(
+                    "Smoke test failed (GET / → {}). Version remains live because health check passed and no previous version exists; check 'skoci logs {}'",
+                    smoke_status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "no response".to_string()),
+                    opts.app,
+                ),
+                95,
+                None,
+                None,
+            );
+        }
     }
 
     let urls = compute_urls(state, &opts.app, &opts.env, &hosts);
@@ -802,26 +877,40 @@ async fn execute_pipeline(
         None,
     );
 
-    if let Some(prev) = &prev_route {
-        let prev_c = format!("skoci-{}-{}-{}", prev.app, prev.env, prev.version);
-        if prev_c != container_name {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            let _ = state.docker.stop_container(&prev_c, 10).await;
-            let _ = state.docker.remove_container(&prev_c).await;
+    if let Some(prev) = smoke_revert_target {
+        buffer.emit(
+            DeployStage::Cleanup,
+            StageStatus::Ok,
+            format!(
+                "Previous container '{}' preserved; failed new container '{}' removed",
+                prev.container, container_name
+            ),
+            99,
+            None,
+            None,
+        );
+    } else {
+        if let Some(prev) = &prev_route_rec {
+            let prev_c = format!("skoci-{}-{}-{}", prev.app, prev.env, prev.version);
+            if prev_c != container_name {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let _ = state.docker.stop_container(&prev_c, 10).await;
+                let _ = state.docker.remove_container(&prev_c).await;
+            }
         }
+
+        buffer.emit(
+            DeployStage::Cleanup,
+            StageStatus::Ok,
+            "Container cleanup completed",
+            99,
+            None,
+            None,
+        );
     }
 
     // Prune images: keep newest 3 per app, never delete images used by live routes
     prune_old_images(state, &opts.app).await;
-
-    buffer.emit(
-        DeployStage::Cleanup,
-        StageStatus::Ok,
-        "Container cleanup completed",
-        99,
-        None,
-        None,
-    );
 
     // Stage 9: Done (100)
     if urls.is_empty() {
@@ -838,7 +927,12 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
             None,
         );
     }
-    let previous_version = prev_route.as_ref().map(|r| r.version.clone());
+    let previous_version = prev_route_rec.as_ref().map(|r| r.version.clone());
+    let live_version = if let Some(prev) = smoke_revert_target {
+        prev.version.clone()
+    } else {
+        opts.version.clone()
+    };
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -857,7 +951,7 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
         smoke_test_status: smoke_status,
         smoke_test_passed: smoke_passed,
         previous_version,
-        live_version: opts.version.clone(),
+        live_version,
         triggered_by: opts.actor.clone(),
         approved_by: None,
         duration_ms,
@@ -879,10 +973,15 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
     rec.status = status_str.to_string();
     rec.finished_at = Some(Utc::now());
     rec.evidence_json = serde_json::to_string(&evidence).ok();
-    state.db.update_deployment(&rec)?;
+    let _ = state.db.update_deployment(&rec);
 
     let done_msg = if smoke_passed {
         format!("Deployment {} live!", opts.version)
+    } else if let Some(prev) = smoke_revert_target {
+        format!(
+            "Deployment {} degraded: smoke test failed; previous version {} is still serving. Run 'skoci logs {}' to view logs.",
+            opts.version, prev.version, opts.app
+        )
     } else {
         format!("Deployment {} live (degraded: smoke test failed)!", opts.version)
     };
@@ -989,6 +1088,70 @@ fn serves_raw_ip(state: &AppState, app: &str, env: &str) -> bool {
             .is_none()
 }
 
+/// A failed smoke test reverts to the previous route; with no previous route the new version stays
+/// live, because reverting to nothing would take the app offline.
+pub fn decide_smoke_revert(
+    smoke_passed: bool,
+    prev_route: Option<&RouteRecord>,
+) -> Option<&RouteRecord> {
+    if smoke_passed {
+        return None;
+    }
+    prev_route
+}
+
+pub fn prunable_versions(
+    deployments: &[DeploymentRecord],
+    live_versions: &HashSet<String>,
+) -> Vec<String> {
+    let mut versions_by_age = Vec::new();
+    for d in deployments {
+        if !versions_by_age.contains(&d.version) {
+            versions_by_age.push(d.version.clone());
+        }
+    }
+
+    if versions_by_age.len() > 3 {
+        versions_by_age[3..]
+            .iter()
+            .filter(|ver| !live_versions.contains(*ver))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn decide_prunable_images(
+    app: &str,
+    deployments: &[DeploymentRecord],
+    live_versions: &HashSet<String>,
+) -> Vec<String> {
+    prunable_versions(deployments, live_versions)
+        .into_iter()
+        .map(|ver| format!("skoci/{app}:{ver}"))
+        .collect()
+}
+
+pub fn prunable_images_for_app(
+    app: &str,
+    deployments: &[DeploymentRecord],
+    live_versions: &HashSet<String>,
+) -> Vec<String> {
+    decide_prunable_images(app, deployments, live_versions)
+}
+
+async fn remove_image_if_unreferenced(state: &AppState, image_tag: &str, version: &str) {
+    let is_referenced = state
+        .db
+        .list_routes()
+        .map(|routes| routes.iter().any(|r| r.version == version))
+        .unwrap_or(false);
+    if !is_referenced {
+        let _ = state.docker.remove_image(image_tag).await;
+    }
+}
+
 async fn prune_old_images(state: &AppState, app: &str) {
     let routes = match state.db.list_routes() {
         Ok(r) => r,
@@ -1001,21 +1164,9 @@ async fn prune_old_images(state: &AppState, app: &str) {
         Err(_) => return,
     };
 
-    let mut versions_by_age = Vec::new();
-    for d in deps {
-        if !versions_by_age.contains(&d.version) {
-            versions_by_age.push(d.version);
-        }
-    }
-
-    // Keep top 3 newest
-    if versions_by_age.len() > 3 {
-        for old_ver in &versions_by_age[3..] {
-            if !live_versions.contains(old_ver) {
-                let img = format!("skoci/{app}:{old_ver}");
-                let _ = state.docker.remove_image(&img).await;
-            }
-        }
+    let images_to_prune = decide_prunable_images(app, &deps, &live_versions);
+    for img in images_to_prune {
+        let _ = state.docker.remove_image(&img).await;
     }
 }
 
@@ -1384,6 +1535,107 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn dummy_deployment(app: &str, version: &str) -> DeploymentRecord {
+        DeploymentRecord {
+            id: format!("dep-{version}"),
+            app: app.to_string(),
+            env: "production".to_string(),
+            version: version.to_string(),
+            kind: "deploy".to_string(),
+            status: "live".to_string(),
+            commit_hash: "abc1234".to_string(),
+            image: format!("skoci/{app}:{version}"),
+            container: format!("skoci-{app}-production-{version}"),
+            host_port: Some(8080),
+            triggered_by: "human".to_string(),
+            created_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            error_json: None,
+            evidence_json: None,
+        }
+    }
+
+    fn dummy_route(app: &str, version: &str) -> RouteRecord {
+        RouteRecord {
+            app: app.to_string(),
+            env: "production".to_string(),
+            container: format!("skoci-{app}-production-{version}"),
+            host_port: 8080,
+            version: version.to_string(),
+            hosts: vec![format!("{app}.example.com")],
+            deployed_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_smoke_revert_targets_previous_route_when_smoke_failed() {
+        let prev = dummy_route("myapp", "1.0.0");
+        assert_eq!(
+            decide_smoke_revert(false, Some(&prev)).map(|r| r.version.as_str()),
+            Some("1.0.0")
+        );
+    }
+
+    #[test]
+    fn test_smoke_revert_keeps_new_when_smoke_passed() {
+        let prev = dummy_route("myapp", "1.0.0");
+        assert!(decide_smoke_revert(true, Some(&prev)).is_none());
+        assert!(decide_smoke_revert(true, None).is_none());
+    }
+
+    #[test]
+    fn test_smoke_revert_keeps_new_when_no_prev_route() {
+        // First deployment fails smoke test: do not revert to nothing (would take app offline)
+        assert!(decide_smoke_revert(false, None).is_none());
+    }
+
+    #[test]
+    fn test_prune_images_preserves_newest_three_even_if_not_live() {
+        let deps = vec![
+            dummy_deployment("myapp", "1.3.0"),
+            dummy_deployment("myapp", "1.2.0"),
+            dummy_deployment("myapp", "1.1.0"),
+        ];
+        let live = HashSet::new();
+        let prunable = decide_prunable_images("myapp", &deps, &live);
+        assert!(prunable.is_empty());
+    }
+
+    #[test]
+    fn test_prune_images_prunes_older_unrouted_versions() {
+        let deps = vec![
+            dummy_deployment("myapp", "1.5.0"),
+            dummy_deployment("myapp", "1.4.0"),
+            dummy_deployment("myapp", "1.3.0"),
+            dummy_deployment("myapp", "1.2.0"),
+            dummy_deployment("myapp", "1.1.0"),
+        ];
+        // 1.1.0 is still live in production route
+        let mut live = HashSet::new();
+        live.insert("1.1.0".to_string());
+
+        let prunable = decide_prunable_images("myapp", &deps, &live);
+        assert_eq!(prunable, vec!["skoci/myapp:1.2.0".to_string()]);
+
+        let prunable_vers = prunable_versions(&deps, &live);
+        assert_eq!(prunable_vers, vec!["1.2.0".to_string()]);
+    }
+
+    #[test]
+    fn test_prune_images_deduplicates_deployments() {
+        let deps = vec![
+            dummy_deployment("myapp", "1.4.0"),
+            dummy_deployment("myapp", "1.4.0"), // duplicate retry
+            dummy_deployment("myapp", "1.3.0"),
+            dummy_deployment("myapp", "1.2.0"),
+            dummy_deployment("myapp", "1.1.0"),
+        ];
+        let live = HashSet::new();
+        let prunable = decide_prunable_images("myapp", &deps, &live);
+        // Unique versions are 1.4.0, 1.3.0, 1.2.0, 1.1.0 -> top 3 kept: 1.4, 1.3, 1.2 -> 1.1 pruned
+        assert_eq!(prunable, vec!["skoci/myapp:1.1.0".to_string()]);
+    }
+
 
     #[test]
     fn test_smoke_classification_table() {

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use skoci_node::backup::BackupManager;
 use skoci_node::docker::DockerClient;
-use skoci_node::secret::SecretCipher;
+use skoci_node::secret::{decide_key_action, KeyAction, SecretCipher};
 use skoci_node::services::ServiceManager;
 use skoci_proxy::router::Route;
 use skoci_proxy::server::{start_proxy, AcmeSettings, ProxyConfig};
@@ -66,11 +66,62 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
         .context("Failed to initialize SQLite database")?;
 
     let key_path = data_dir.join("node.key");
-    let secret_cipher = Arc::new(
-        SecretCipher::load_or_create(&key_path)
-            .context("Failed to load or create node.key SecretCipher")?,
-    );
+    let db_path = data_dir.join("skoci.db");
 
+    let key_load_result = SecretCipher::load(&key_path);
+    let key_valid = key_load_result.is_ok();
+
+    let secrets_count: i64 = {
+        let conn = rusqlite::Connection::open(&db_path)
+            .context("Failed to open SQLite database for secret count check")?;
+        conn.query_row("SELECT COUNT(*) FROM secrets", [], |row| row.get(0))
+            .unwrap_or(0)
+    };
+    let has_secrets = secrets_count > 0;
+
+    let allow_reset = std::env::var("SKOCI_ALLOW_SECRET_KEY_RESET")
+        .ok()
+        .is_some_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            )
+        });
+
+    let action = decide_key_action(key_valid, has_secrets, allow_reset)
+        .map_err(|e| anyhow::anyhow!("{}: {}\nFix: {}", e.code, e.message, e.fix))?;
+
+    let secret_cipher = match action {
+        KeyAction::Load => Arc::new(key_load_result.expect("key is valid")),
+        KeyAction::CreateNew => {
+            let cipher = SecretCipher::create_and_persist(&key_path)
+                .context("Failed to create brand-new node.key")?;
+            tracing::info!(
+                path = %key_path.display(),
+                "Created brand-new encryption key at {}. Back up this file immediately: losing it permanently loses every encrypted secret and accessory-database password.",
+                key_path.display()
+            );
+            Arc::new(cipher)
+        }
+        KeyAction::RecreateAndWipe => {
+            {
+                let conn = rusqlite::Connection::open(&db_path)
+                    .context("Failed to open SQLite database to wipe unreadable secrets")?;
+                conn.execute("DELETE FROM secrets", [])
+                    .context("Failed to wipe unreadable secrets from database")?;
+            }
+            let cipher = SecretCipher::create_and_persist(&key_path)
+                .context("Failed to recreate node.key after operator reset")?;
+            tracing::warn!(
+                wiped_rows = secrets_count,
+                path = %key_path.display(),
+                "SKOCI_ALLOW_SECRET_KEY_RESET is set: recreated encryption key at {} and wiped {} unreadable secret row(s)",
+                key_path.display(),
+                secrets_count
+            );
+            Arc::new(cipher)
+        }
+    };
     let docker = DockerClient::new();
     let service_manager = ServiceManager::new(docker.clone());
     let backup_manager = Arc::new(BackupManager::new(&data_dir, docker.clone()));

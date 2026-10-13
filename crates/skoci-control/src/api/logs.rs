@@ -59,11 +59,7 @@ pub async fn handle_logs(
     let mut error_summary = Vec::new();
 
     for line in raw_lines {
-        let cleaned = if secret_values.is_empty() {
-            line
-        } else {
-            redact(&line, &secret_values)
-        };
+        let cleaned = redact(&line, &secret_values);
 
         let lower = cleaned.to_lowercase();
         if (lower.contains("error")

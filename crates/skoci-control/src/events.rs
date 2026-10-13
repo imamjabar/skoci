@@ -96,9 +96,69 @@ impl JobEventBuffer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AppLock {
+    pub id: String,
+    pub env: Option<String>,
+    pub is_delete: bool,
+}
+
+impl AppLock {
+    pub fn deployment(id: impl Into<String>, env: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            env: Some(env.into()),
+            is_delete: false,
+        }
+    }
+
+    pub fn deletion(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            env: None,
+            is_delete: true,
+        }
+    }
+
+    pub fn is_delete(&self) -> bool {
+        self.is_delete
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+pub struct AppLockGuard {
+    running_jobs: Arc<Mutex<HashMap<String, AppLock>>>,
+    app: String,
+    active: bool,
+}
+
+impl AppLockGuard {
+    pub fn app(&self) -> &str {
+        &self.app
+    }
+
+    pub fn release(mut self) {
+        self.active = false;
+        let mut running = self.running_jobs.lock();
+        running.remove(&self.app);
+    }
+}
+
+impl Drop for AppLockGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let mut running = self.running_jobs.lock();
+            running.remove(&self.app);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct JobRegistry {
-    running_jobs: Arc<Mutex<HashMap<(String, String), String>>>,
+    running_jobs: Arc<Mutex<HashMap<String, AppLock>>>,
     events: Arc<Mutex<HashMap<String, Arc<JobEventBuffer>>>>,
 }
 
@@ -123,16 +183,29 @@ impl JobRegistry {
         deployment_id: &str,
     ) -> SkociResult<Arc<JobEventBuffer>> {
         let mut running = self.running_jobs.lock();
-        let key = (app.to_string(), env.to_string());
 
-        if let Some(existing_id) = running.get(&key) {
-            return Err(SkociError::conflict(
-                format!("Deployment {existing_id} is already running for {app}/{env}"),
-                "Wait for the current deployment to finish before starting a new one",
-            ));
+        if let Some(existing) = running.get(app) {
+            let existing_id = &existing.id;
+            let msg = if existing.is_delete {
+                format!("App '{app}' is currently being deleted")
+            } else {
+                match &existing.env {
+                    Some(e) => format!("Deployment {existing_id} is already running for {app}/{e}"),
+                    None => format!("Deployment {existing_id} is already running for {app}"),
+                }
+            };
+            let fix = if existing.is_delete {
+                "Wait for the current deletion to finish before starting a new one"
+            } else {
+                "Wait for the current deployment to finish before starting a new one"
+            };
+            return Err(SkociError::conflict(msg, fix));
         }
 
-        running.insert(key, deployment_id.to_string());
+        running.insert(
+            app.to_string(),
+            AppLock::deployment(deployment_id, env),
+        );
 
         let buffer = Arc::new(JobEventBuffer::new(
             deployment_id.to_string(),
@@ -146,14 +219,11 @@ impl JobRegistry {
         Ok(buffer)
     }
 
-    pub fn finish_job(&self, app: &str, env: &str, deployment_id: &str) {
+    pub fn finish_job(&self, app: &str, _env: &str, deployment_id: &str) {
         {
             let mut running = self.running_jobs.lock();
-            let key = (app.to_string(), env.to_string());
-            if let Some(id) = running.get(&key) {
-                if id == deployment_id {
-                    running.remove(&key);
-                }
+            if running.get(app).is_some_and(|e| e.id == deployment_id) {
+                running.remove(app);
             }
         }
 
@@ -169,17 +239,84 @@ impl JobRegistry {
 
     pub fn get_running_deployment(&self, app: &str) -> Option<String> {
         let running = self.running_jobs.lock();
-        for ((a, _), id) in running.iter() {
-            if a == app {
-                return Some(id.clone());
-            }
+        running.get(app).map(|l| l.id.clone())
+    }
+
+    pub fn acquire_delete_guard(&self, app: &str) -> SkociResult<AppLockGuard> {
+        let mut running = self.running_jobs.lock();
+
+        if let Some(existing) = running.get(app) {
+            let existing_id = &existing.id;
+            let msg = if existing.is_delete {
+                format!("App '{app}' is already being deleted")
+            } else {
+                format!("Deployment {existing_id} for '{app}' is still running")
+            };
+            let fix = if existing.is_delete {
+                "Wait for the current deletion to finish before starting a new one".to_string()
+            } else {
+                format!("Wait until finished ('skoci watch {existing_id}'), then delete again")
+            };
+            return Err(SkociError::conflict(msg, fix));
         }
-        None
+
+        let del_id = format!("del_{}", uuid::Uuid::new_v4().simple());
+        running.insert(app.to_string(), AppLock::deletion(del_id));
+
+        Ok(AppLockGuard {
+            running_jobs: self.running_jobs.clone(),
+            app: app.to_string(),
+            active: true,
+        })
     }
 
     pub fn evict_expired(&self) {
         let ttl = Duration::from_secs(600); // 10 minutes
         let mut events = self.events.lock();
         events.retain(|_, buf| !buf.is_expired(ttl));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_job_registry_exclusion_per_app() {
+        let registry = JobRegistry::new();
+        let b1 = registry.register_job("app1", "preview", "dep1");
+        assert!(b1.is_ok());
+
+        let b2 = registry.register_job("app1", "production", "dep2");
+        assert!(b2.is_err());
+        let err = b2.err().unwrap();
+        assert_eq!(err.code, "conflict");
+        assert!(err.message.contains("dep1"));
+
+        // Different app succeeds
+        let b3 = registry.register_job("app2", "production", "dep3");
+        assert!(b3.is_ok());
+
+        // Finishing b1 releases app1
+        registry.finish_job("app1", "preview", "dep1");
+        let b4 = registry.register_job("app1", "production", "dep4");
+        assert!(b4.is_ok());
+    }
+
+    #[test]
+    fn test_delete_guard_blocks_concurrent_job_and_releases_on_drop() {
+        let registry = JobRegistry::new();
+        {
+            let guard = registry.acquire_delete_guard("app1");
+            assert!(guard.is_ok());
+
+            let res = registry.register_job("app1", "preview", "dep1");
+            assert!(res.is_err());
+            assert_eq!(res.err().unwrap().code, "conflict");
+        }
+
+        // Guard dropped
+        let res = registry.register_job("app1", "preview", "dep1");
+        assert!(res.is_ok());
     }
 }

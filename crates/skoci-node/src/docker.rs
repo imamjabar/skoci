@@ -125,9 +125,13 @@ impl DockerClient {
         }
     }
 
-    pub async fn run_container(&self, cfg: &ContainerConfig) -> SkociResult<String> {
+    pub fn build_run_command(cfg: &ContainerConfig) -> Command {
         let mut cmd = docker_cmd();
         cmd.arg("run").arg("-d");
+
+        // Bounded JSON log options to prevent unbounded disk growth
+        cmd.arg("--log-opt").arg("max-size=10m");
+        cmd.arg("--log-opt").arg("max-file=3");
 
         if !cfg.name.is_empty() {
             cmd.arg("--name").arg(&cfg.name);
@@ -183,6 +187,11 @@ impl DockerClient {
             cmd.arg(arg);
         }
 
+        cmd
+    }
+
+    pub async fn run_container(&self, cfg: &ContainerConfig) -> SkociResult<String> {
+        let mut cmd = Self::build_run_command(cfg);
         let output = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -674,6 +683,27 @@ impl DockerClient {
             Err(SkociError::docker_error(format!("Docker cp to error: {err}")))
         }
     }
+
+    pub async fn prune_builder_cache(&self, keep_storage_bytes: Option<u64>) -> SkociResult<()> {
+        let mut cmd = docker_cmd();
+        cmd.arg("builder").arg("prune").arg("-f");
+        if let Some(keep) = keep_storage_bytes {
+            cmd.arg("--keep-storage").arg(keep.to_string());
+        }
+        let output = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| SkociError::docker_error(format!("Failed to run docker builder prune: {e}")))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let err = String::from_utf8_lossy(&output.stderr);
+            Err(SkociError::docker_error(format!("Docker builder prune error: {err}")))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -695,5 +725,30 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.pids_limit, Some(256));
+    }
+
+    #[test]
+    fn test_docker_run_argv_contains_log_size_options() {
+        let cfg = ContainerConfig {
+            name: "test-app".to_string(),
+            image: "skoci/test:v1".to_string(),
+            ..Default::default()
+        };
+        let cmd = DockerClient::build_run_command(&cfg);
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.contains(&"--log-opt".to_string()));
+        assert!(args.contains(&"max-size=10m".to_string()));
+        assert!(args.contains(&"max-file=3".to_string()));
+
+        let max_size_idx = args.iter().position(|a| a == "max-size=10m").unwrap();
+        assert_eq!(args[max_size_idx - 1], "--log-opt");
+
+        let max_file_idx = args.iter().position(|a| a == "max-file=3").unwrap();
+        assert_eq!(args[max_file_idx - 1], "--log-opt");
     }
 }

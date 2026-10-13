@@ -5,16 +5,17 @@
 - Single Rust binary (<20MB idle RAM target, zero extra daemons)
 - Zero shell string interpolation (safe against prompt injection)
 - CLI & MCP tools return structured JSON with {code, message, fix} error format
-- Secrets are encrypted at rest with ChaCha20-Poly1305 and never returned to model context
-- Policy is built-in to the server; production actions and restores require human approval
+- Secrets are encrypted at rest with ChaCha20-Poly1305 (protected node.key, refused startup if missing with stored secrets) and never returned to model context; tokens (sk_agent_*, sk_master_*) and Bearer headers are redacted in logs
+- Policy is built-in to the server; production actions, historical rollbacks, and restores require human approval
 - Zero SSH required after initial setup: all agent operations use scoped HTTPS tokens over pinned TLS (:8443 with SPKI pin)
 
 ## Exit Codes & Statuses
 - 0: Success (`live`)
 - 1: General error (action failed, build failed, invalid config from validate/init)
-- 2: Approval pending/required (subsequent production promotions via scoped token, or first when `--strict-approvals` is active; database restore; app delete)
+- 2: Approval pending/required (subsequent production promotions via scoped token, or first when `--strict-approvals` is active; production rollback to historical versions older than last known-good; database restore; app delete)
 - 3: Authentication / TLS error (unauthorized, scope_violation, pin_required, pin_mismatch, rate_limited)
-- Deploy Statuses: `live` (healthy), `degraded` (health check passed, GET / failed), `failed` (build/startup error)
+- Deploy Statuses: `live` (healthy), `degraded` (health check passed, GET / failed; route automatically reverts to previous container and removes broken container; stays live if no prior route), `failed` (build/startup error)
+- Concurrency: Deploy, promote, rollback, and delete on the same app are mutually exclusive; concurrent actions return `conflict` error naming the active deployment/deletion ID.
 
 ## Agent Rules & Guidelines
 1. Always run commands with `--json` for machine-parsable outputs.
@@ -22,8 +23,8 @@
 3. Never use or request SSH access after initial server setup. Connect using `skoci connect --server <server-ip> --token <token> --pin sha256:<spki-pin>` (writes `~/.config/skoci/servers.json` `0600` by default; pass `--project-env` to also write `.skoci/env`).
 4. Never print, log, or echo tokens (`sk_agent_*`, `sk_master_*`).
 5. Production deployments require genuine custom domains (magic DNS `*.sslip.io` is auto-enabled by `skoci server setup` when `--domain` is omitted for preview, but rejected in production by default; operator override: `skoci server setup --allow-magic-dns-production` or `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` in `/etc/skoci/skoci.env`; accepted booleans: `true/false`, `1/0`, `yes/no`, `on/off`). Verify DNS before deploying with `skoci domain check <host>`.
-6. Treat `degraded` deployments as a failure to investigate: check logs with `skoci logs --tail 100 --json` and never promote a degraded deployment.
-7. Promotion & Approval Flow: Master token promotes directly. With a scoped agent token (`sk_agent_*`), an app's first promotion to production goes live immediately by default (unless `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` is set via `skoci server setup --strict-approvals`); every subsequent promotion produces an approval request (exit code 2, `pending_approval`). The agent cannot approve its own request and must surface `Request ID: appr_…` to a human operator who runs `sudo skoci approve <request_id>` on the server or approves via the web dashboard.
+6. Treat `degraded` deployments as a failure to investigate: smoke test failed so the route reverted to the previous container while the broken container was removed (or stays live if no prior route existed); check logs with `skoci logs --tail 100 --json` and never promote a degraded deployment.
+7. Promotion & Rollback Approval Flow: Master token promotes and rolls back directly. With a scoped agent token (`sk_agent_*`), an app's first promotion to production goes live immediately by default (unless `SKOCI_REQUIRE_APPROVAL_ALWAYS=true` is set via `skoci server setup --strict-approvals`); every subsequent promotion produces an approval request (exit code 2, `pending_approval`). Production rollback to the immediately preceding version (last known-good) is allowed without approval; rolling back to older versions requires approval (exit code 2, action `rollback`). The agent cannot approve its own request and must surface `Request ID: appr_…` to a human operator who runs `sudo skoci approve <request_id>` on the server or approves via the web dashboard.
 8. The project build always executes on the server inside Docker. The local machine does not require Docker.
 ## Agent Workflow
 1. Connect: `skoci connect --server <server-ip> --token sk_agent_<app>_<hex> --pin sha256:<spki-pin>`

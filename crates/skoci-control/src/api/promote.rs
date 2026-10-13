@@ -12,19 +12,59 @@ use crate::deploy::{run_deploy_pipeline, DeployJobOptions, JobKind};
 use crate::http::{api_reply, AuthSubject};
 use crate::state::AppState;
 
+fn approval_policy_base(state: &AppState, subject: &Subject) -> Option<bool> {
+    if subject.is_admin() {
+        return Some(false);
+    }
+    if state.config.require_approval_always {
+        return Some(true);
+    }
+    None
+}
+
 /// Approval protects live production traffic; an app without a production route has none.
 pub fn promotion_requires_approval(
     state: &AppState,
     subject: &Subject,
     app: &str,
 ) -> SkociResult<bool> {
-    if subject.is_admin() {
-        return Ok(false);
-    }
-    if state.config.require_approval_always {
-        return Ok(true);
+    if let Some(forced) = approval_policy_base(state, subject) {
+        return Ok(forced);
     }
     Ok(state.db.get_route(app, ENV_PRODUCTION)?.is_some())
+}
+
+/// Rollback approval policy:
+/// - Admin or preview environment: never requires approval.
+/// - require_approval_always: always requires approval.
+/// - Production rollback to the immediately previous version (last known-good): allowed without approval.
+/// - Production rollback to any other historical version: requires human approval.
+pub fn rollback_requires_approval(
+    state: &AppState,
+    subject: &Subject,
+    app: &str,
+    env: &str,
+    target_version: &str,
+) -> SkociResult<bool> {
+    if subject.is_admin() || env != ENV_PRODUCTION {
+        return Ok(false);
+    }
+    if let Some(forced) = approval_policy_base(state, subject) {
+        return Ok(forced);
+    }
+
+    let current_live = state
+        .db
+        .get_route(app, ENV_PRODUCTION)?
+        .map(|r| r.version);
+
+    let last_known_good = state
+        .db
+        .get_latest_successful_deployment(app, ENV_PRODUCTION, current_live.as_deref())?
+        .map(|d| d.version);
+
+    let is_last_known_good = last_known_good.as_deref() == Some(target_version);
+    Ok(!is_last_known_good)
 }
 
 pub async fn handle_promote(

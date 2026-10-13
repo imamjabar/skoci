@@ -153,6 +153,96 @@ pub async fn handle_approve(
                 detail: format!("Promotion of version {version} approved; deployment started"),
             }))
         }
+        "rollback" => {
+            let payload: serde_json::Value = approval
+                .payload_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+
+            let version = payload["version"].as_str().unwrap_or("").to_string();
+            let env = payload["env"].as_str().unwrap_or("production").to_string();
+            if version.is_empty() {
+                let _ = state.db.update_approval_status(
+                    &body.request_id,
+                    "failed",
+                    Some(&subject.identifier()),
+                );
+                return api_reply::<()>(Err(SkociError::bad_request(
+                    "Rollback approval payload does not have a valid version",
+                    "Create a new rollback request",
+                )));
+            }
+            if env == "production" {
+                if let Ok(Some(cfg)) = state.db.get_app_config(&approval.app) {
+                    if let Err(e) = crate::deploy::check_production_domain_policy(&state, &approval.app, &env, &cfg) {
+                        return api_reply::<()>(Err(e));
+                    }
+                }
+            }
+
+            let image_tag = format!("skoci/{}:{}", approval.app, version);
+            let deployment_id = format!("dep_{}", uuid::Uuid::new_v4().simple());
+
+            let buffer = match state
+                .jobs
+                .register_job(&approval.app, &env, &deployment_id)
+            {
+                Ok(b) => b,
+                Err(e) => return api_reply::<()>(Err(e)),
+            };
+
+            let opts = DeployJobOptions {
+                deployment_id: deployment_id.clone(),
+                app: approval.app.clone(),
+                env: env.clone(),
+                version: version.clone(),
+                kind: JobKind::Rollback,
+                actor: subject.identifier(),
+                commit: None,
+                tar_gz_path: None,
+                existing_image: Some(image_tag),
+            };
+
+            tokio::spawn(run_deploy_pipeline(state.clone(), opts, buffer));
+
+            let _ = state.db.update_approval_status(
+                &body.request_id,
+                "approved",
+                Some(&subject.identifier()),
+            );
+
+            let _ = state.db.record_audit(
+                &subject.identifier(),
+                "admin",
+                "approve_rollback",
+                &format!("{}/{}", approval.app, env),
+                &format!("Approval {} approved", body.request_id),
+            );
+
+            let estimated_secs = state
+                .db
+                .get_estimated_deploy_duration(&approval.app, &env)
+                .ok()
+                .flatten();
+
+            let accepted = DeployAccepted {
+                deployment_id: deployment_id.clone(),
+                app: approval.app,
+                env,
+                version: version.clone(),
+                events_url: format!("/api/deployments/{deployment_id}/events"),
+                estimated_secs,
+            };
+
+            api_reply(Ok(ApproveResponse {
+                request_id: body.request_id,
+                approved: true,
+                action: "rollback".to_string(),
+                deployment: Some(accepted),
+                detail: format!("Rollback of version {version} approved; deployment started"),
+            }))
+        }
         "db_restore" => {
             let payload: serde_json::Value = approval
                 .payload_json

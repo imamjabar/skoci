@@ -11,6 +11,7 @@ jobs:
   test:
     name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -33,12 +34,44 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
-      - name: Lint install.sh
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts
         run: |
           bash -n install.sh
-          if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck install.sh
-          fi
+          bash -n scripts/e2e_docker.sh
+          shellcheck install.sh
+          shellcheck scripts/e2e_docker.sh
 
       - name: Documentation gate
         run: python3 scripts/check_docs.py
+
+  docker-e2e:
+    name: Docker End-to-End
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c # v2.7.7
+
+      - name: Run ignored Docker integration test
+        run: cargo test -p skoci-node --test node_tests test_docker_daemon_integration -- --ignored
+
+      - name: Build Skoci release binary
+        run: cargo build --release --bin skoci
+
+      - name: Run Docker E2E test
+        run: bash scripts/e2e_docker.sh
+        env:
+          SKOCI_BIN: target/release/skoci

@@ -120,6 +120,21 @@ impl ApprovalRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    pub deployments_keep_per_app: usize,
+    pub deployments_max_age_days: Option<u32>,
+    pub approvals_max_age_days: u32,
+    pub audit_logs_max_age_days: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetentionReport {
+    pub pruned_deployments: usize,
+    pub pruned_approvals: usize,
+    pub pruned_audit_logs: usize,
+}
+
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
@@ -1353,5 +1368,322 @@ impl Database {
 
     pub fn set_base_domain(&self, domain: &str) -> SkociResult<()> {
         self.set_setting("base_domain", domain)
+    }
+
+    // --- Retention Pruning ---
+
+    pub fn prune_deployments(
+        &self,
+        keep_per_app: usize,
+        cutoff: Option<DateTime<Utc>>,
+    ) -> SkociResult<usize> {
+        let conn = self.conn.lock();
+        let cutoff_str = cutoff.map(|c| c.to_rfc3339());
+        let keep_n = keep_per_app as i64;
+
+        let sql = r#"
+            DELETE FROM deployments
+            WHERE id NOT IN (
+                -- Referenced by live routes
+                SELECT d.id
+                FROM deployments d
+                JOIN routes r ON d.app = r.app AND (d.version = r.version OR d.container = r.container)
+            )
+            AND id NOT IN (
+                -- Referenced by pending approvals
+                SELECT d.id
+                FROM deployments d
+                JOIN approvals a ON d.app = a.app AND a.status = 'pending'
+                WHERE (
+                    a.action = 'app_delete'
+                    OR a.payload_json LIKE '%' || d.version || '%'
+                    OR a.payload_json LIKE '%' || d.id || '%'
+                    OR a.detail LIKE '%' || d.version || '%'
+                )
+            )
+            AND (
+                -- When cutoff is None: delete everything beyond newest keep_n per app
+                (?2 IS NULL AND id NOT IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (PARTITION BY app ORDER BY created_at DESC, id DESC) as rn
+                        FROM deployments
+                    ) WHERE rn <= ?1
+                ))
+                OR
+                -- When cutoff is Some: delete if beyond keep_n OR (older than cutoff and not rn <= 1)
+                (?2 IS NOT NULL AND (
+                    id NOT IN (
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (PARTITION BY app ORDER BY created_at DESC, id DESC) as rn
+                            FROM deployments
+                        ) WHERE rn <= ?1
+                    )
+                    OR
+                    (created_at < ?2 AND id NOT IN (
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (PARTITION BY app ORDER BY created_at DESC, id DESC) as rn
+                            FROM deployments
+                        ) WHERE rn <= 1
+                    ))
+                ))
+            )
+        "#;
+
+        let deleted = conn
+            .execute(sql, params![keep_n, cutoff_str])
+            .map_err(|e| SkociError::internal(format!("Failed to prune deployments: {e}"), "Try again"))?;
+
+        Ok(deleted)
+    }
+
+    pub fn prune_approvals(&self, cutoff: DateTime<Utc>) -> SkociResult<usize> {
+        let conn = self.conn.lock();
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let sql = "DELETE FROM approvals WHERE status != 'pending' AND created_at < ?1";
+        let deleted = conn
+            .execute(sql, params![cutoff_str])
+            .map_err(|e| SkociError::internal(format!("Failed to prune approvals: {e}"), "Try again"))?;
+
+        Ok(deleted)
+    }
+
+    pub fn prune_audit_logs(&self, cutoff: DateTime<Utc>) -> SkociResult<usize> {
+        let conn = self.conn.lock();
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let sql = "DELETE FROM audit_logs WHERE timestamp < ?1";
+        let deleted = conn
+            .execute(sql, params![cutoff_str])
+            .map_err(|e| SkociError::internal(format!("Failed to prune audit logs: {e}"), "Try again"))?;
+
+        Ok(deleted)
+    }
+
+    pub fn prune_retention(&self, policy: &RetentionPolicy) -> SkociResult<RetentionReport> {
+        let now = Utc::now();
+        let deployments_cutoff = policy
+            .deployments_max_age_days
+            .map(|d| now - chrono::Duration::days(d as i64));
+        let approvals_cutoff = now - chrono::Duration::days(policy.approvals_max_age_days as i64);
+        let audit_logs_cutoff = now - chrono::Duration::days(policy.audit_logs_max_age_days as i64);
+
+        let pruned_deployments = self.prune_deployments(policy.deployments_keep_per_app, deployments_cutoff)?;
+        let pruned_approvals = self.prune_approvals(approvals_cutoff)?;
+        let pruned_audit_logs = self.prune_audit_logs(audit_logs_cutoff)?;
+
+        {
+            let conn = self.conn.lock();
+            let _ = conn.execute("PRAGMA optimize", []);
+        }
+
+        Ok(RetentionReport {
+            pruned_deployments,
+            pruned_approvals,
+            pruned_audit_logs,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_retention_deployments_keeps_newest_and_live_routes() {
+        let db = Database::open_in_memory().expect("db open");
+        let now = Utc::now();
+
+        // App A deployments
+        for i in 1..=5 {
+            let dep = DeploymentRecord {
+                id: format!("dep-a-{i}"),
+                app: "app-a".to_string(),
+                env: "production".to_string(),
+                version: format!("v{i}"),
+                kind: "deploy".to_string(),
+                status: "superseded".to_string(),
+                commit_hash: "hash".to_string(),
+                image: format!("skoci/app-a:v{i}"),
+                container: format!("c-a-{i}"),
+                host_port: Some(8000 + i as u16),
+                triggered_by: "agent".to_string(),
+                created_at: now - chrono::Duration::days(10 - i),
+                finished_at: Some(now - chrono::Duration::days(10 - i)),
+                error_json: None,
+                evidence_json: None,
+            };
+            db.insert_deployment(&dep).expect("insert dep");
+        }
+
+        // Live route points to v2 (which is older than v4, v5)
+        let route = RouteRecord {
+            app: "app-a".to_string(),
+            env: "production".to_string(),
+            container: "c-a-2".to_string(),
+            host_port: 8002,
+            version: "v2".to_string(),
+            hosts: vec!["app-a.local".to_string()],
+            deployed_at: now - chrono::Duration::days(8),
+        };
+        db.upsert_route(&route).expect("upsert route");
+
+        // Keep newest 2 deployments per app
+        let pruned = db.prune_deployments(2, None).expect("prune deployments");
+        // We had 5 deployments.
+        // Newest 2 are v5 and v4.
+        // v2 is referenced by the live route.
+        // v1 and v3 are pruned (2 pruned).
+        assert_eq!(pruned, 2);
+
+        let remaining = db.list_deployments(Some("app-a"), 10).expect("list deployments");
+        let remaining_versions: Vec<String> = remaining.into_iter().map(|d| d.version).collect();
+        assert_eq!(remaining_versions.len(), 3);
+        assert!(remaining_versions.contains(&"v5".to_string()));
+        assert!(remaining_versions.contains(&"v4".to_string()));
+        assert!(remaining_versions.contains(&"v2".to_string()));
+        assert!(!remaining_versions.contains(&"v1".to_string()));
+        assert!(!remaining_versions.contains(&"v3".to_string()));
+    }
+
+    #[test]
+    fn test_retention_approvals_pending_never_pruned_decided_past_limit_pruned() {
+        let db = Database::open_in_memory().expect("db open");
+        let now = Utc::now();
+
+        // 1. Pending approval from 100 days ago
+        let old_pending = ApprovalRecord {
+            id: "appr-old-pending".to_string(),
+            app: "app-a".to_string(),
+            action: "promote".to_string(),
+            detail: "Promote v1".to_string(),
+            reason: "Testing".to_string(),
+            status: "pending".to_string(),
+            requested_by: "agent-1".to_string(),
+            decided_by: None,
+            payload_json: Some(r#"{"version":"v1"}"#.to_string()),
+            created_at: now - chrono::Duration::days(100),
+        };
+        db.insert_approval(&old_pending).expect("insert old pending");
+
+        // 2. Decided approval from 100 days ago (past age limit)
+        let old_decided = ApprovalRecord {
+            id: "appr-old-decided".to_string(),
+            app: "app-a".to_string(),
+            action: "promote".to_string(),
+            detail: "Promote v0".to_string(),
+            reason: "Testing".to_string(),
+            status: "approved".to_string(),
+            requested_by: "agent-1".to_string(),
+            decided_by: Some("admin".to_string()),
+            payload_json: Some(r#"{"version":"v0"}"#.to_string()),
+            created_at: now - chrono::Duration::days(100),
+        };
+        db.insert_approval(&old_decided).expect("insert old decided");
+
+        // 3. Decided approval from 5 days ago (within age limit)
+        let recent_decided = ApprovalRecord {
+            id: "appr-recent-decided".to_string(),
+            app: "app-a".to_string(),
+            action: "promote".to_string(),
+            detail: "Promote v2".to_string(),
+            reason: "Testing".to_string(),
+            status: "approved".to_string(),
+            requested_by: "agent-1".to_string(),
+            decided_by: Some("admin".to_string()),
+            payload_json: Some(r#"{"version":"v2"}"#.to_string()),
+            created_at: now - chrono::Duration::days(5),
+        };
+        db.insert_approval(&recent_decided).expect("insert recent decided");
+
+        // Prune approvals older than 30 days
+        let cutoff = now - chrono::Duration::days(30);
+        let pruned = db.prune_approvals(cutoff).expect("prune approvals");
+        assert_eq!(pruned, 1);
+
+        // Pending is never pruned
+        assert!(db.get_approval("appr-old-pending").expect("get").is_some());
+        // Recent decided is not pruned
+        assert!(db.get_approval("appr-recent-decided").expect("get").is_some());
+        // Old decided IS pruned
+        assert!(db.get_approval("appr-old-decided").expect("get").is_none());
+    }
+
+    #[test]
+    fn test_retention_deployments_protects_pending_approvals() {
+        let db = Database::open_in_memory().expect("db open");
+        let now = Utc::now();
+
+        for i in 1..=4 {
+            let dep = DeploymentRecord {
+                id: format!("dep-b-{i}"),
+                app: "app-b".to_string(),
+                env: "production".to_string(),
+                version: format!("v{i}"),
+                kind: "deploy".to_string(),
+                status: "superseded".to_string(),
+                commit_hash: "hash".to_string(),
+                image: format!("skoci/app-b:v{i}"),
+                container: format!("c-b-{i}"),
+                host_port: Some(8100 + i as u16),
+                triggered_by: "agent".to_string(),
+                created_at: now - chrono::Duration::days(10 - i),
+                finished_at: Some(now - chrono::Duration::days(10 - i)),
+                error_json: None,
+                evidence_json: None,
+            };
+            db.insert_deployment(&dep).expect("insert dep");
+        }
+
+        // Pending approval references v1
+        let pending = ApprovalRecord {
+            id: "appr-pending-v1".to_string(),
+            app: "app-b".to_string(),
+            action: "promote".to_string(),
+            detail: "Promote v1".to_string(),
+            reason: "Promoting historical".to_string(),
+            status: "pending".to_string(),
+            requested_by: "agent-1".to_string(),
+            decided_by: None,
+            payload_json: Some(r#"{"version":"v1"}"#.to_string()),
+            created_at: now,
+        };
+        db.insert_approval(&pending).expect("insert pending");
+
+        // Keep newest 1 deployment
+        let pruned = db.prune_deployments(1, None).expect("prune deployments");
+        // 4 total: newest 1 is v4. v1 is protected by pending approval. v2 and v3 are pruned.
+        assert_eq!(pruned, 2);
+
+        let remaining = db.list_deployments(Some("app-b"), 10).expect("list");
+        let versions: Vec<String> = remaining.into_iter().map(|d| d.version).collect();
+        assert!(versions.contains(&"v4".to_string()));
+        assert!(versions.contains(&"v1".to_string()));
+        assert!(!versions.contains(&"v2".to_string()));
+        assert!(!versions.contains(&"v3".to_string()));
+    }
+
+    #[test]
+    fn test_retention_audit_logs_pruned_past_cutoff() {
+        let db = Database::open_in_memory().expect("db open");
+        let now = Utc::now();
+
+        {
+            let conn = db.conn.lock();
+            let old_ts = (now - chrono::Duration::days(100)).to_rfc3339();
+            conn.execute(
+                "INSERT INTO audit_logs (timestamp, actor, actor_type, action, target, details) VALUES (?1, 'admin', 'user', 'deploy', 'app', 'old')",
+                params![old_ts],
+            ).expect("insert old audit");
+        }
+        db.record_audit("admin", "user", "deploy", "app", "recent").expect("insert recent audit");
+
+        let cutoff = now - chrono::Duration::days(30);
+        let pruned = db.prune_audit_logs(cutoff).expect("prune audits");
+        assert_eq!(pruned, 1);
+
+        let remaining = db.list_audits(10).expect("list audits");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].details, "recent");
     }
 }
