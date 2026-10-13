@@ -24,13 +24,17 @@ if [ -z "$SKOCI_BIN" ]; then
   fi
 fi
 
-# Resolve relative binary path to absolute path before changing directories
+# Every command below runs from the fixture directory, so the binary path must be absolute.
+case "$SKOCI_BIN" in
+  /*) ;;
+  */*) SKOCI_BIN="$(cd "$(dirname "$SKOCI_BIN")" 2>/dev/null && pwd)/$(basename "$SKOCI_BIN")" ;;
+  *) SKOCI_BIN="$(command -v "$SKOCI_BIN" 2>/dev/null || true)" ;;
+esac
+
 if [[ "$SKOCI_BIN" != /* ]]; then
-  if command -v "$SKOCI_BIN" >/dev/null 2>&1; then
-    SKOCI_BIN="$(command -v "$SKOCI_BIN")"
-  elif [ -e "$SKOCI_BIN" ]; then
-    SKOCI_BIN="$(cd "$(dirname "$SKOCI_BIN")" && pwd)/$(basename "$SKOCI_BIN")"
-  fi
+  echo "Error: could not resolve the Skoci binary to an absolute path (SKOCI_BIN='$SKOCI_BIN')" >&2
+  echo "Build it with 'cargo build --release' or set SKOCI_BIN to a full path." >&2
+  exit 1
 fi
 
 if [ ! -x "$SKOCI_BIN" ]; then
