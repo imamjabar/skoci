@@ -686,11 +686,25 @@ pub async fn stream_events_and_render(
             );
         }
         if resp.status == "degraded" {
-            for url in &resp.urls {
+            if let Some(reverted) = &resp.evidence.reverted_to_version {
                 if is_term {
-                    eprintln!("\x1b[1;33m⚠ Live but failing:\x1b[0m {url}");
+                    eprintln!(
+                        "\x1b[1;33m⚠ Rolled back:\x1b[0m version {} failed its smoke test; {reverted} is serving again",
+                        resp.version
+                    );
                 } else {
-                    eprintln!("⚠ Live but failing: {url}");
+                    eprintln!(
+                        "⚠ Rolled back: version {} failed its smoke test; {reverted} is serving again",
+                        resp.version
+                    );
+                }
+            } else {
+                for url in &resp.urls {
+                    if is_term {
+                        eprintln!("\x1b[1;33m⚠ Live but failing:\x1b[0m {url}");
+                    } else {
+                        eprintln!("⚠ Live but failing: {url}");
+                    }
                 }
             }
             if let Some(code) = resp.evidence.smoke_test_status {

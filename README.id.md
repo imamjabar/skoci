@@ -232,6 +232,10 @@ rm .skoci/Dockerfile && skoci init && skoci deploy
 ```
 Dockerfile yang Anda tulis sendiri tetap aman; `skoci init` tidak pernah menimpa berkas yang sudah ada.
 
+### Ke 0.6.1
+* **Pelaporan rollback lebih jelas:** Deploy yang gagal pada smoke test kini mencetak `⚠ Rolled back: version <baru> failed its smoke test; <sebelumnya> is serving again`, dan evidence deployment memuat `reverted_to_version`. Versi 0.6.0 sudah mengembalikan rute dengan benar, tetapi masih mencetak `Live but failing` yang menyebut URL yang sebenarnya sudah dilayani versi sebelumnya.
+* **Pesan kehilangan kunci menyebut path sebenarnya:** Penolakan menjalankan daemon tanpa `node.key` kini mencetak path kunci yang sesungguhnya dari direktori data server, bukan `/var/lib/skoci/node.key` yang ditulis tetap.
+
 ### Ke 0.6.0
 * **Cadangkan `/var/lib/skoci/node.key` sekarang:** Kunci enkripsi node mengenkripsi setiap secret dan kata sandi database accessory yang digenerate. Jika `node.key` hilang atau tidak terbaca saat secret ada di database, daemon menolak berjalan untuk mencegah hilangnya secret secara diam-diam. Cadangkan `/var/lib/skoci/node.key` segera (mode `0600`, pemilik `skoci:skoci`). Jika secret yang tersimpan hilang permanen dan Anda bersedia menghapus data yang tidak dapat dipulihkan, jalankan sekali dengan `SKOCI_ALLOW_SECRET_KEY_RESET=true` di `/etc/skoci/skoci.env`.
 * **Pemangkasan retensi otomatis saat restart pertama:** Restart daemon pertama setelah upgrade langsung menjalankan pemeliharaan retensi otomatis, memangkas riwayat deployment lama (default 30 per aplikasi, 90 hari), persetujuan yang telah diputuskan (30 hari), dan log audit (90 hari). Baris yang masih dirujuk oleh route aktif atau persetujuan tertunda tidak akan pernah dihapus.

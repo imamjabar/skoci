@@ -232,6 +232,10 @@ rm .skoci/Dockerfile && skoci init && skoci deploy
 ```
 Keep a Dockerfile you wrote yourself; `skoci init` never overwrites an existing file.
 
+### To 0.6.1
+* **Clearer rollback reporting:** A deploy whose smoke test fails now prints `⚠ Rolled back: version <new> failed its smoke test; <previous> is serving again`, and the deployment evidence carries `reverted_to_version`. 0.6.0 reverted the route correctly but still printed `Live but failing`, which named a URL that was already serving the previous version.
+* **Key-loss error names your real path:** The refusal to start without `node.key` now prints the actual key path from the server's data directory instead of a hard-coded `/var/lib/skoci/node.key`.
+
 ### To 0.6.0
 * **Back up `/var/lib/skoci/node.key` now:** The node encryption key encrypts every secret and generated accessory-database password. If `node.key` is missing or unreadable while secrets exist, the daemon refuses to start to protect against silent secret loss. Back up `/var/lib/skoci/node.key` immediately (mode `0600`, owned by `skoci:skoci`). If stored secrets are permanently lost and you accept wiping unrecoverable rows, start once with `SKOCI_ALLOW_SECRET_KEY_RESET=true` in `/etc/skoci/skoci.env`.
 * **Automatic retention pruning on first restart:** The first daemon restart after upgrade automatically executes retention maintenance, pruning old deployment records (default 30 per app, 90 days), decided approvals (30 days), and audit logs (90 days). Records referenced by an active live route or pending approval are never pruned.

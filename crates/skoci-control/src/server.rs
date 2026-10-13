@@ -88,7 +88,7 @@ pub async fn run_server(cfg: ServerConfig) -> anyhow::Result<()> {
             )
         });
 
-    let action = decide_key_action(key_valid, has_secrets, allow_reset)
+    let action = decide_key_action(&key_path, key_valid, has_secrets, allow_reset)
         .map_err(|e| anyhow::anyhow!("{}: {}\nFix: {}", e.code, e.message, e.fix))?;
 
     let secret_cipher = match action {

@@ -197,6 +197,9 @@ pub struct SkociEvidence {
     pub smoke_test_passed: bool,
     #[serde(default)]
     pub previous_version: Option<String>,
+    /// Set when a failed smoke test sent traffic back to the previous version.
+    #[serde(default)]
+    pub reverted_to_version: Option<String>,
     pub live_version: String,
     pub triggered_by: String,
     #[serde(default)]

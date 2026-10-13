@@ -47,7 +47,7 @@ skoci server setup --host <server-public-ip> --user root \
 | `--ssh-copy-id` | Install your SSH public key on a password-only VPS (generates `~/.ssh/id_ed25519` if you have no key), instead of failing. |
 | `--ssh-password-stdin` | Read the SSH and remote `sudo -S` password from the first line of standard input for non-interactive bootstrap (never passed in `argv`, replacing `expect` wrappers). |
 | `--app <app>` | Application name that the generated agent token is scoped to (defaults to `app` in `.skoci/skoci.yaml`). |
-| `--version <tag>` | Specific Skoci release tag to install on the server (default `latest`, e.g. `v0.6.0`). |
+| `--version <tag>` | Specific Skoci release tag to install on the server (default `latest`, e.g. `v0.6.1`). |
 | `--domain <domain>` | Base domain you own, used for app hostnames (`<app>.<domain>`, `<app>-preview.<domain>`) and dashboard (`skoci.<domain>`). |
 | `--email <email>` | Contact email address for Let's Encrypt ACME certificate registration. |
 | `--magic-dns` | Enable `<dashed-ip>.sslip.io` preview hostnames (enabled automatically by `server setup` when `--domain` is omitted; unsuitable for production). |
@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/imamjabar/skoci/main/install.sh | b
 | `--harden-ssh` | *(disabled)* | Harden `sshd` via `/etc/ssh/sshd_config.d/00-skoci-harden.conf`. |
 | `--ssh-port <n>` | *(auto-detected / 22)* | SSH port to allow when configuring UFW. |
 | `--strict-approvals` | *(disabled)* | Require human approval for every production promotion, including an app's first one (`SKOCI_REQUIRE_APPROVAL_ALWAYS=true`). |
-| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.6.0`). |
+| `--version <tag>` | `latest` | Specific release tag to install (e.g. `v0.6.1`). |
 | `--allow-magic-dns-production` | *(disabled)* | Operator override: allow magic-DNS hostnames in production by writing `SKOCI_ALLOW_MAGIC_DNS_PRODUCTION=true` to `/etc/skoci/skoci.env`. |
 | `--client-only` | *(false on Linux)* | Install client binary only without server daemon (default on macOS). |
 
@@ -155,7 +155,7 @@ Example output:
 ```json
 {
   "healthy": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "idle_ram_mb": 11.4,
   "checks": [
     { "name": "docker_daemon", "passed": true, "message": "Docker Engine is active" },

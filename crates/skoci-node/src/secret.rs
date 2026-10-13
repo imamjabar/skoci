@@ -162,6 +162,7 @@ pub enum KeyAction {
 }
 
 pub fn decide_key_action(
+    key_path: &Path,
     key_valid: bool,
     has_secrets: bool,
     allow_reset: bool,
@@ -173,8 +174,14 @@ pub fn decide_key_action(
             Ok(KeyAction::RecreateAndWipe)
         } else {
             Err(SkociError::internal(
-                "Encryption key file 'node.key' is missing or unreadable, but stored secrets exist in the database. Secrets cannot be decrypted without the original key.",
-                "Restore the backed-up node.key to '/var/lib/skoci/node.key' (mode 0600), or restart with SKOCI_ALLOW_SECRET_KEY_RESET=true to recreate the key and delete unrecoverable secrets.",
+                format!(
+                    "Encryption key file {} is missing or unreadable, but stored secrets exist in the database. Secrets cannot be decrypted without the original key.",
+                    key_path.display()
+                ),
+                format!(
+                    "Restore the backed-up key to {} (mode 0600), or restart with SKOCI_ALLOW_SECRET_KEY_RESET=true to recreate it and delete the unrecoverable secrets.",
+                    key_path.display()
+                ),
             ))
         }
     } else {
@@ -411,23 +418,24 @@ mod tests {
 
     #[test]
     fn test_key_loss_decision() {
-        let res1 = decide_key_action(false, true, false);
+        let key_path = Path::new("/var/lib/skoci/node.key");
+        let res1 = decide_key_action(key_path, false, true, false);
         assert!(res1.is_err());
         let err = res1.unwrap_err();
         assert!(err.message.contains("missing or unreadable"));
-        assert!(err.fix.contains("node.key"));
+        assert!(err.fix.contains("/var/lib/skoci/node.key"));
         assert!(err.fix.contains("SKOCI_ALLOW_SECRET_KEY_RESET=true"));
 
-        let res2 = decide_key_action(false, false, false);
+        let res2 = decide_key_action(key_path, false, false, false);
         assert_eq!(res2.unwrap(), KeyAction::CreateNew);
 
-        let res3 = decide_key_action(false, true, true);
+        let res3 = decide_key_action(key_path, false, true, true);
         assert_eq!(res3.unwrap(), KeyAction::RecreateAndWipe);
 
-        let res4 = decide_key_action(true, true, false);
+        let res4 = decide_key_action(key_path, true, true, false);
         assert_eq!(res4.unwrap(), KeyAction::Load);
 
-        let res5 = decide_key_action(true, false, false);
+        let res5 = decide_key_action(key_path, true, false, false);
         assert_eq!(res5.unwrap(), KeyAction::Load);
     }
 }

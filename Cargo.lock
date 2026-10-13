@@ -2340,7 +2340,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "skoci"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-api"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "hex",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "futures-util",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-client"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "flate2",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-control"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde_json",
  "serde_yaml",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-mcp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2464,7 +2464,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-node"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chacha20poly1305",
  "chrono",
@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "skoci-proxy"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "futures-util",
  "http-body-util",

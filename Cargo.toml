@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["Imam Jabar <imam@zen.ai.id>"]
 license = "Apache-2.0"
@@ -23,14 +23,14 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Internal workspace crates
-skoci-api = { path = "crates/skoci-api", version = "0.6.0" }
-skoci-core = { path = "crates/skoci-core", version = "0.6.0" }
-skoci-proxy = { path = "crates/skoci-proxy", version = "0.6.0" }
-skoci-node = { path = "crates/skoci-node", version = "0.6.0" }
-skoci-control = { path = "crates/skoci-control", version = "0.6.0" }
-skoci-client = { path = "crates/skoci-client", version = "0.6.0" }
-skoci-cli = { path = "crates/skoci-cli", version = "0.6.0" }
-skoci-mcp = { path = "crates/skoci-mcp", version = "0.6.0" }
+skoci-api = { path = "crates/skoci-api", version = "0.6.1" }
+skoci-core = { path = "crates/skoci-core", version = "0.6.1" }
+skoci-proxy = { path = "crates/skoci-proxy", version = "0.6.1" }
+skoci-node = { path = "crates/skoci-node", version = "0.6.1" }
+skoci-control = { path = "crates/skoci-control", version = "0.6.1" }
+skoci-client = { path = "crates/skoci-client", version = "0.6.1" }
+skoci-cli = { path = "crates/skoci-cli", version = "0.6.1" }
+skoci-mcp = { path = "crates/skoci-mcp", version = "0.6.1" }
 
 # Common async & network
 tokio = { version = "1.40", features = ["full"] }

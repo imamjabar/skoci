@@ -951,6 +951,7 @@ Fix: point a domain at this server and add it under 'domains'/'preview_domains' 
         smoke_test_status: smoke_status,
         smoke_test_passed: smoke_passed,
         previous_version,
+        reverted_to_version: smoke_revert_target.map(|r| r.version.clone()),
         live_version,
         triggered_by: opts.actor.clone(),
         approved_by: None,
